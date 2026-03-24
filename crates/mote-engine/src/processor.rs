@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, B256, U256};
 use mote_primitives::{
     constants::MAX_BTL,
-    entity::{derive_entity_key, EntityKey, EntityMetadata},
+    entity::{EntityKey, EntityMetadata, derive_entity_key},
     error::MoteError,
     storage::{compute_content_hash_from_raw, entity_content_hash_key, entity_storage_key},
 };
