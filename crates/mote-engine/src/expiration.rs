@@ -43,28 +43,10 @@ impl ExpirationIndex {
         keys
     }
 
-    /// Rebuild the expiration index from entity event logs.
-    ///
-    /// On cold start (node restart), the in-memory index is empty.
-    /// Scan the last MAX_BTL blocks of EntityCreated/EntityUpdated/EntityExtended
-    /// logs to reconstruct which entities expire at which block.
-    ///
-    /// This is called during node startup, before block production begins.
-    /// The `logs` iterator yields (entity_key, expires_at_block) pairs
-    /// extracted from event logs in the reth database.
-    ///
-    /// **IMPORTANT: The caller MUST pre-filter the logs.** Only entities that
-    /// are currently alive should be included. Specifically:
-    /// 1. Scan EntityCreated/EntityUpdated/EntityExtended logs from the last
-    ///    MAX_BTL blocks
-    /// 2. Exclude any entity_key that has a subsequent EntityDeleted or
-    ///    EntityExpired log (the entity is already gone)
-    /// 3. For entities with multiple logs, use only the LATEST expires_at_block
-    ///    (an Update resets the expiration)
-    ///
-    /// Passing unfiltered logs will cause duplicate entries, expired entities
-    /// to reappear in the index, and wrong expiration blocks -- all consensus
-    /// bugs.
+    /// Cold-start rebuild: scan the last MAX_BTL blocks of create/update/extend
+    /// logs and repopulate the index. Caller must pre-filter to only alive
+    /// entities with their latest expiration — duplicates or stale entries here
+    /// are consensus bugs.
     pub fn rebuild_from_logs(&mut self, logs: impl Iterator<Item = (B256, u64)>) {
         for (entity_key, expires_at_block) in logs {
             self.insert(expires_at_block, entity_key);

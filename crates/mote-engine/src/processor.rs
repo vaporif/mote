@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_extend_is_permissionless() {
+    fn extend_by_non_owner_succeeds() {
         let mut state = MockState::default();
         let entity_key = B256::repeat_byte(0x01);
         let owner = Address::repeat_byte(0x42);
