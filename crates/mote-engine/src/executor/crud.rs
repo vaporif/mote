@@ -15,7 +15,10 @@ use std::collections::HashMap;
 use super::decode::{DecodedMoteTransaction, decode_with_raw_slices};
 use super::{MoteBlockExecutor, commit_storage_changes, mote_err};
 
-use super::{MOTE_GAS_PER_CREATE, MOTE_GAS_PER_DELETE, MOTE_GAS_PER_EXTEND, MOTE_GAS_PER_UPDATE};
+use super::{
+    GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, MOTE_GAS_PER_CREATE, MOTE_GAS_PER_DELETE,
+    MOTE_GAS_PER_EXTEND, MOTE_GAS_PER_UPDATE,
+};
 
 /// Staged until all ops succeed, then applied atomically.
 pub(super) enum ExpirationChange {
@@ -148,10 +151,10 @@ where
             ));
 
             acc.gas_used += MOTE_GAS_PER_CREATE
-                + (create.payload.len() as u64 * 16)
-                + (create.btl * 10)
-                + (annotation_gas_bytes(&create.string_annotations, &create.numeric_annotations)
-                    * 16);
+                + create.payload.len() as u64 * GAS_PER_DATA_BYTE
+                + create.btl * GAS_PER_BTL_BLOCK
+                + annotation_gas_bytes(&create.string_annotations, &create.numeric_annotations)
+                    * GAS_PER_DATA_BYTE;
 
             acc.slot_counter_delta += crate::slot_counter::SLOTS_PER_ENTITY.cast_signed();
         }
@@ -210,10 +213,10 @@ where
             ));
 
             acc.gas_used += MOTE_GAS_PER_UPDATE
-                + (update.payload.len() as u64 * 16)
-                + (update.btl * 10)
-                + (annotation_gas_bytes(&update.string_annotations, &update.numeric_annotations)
-                    * 16);
+                + update.payload.len() as u64 * GAS_PER_DATA_BYTE
+                + update.btl * GAS_PER_BTL_BLOCK
+                + annotation_gas_bytes(&update.string_annotations, &update.numeric_annotations)
+                    * GAS_PER_DATA_BYTE;
         }
         Ok(())
     }
@@ -290,7 +293,7 @@ where
                 new_expires,
             ));
 
-            acc.gas_used += MOTE_GAS_PER_EXTEND + (extend.additional_blocks * 10);
+            acc.gas_used += MOTE_GAS_PER_EXTEND + (extend.additional_blocks * GAS_PER_BTL_BLOCK);
         }
         Ok(())
     }

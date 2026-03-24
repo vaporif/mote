@@ -188,6 +188,10 @@ const MOTE_GAS_PER_UPDATE: u64 = 40_000;
 const MOTE_GAS_PER_DELETE: u64 = 10_000;
 const MOTE_GAS_PER_EXTEND: u64 = 10_000;
 
+const INTRINSIC_GAS: u64 = 21_000;
+const GAS_PER_DATA_BYTE: u64 = revm::context_interface::cfg::gas::NON_ZERO_BYTE_DATA_COST_ISTANBUL;
+const GAS_PER_BTL_BLOCK: u64 = 10;
+
 impl<'db, DB, E> BlockExecutor for MoteBlockExecutor<'_, E>
 where
     DB: Database + 'db,
@@ -243,7 +247,7 @@ where
 
         let staged = self.execute_mote_crud(calldata, sender, tx_hash)?;
 
-        let intrinsic_gas = 21_000u64 + calldata.len() as u64 * 16;
+        let intrinsic_gas = INTRINSIC_GAS + calldata.len() as u64 * GAS_PER_DATA_BYTE;
         let total_gas = intrinsic_gas.saturating_add(staged.gas_used);
 
         if gas_limit < total_gas {
@@ -293,7 +297,7 @@ where
     }
 
     fn finish(self) -> Result<(Self::Evm, BlockExecutionResult<Receipt>), BlockExecutionError> {
-        // Empty blocks drop expiration logs — BlockExecutionResult has no logs field.
+        // Empty blocks drop expiration logs - BlockExecutionResult has no logs field.
         self.inner.finish()
     }
 
@@ -407,7 +411,7 @@ where
         }
 
         if !state_changes.is_empty() {
-            // Each entity produces exactly 2 entries (meta_slot + content_slot)
+            // Each entity produces 2 entries (meta_slot + content_slot)
             let expired_slots =
                 (state_changes.len() as u64 / 2) * crate::slot_counter::SLOTS_PER_ENTITY;
 

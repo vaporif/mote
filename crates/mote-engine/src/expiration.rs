@@ -1,7 +1,7 @@
 use alloy_primitives::B256;
 use std::collections::HashMap;
 
-/// Not persisted — rebuilt from event logs on cold start.
+/// Not persisted - rebuilt from event logs on cold start.
 #[derive(Debug, Default)]
 pub struct ExpirationIndex {
     index: HashMap<u64, Vec<B256>>,
@@ -17,7 +17,6 @@ impl ExpirationIndex {
         self.index.entry(block_number).or_default().push(entity_key);
     }
 
-    /// Called on delete/update to cancel a pending expiration.
     pub fn remove(&mut self, block_number: u64, entity_key: &B256) {
         if let Some(keys) = self.index.get_mut(&block_number) {
             keys.retain(|k| k != entity_key);
@@ -53,7 +52,7 @@ impl ExpirationIndex {
 
     /// Cold-start rebuild: scan the last `MAX_BTL` blocks of create/update/extend
     /// logs and repopulate the index. Caller must pre-filter to only alive
-    /// entities with their latest expiration — duplicates or stale entries here
+    /// entities with their latest expiration - duplicates or stale entries here
     /// are consensus bugs.
     pub fn rebuild_from_logs(&mut self, logs: impl Iterator<Item = (B256, u64)>) {
         for (entity_key, expires_at_block) in logs {
