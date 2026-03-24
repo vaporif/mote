@@ -155,3 +155,7 @@ mote/crates/
 ├── mote-analytics/      # Separate binary: DataFusion + Flight SQL + entity RPC
 └── mote-node/           # Node binary: reth NodeBuilder + custom executor + ExEx
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
