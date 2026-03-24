@@ -23,6 +23,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Dmytro Onypko <vaporif@proton.me>"]
+description = "Ephemeral entity layer for Ethereum"
+repository = "https://github.com/vaporif/mote"
+readme = "README.md"
+keywords = ["ethereum", "reth", "ephemeral", "storage"]
+categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
 alloy-primitives = "1.5"
