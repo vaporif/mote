@@ -86,13 +86,15 @@ Also looked at:
 
 5. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index (`HashMap<BlockNumber, Vec<EntityKey>>`) and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
 
-## What's different from GolemBase
+## Relationship to GolemBase
 
-Mote is a ground-up rewrite of [GolemBase](https://github.com/ArkivNetwork/golembase-op-geth) (also called Arkiv), an op-geth fork with ~5,900 lines of custom Go. We kept the ideas (magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations) and threw out the implementation.
+Mote wouldn't exist without [GolemBase](https://github.com/ArkivNetwork/golembase-op-geth) (also called Arkiv). The GolemBase team figured out the core design - magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations. That's the hard part, and we're building directly on their ideas.
+
+The reason for a rewrite rather than a fork: GolemBase is an op-geth fork , and Optimism is phasing out op-geth in favor of reth. A geth fork is a dead end. Mote reimplements the same concepts as a reth plugin so it can stay on the supported execution client going forward.
 
 | | GolemBase | Mote | Why |
 |---|---|---|---|
-| Base | op-geth fork (~5,900 lines) | reth plugin (BlockExecutor + ExEx) | Forks die when upstream moves. reth's trait system lets us extend without forking. |
+| Base | op-geth fork  | reth plugin (BlockExecutor + ExEx) | See above. |
 | On-chain cost | ~96 bytes/entity (3 slots) | 64 bytes/entity (2 slots) | Moved the expiration index off-chain. 33% cheaper per entity, forever. |
 | Content integrity | None | 32-byte content hash | Without it, a sequencer can serve fake data and nobody can prove it |
 | Query engine | SQLite (in-process goroutine) | DataFusion (separate process, Arrow streaming) | See [Why Arrow + DataFusion](#why-arrow--datafusion-not-sqlite) |
