@@ -12,7 +12,7 @@ Think intent protocols (UniswapX/CoW), ephemeral registries, oracle price feeds 
 
 ## Relationship to GolemBase
 
-Mote wouldn't exist without [GolemBase](https://github.com/ArkivNetwork/golembase-op-geth) (also called Arkiv). The GolemBase team designed the core model - magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations.
+Mote wouldn't exist without [GolemBase](https://github.com/Arkiv-Network/arkiv-op-geth) (also called Arkiv). The GolemBase team designed the core model - magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations.
 
 Why rewrite instead of fork: GolemBase is an op-geth fork, and Optimism is phasing out op-geth in favor of reth. A geth fork is a dead end. Mote takes the same ideas and implements them as a reth plugin.
 
