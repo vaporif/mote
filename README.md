@@ -32,36 +32,62 @@ Beyond the base change, Mote also fixes a few things:
 
 ## Architecture
 
-```
-mote-node (reth + OP Stack L3)
-┌──────────────────────────────────────────────────┐
-│                                                  │
-│  mote-engine (Custom BlockExecutor)              │
-│  ┌────────────────────────────────────────────┐  │
-│  │  Wraps EthBlockExecutorFactory             │  │
-│  │  Intercepts txs to PROCESSOR_ADDRESS       │  │
-│  │  Entity CRUD → trie writes (64 bytes)      │  │
-│  │  Expiration housekeeping (pre-execution)   │  │
-│  │  Emits lifecycle event logs                │  │
-│  └────────────────────────────────────────────┘  │
-│                                                  │
-│  mote-exex (ExEx)                                │
-│  ┌────────────────────────────────────────────┐  │
-│  │  Receives ExExNotification (commit/reorg)  │  │
-│  │  Entity event logs → Arrow RecordBatch     │  │
-│  │  Streams via Arrow IPC (unix socket)       │──┼──► mote-analytics
-│  │  Writes nothing, queries nothing           │  │
-│  └────────────────────────────────────────────┘  │
-│                                                  │
-└──────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph node["mote-node (reth + OP Stack L3)"]
+        direction TB
 
-mote-analytics (separate process)
-┌──────────────────────────────────────────────────┐
-│  In-memory Arrow tables (all live entities)      │
-│  DataFusion query engine                         │
-│  Flight SQL server (Grafana, DBeaver, notebooks) │
-│  Entity query RPC (JSON-RPC)                     │
-└──────────────────────────────────────────────────┘
+        subgraph engine["mote-engine (BlockExecutor)"]
+            tx_in[/"User tx"/]
+            check{To processor<br/>address?}
+            crud["Entity CRUD<br/>trie writes (64 bytes)<br/>+ event logs"]
+            evm["Standard EVM<br/>execution"]
+            expire["Expiration cleanup<br/>(pre-execution)"]
+
+            tx_in --> check
+            check -->|yes| crud
+            check -->|no| evm
+            expire -.->|runs before<br/>each block| crud
+        end
+
+        subgraph exex["mote-exex (ExEx)"]
+            notify["ExExNotification<br/>(commit/reorg)"]
+            arrow["Entity event logs<br/>→ Arrow RecordBatch"]
+            notify --> arrow
+        end
+
+        crud -->|committed block| notify
+    end
+
+    subgraph analytics["mote-analytics (separate process)"]
+        mem["In-memory Arrow tables<br/>(all live entities)"]
+        df["DataFusion query engine"]
+        flight["Flight SQL server"]
+        rpc["JSON-RPC endpoint"]
+        mem --> df
+        df --> flight
+        df --> rpc
+    end
+
+    arrow -->|Arrow IPC<br/>unix socket| mem
+
+    subgraph clients["Clients"]
+        grafana["Grafana"]
+        dbeaver["DBeaver"]
+        jupyter["Jupyter"]
+        app["dApps"]
+    end
+
+    flight --> grafana
+    flight --> dbeaver
+    flight --> jupyter
+    rpc --> app
+
+    style node fill:#f0f4f8,stroke:#4a6785,color:#1a2a3a
+    style engine fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
+    style exex fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
+    style analytics fill:#e8f5e9,stroke:#2e7d32,color:#1a2a3a
+    style clients fill:#fff3e0,stroke:#e65100,color:#1a2a3a
 ```
 
 `mote-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...6d6f7465`, ASCII "mote") get intercepted as entity operations - create, update, delete, extend. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
