@@ -58,25 +58,24 @@ Three components, two processes.
 
 If the query service OOMs or DataFusion panics, blocks keep getting produced. The two things are completely independent. You can upgrade or restart the query service without touching the node.
 
-### Why Arrow + DataFusion
+### Why Arrow + DataFusion (not SQLite)
 
-GolemBase uses SQLite fed by a fire-and-forget goroutine. If that goroutine dies, queries silently serve stale data. No health check, no recovery, no way for a client to know the data is hours old. The SQLite dependency itself is an obscure v0.0.7 bitmap store library with no real community behind it.
+The strongest argument for this stack: Arrow is the in-memory format at every stage. The ExEx produces RecordBatches, the query service stores RecordBatches, DataFusion queries RecordBatches. No serialization boundaries, no format conversion, no copying. Data flows from block commit to query result as contiguous columnar memory.
 
-Mote uses Apache Arrow as the data format and DataFusion as the query engine. The main thing that makes this work well: Arrow is the in-memory format at every stage. The ExEx produces RecordBatches, the query service stores RecordBatches, DataFusion queries RecordBatches. No serialization step between any of these, no copying data between formats.
-
-On top of that:
-
-- Rust native, no C/C++ FFI. `cargo build` just works.
-- Apache 2.0 licensed, same as reth
-- `datafusion-flight-sql-server` gives Flight SQL out of the box - Grafana, DBeaver, Tableau, Jupyter all connect with standard JDBC/ODBC drivers, no adapter code needed
-- DataFusion's `TableProvider` trait maps to the entity table naturally. Implement one trait, get full SQL.
-- Python clients connect with 3 lines via `pyarrow.flight`. The format is the API - no custom SDK needed for basic reads.
-- Co-evolves with Arrow since it's part of the same Apache project
+| | SQLite (GolemBase) | DataFusion + Arrow (Mote) |
+|---|---|---|
+| Process isolation | In-process goroutine. Crashes silently, serves stale data with no health check or recovery. | Separate process. Query service can crash, restart, or fall behind without affecting block production. |
+| Data format | Row-oriented. Every ingest requires serialization into SQLite's B-tree pages. | Columnar Arrow RecordBatches end-to-end. Zero-copy from ExEx through query execution. |
+| Failure mode | Fire-and-forget. No way for a client to know the data is hours old. | Explicit stream consumption. Analytics process knows exactly which block it's caught up to. |
+| FFI / build | C dependency. GolemBase uses an obscure v0.0.7 bitmap store library with no real community behind it. | Pure Rust. `cargo build` just works, no C/C++ FFI. |
+| Client ecosystem | Custom JSON-RPC only. Every consumer needs a bespoke client. | Flight SQL out of the box via `datafusion-flight-sql-server`. Grafana, DBeaver, Tableau, Jupyter connect with standard JDBC/ODBC drivers. Python clients connect with 3 lines via `pyarrow.flight` - the format is the API. |
+| Extensibility | Ad-hoc SQL schema, manual query plumbing. | DataFusion's `TableProvider` trait maps to the entity table naturally. Implement one trait, get full SQL with pushdown filters. |
+| License | Varies by binding | Apache 2.0, same as reth. Co-evolves with Arrow as part of the same Apache project. |
 
 Evaluated and rejected:
 
 - DuckDB embedded in reth - complex C++ engine sitting in the consensus path is a DoS vector. If it crashes, reth crashes. Adds real binary size too.
-- SpacetimeDB - can't embed it, RAM-only, BSL license
+- SpacetimeDB - embedding adds significant complexity to the consensus path, and the added abstraction layer introduces latency that defeats the purpose. RAM-only with no spillover. BSL license.
 - ClickHouse via chdb-rust - experimental bindings, 300MB binary size
 - SurrealDB - BSL license
 - Parquet files written by ExEx - duplicates data, reads are always stale, inflexible
