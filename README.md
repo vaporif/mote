@@ -27,7 +27,6 @@ Beyond the base change, Mote also fixes a few things:
 | Compression | Brotli per-tx | None | OP batcher already compresses. Per-tx Brotli has a decompression bomb in the txpool path (`io.ReadAll` with no size limit). |
 | MAX_BTL | Not enforced | Enforced at txpool + execution | Without it, entities live forever. The "ephemeral" thing falls apart. |
 | Extend | Permissionless, no cap | Permissionless, capped at MAX_BTL | GolemBase lets anyone extend any entity to infinity |
-| Gas | Zero (hardcoded `GasUsed: 0`) | Proportional to cost (planned) | Zero gas = free operations = DoS |
 | ChangeOwner | Supported | Removed | Delete + recreate is simpler, doesn't break external key references |
 
 ## Architecture
