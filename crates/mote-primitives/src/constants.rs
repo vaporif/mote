@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, address};
+use alloy_primitives::{address, Address};
 
 /// ASCII "mote" right-aligned. Spec v0.1 has a typo (21 bytes) — we drop
 /// the leading zero byte so it fits 20.

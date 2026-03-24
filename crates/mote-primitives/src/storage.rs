@@ -1,4 +1,4 @@
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{keccak256, B256, U256};
 
 const STORAGE_PREFIX: &[u8] = b"moteEntityMetaData";
 
