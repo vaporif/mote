@@ -6,6 +6,13 @@ use mote_primitives::{
     storage::{compute_content_hash_from_raw, entity_content_hash_key, entity_storage_key},
 };
 
+pub struct RawContentSlices<'a> {
+    pub payload_rlp: &'a [u8],
+    pub content_type_rlp: &'a [u8],
+    pub string_annotations_rlp: &'a [u8],
+    pub numeric_annotations_rlp: &'a [u8],
+}
+
 /// Testable interface for trie reads/writes. The real executor
 /// goes through revm directly.
 pub trait EntityState {

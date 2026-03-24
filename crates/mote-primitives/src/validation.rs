@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::annotations::{is_reserved_annotation_key, is_valid_annotation_key};
 use crate::constants::{
-    MAX_ANNOTATIONS_PER_ENTITY, MAX_ANNOTATION_KEY_SIZE, MAX_ANNOTATION_VALUE_SIZE, MAX_BTL,
+    MAX_ANNOTATION_KEY_SIZE, MAX_ANNOTATION_VALUE_SIZE, MAX_ANNOTATIONS_PER_ENTITY, MAX_BTL,
     MAX_CONTENT_TYPE_SIZE, MAX_OPS_PER_TX, MAX_PAYLOAD_SIZE,
 };
 use crate::error::MoteError;

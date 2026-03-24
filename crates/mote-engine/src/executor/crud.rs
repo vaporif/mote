@@ -1,19 +1,19 @@
 use alloy_evm::block::BlockExecutor as _;
 use alloy_evm::{Database, FromRecoveredTx, FromTxWithEncoded};
-use alloy_primitives::{Log, B256, U256};
+use alloy_primitives::{B256, Log, U256};
 use mote_primitives::{
     constants::PROCESSOR_ADDRESS,
-    entity::{derive_entity_key, EntityMetadata},
-    events::{EntityCreated, EntityDeleted, EntityExtended, EntityUpdated},
+    entity::{EntityMetadata, derive_entity_key},
+    events::{EntityCreated, EntityDeleted, EntityExtended, EntityUpdated, LogAnnotations},
     storage::{compute_content_hash_from_raw, entity_content_hash_key, entity_storage_key},
 };
-use reth_ethereum::evm::primitives::{execute::BlockExecutionError, Evm};
 use reth_ethereum::TransactionSigned;
+use reth_ethereum::evm::primitives::{Evm, execute::BlockExecutionError};
 use revm::database::State;
 use std::collections::HashMap;
 
-use super::decode::{decode_with_raw_slices, DecodedMoteTransaction};
-use super::{commit_storage_changes, mote_err, MoteBlockExecutor};
+use super::decode::{DecodedMoteTransaction, decode_with_raw_slices};
+use super::{MoteBlockExecutor, commit_storage_changes, mote_err};
 
 use super::{MOTE_GAS_PER_CREATE, MOTE_GAS_PER_DELETE, MOTE_GAS_PER_EXTEND, MOTE_GAS_PER_UPDATE};
 
@@ -34,9 +34,9 @@ impl<'db, DB, E> MoteBlockExecutor<'_, E>
 where
     DB: Database + 'db,
     E: Evm<
-        DB = &'db mut State<DB>,
-        Tx: FromRecoveredTx<TransactionSigned> + FromTxWithEncoded<TransactionSigned>,
-    >,
+            DB = &'db mut State<DB>,
+            Tx: FromRecoveredTx<TransactionSigned> + FromTxWithEncoded<TransactionSigned>,
+        >,
 {
     pub(super) fn execute_mote_crud(
         &mut self,
@@ -124,7 +124,7 @@ where
             acc.exp_changes
                 .push(ExpirationChange::Insert(expires_at, entity_key));
 
-            let (ann_keys_s, ann_vals_s, ann_keys_n, ann_vals_n) =
+            let annotations =
                 unzip_annotations(&create.string_annotations, &create.numeric_annotations);
 
             acc.logs.push(EntityCreated::new_log(
@@ -134,10 +134,7 @@ where
                 expires_at,
                 create.content_type.clone(),
                 create.payload.clone().into(),
-                ann_keys_s,
-                ann_vals_s,
-                ann_keys_n,
-                ann_vals_n,
+                annotations,
             ));
 
             acc.gas_used += MOTE_GAS_PER_CREATE;
@@ -183,7 +180,7 @@ where
             acc.exp_changes
                 .push(ExpirationChange::Insert(new_expires, update.entity_key));
 
-            let (ann_keys_s, ann_vals_s, ann_keys_n, ann_vals_n) =
+            let annotations =
                 unzip_annotations(&update.string_annotations, &update.numeric_annotations);
 
             acc.logs.push(EntityUpdated::new_log(
@@ -194,10 +191,7 @@ where
                 new_expires,
                 update.content_type.clone(),
                 update.payload.clone().into(),
-                ann_keys_s,
-                ann_vals_s,
-                ann_keys_n,
-                ann_vals_n,
+                annotations,
             ));
 
             acc.gas_used += MOTE_GAS_PER_UPDATE;
@@ -284,14 +278,19 @@ where
 fn unzip_annotations(
     string_annotations: &[mote_primitives::transaction::StringAnnotationWire],
     numeric_annotations: &[mote_primitives::transaction::NumericAnnotationWire],
-) -> (Vec<String>, Vec<String>, Vec<String>, Vec<u64>) {
-    let (keys_s, vals_s) = string_annotations
+) -> LogAnnotations {
+    let (string_keys, string_values) = string_annotations
         .iter()
         .map(|a| (a.key.clone(), a.value.clone()))
         .unzip();
-    let (keys_n, vals_n) = numeric_annotations
+    let (numeric_keys, numeric_values) = numeric_annotations
         .iter()
         .map(|a| (a.key.clone(), a.value))
         .unzip();
-    (keys_s, vals_s, keys_n, vals_n)
+    LogAnnotations {
+        string_keys,
+        string_values,
+        numeric_keys,
+        numeric_values,
+    }
 }

@@ -1,4 +1,4 @@
-use alloy_primitives::{keccak256, Address, B256};
+use alloy_primitives::{Address, B256, keccak256};
 
 pub type EntityKey = B256;
 

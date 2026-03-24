@@ -1,5 +1,12 @@
-use alloy_primitives::{Address, Bytes, Log, B256};
-use alloy_sol_types::{sol, SolEvent};
+use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_sol_types::{SolEvent, sol};
+
+pub struct LogAnnotations {
+    pub string_keys: Vec<String>,
+    pub string_values: Vec<String>,
+    pub numeric_keys: Vec<String>,
+    pub numeric_values: Vec<u64>,
+}
 
 sol! {
     event EntityCreated(
@@ -45,7 +52,6 @@ sol! {
 }
 
 impl EntityCreated {
-    #[allow(clippy::too_many_arguments)]
     pub fn new_log(
         address: Address,
         entity_key: B256,
@@ -53,10 +59,7 @@ impl EntityCreated {
         expires_at: u64,
         content_type: String,
         payload: Bytes,
-        string_annotation_keys: Vec<String>,
-        string_annotation_values: Vec<String>,
-        numeric_annotation_keys: Vec<String>,
-        numeric_annotation_values: Vec<u64>,
+        annotations: LogAnnotations,
     ) -> Log {
         let event = Self {
             entity_key,
@@ -64,10 +67,10 @@ impl EntityCreated {
             expires_at,
             content_type,
             payload,
-            string_annotation_keys,
-            string_annotation_values,
-            numeric_annotation_keys,
-            numeric_annotation_values,
+            string_annotation_keys: annotations.string_keys,
+            string_annotation_values: annotations.string_values,
+            numeric_annotation_keys: annotations.numeric_keys,
+            numeric_annotation_values: annotations.numeric_values,
         };
         Log {
             address,
@@ -77,7 +80,6 @@ impl EntityCreated {
 }
 
 impl EntityUpdated {
-    #[allow(clippy::too_many_arguments)]
     pub fn new_log(
         address: Address,
         entity_key: B256,
@@ -86,10 +88,7 @@ impl EntityUpdated {
         new_expires_at: u64,
         content_type: String,
         payload: Bytes,
-        string_annotation_keys: Vec<String>,
-        string_annotation_values: Vec<String>,
-        numeric_annotation_keys: Vec<String>,
-        numeric_annotation_values: Vec<u64>,
+        annotations: LogAnnotations,
     ) -> Log {
         let event = Self {
             entity_key,
@@ -98,10 +97,10 @@ impl EntityUpdated {
             new_expires_at,
             content_type,
             payload,
-            string_annotation_keys,
-            string_annotation_values,
-            numeric_annotation_keys,
-            numeric_annotation_values,
+            string_annotation_keys: annotations.string_keys,
+            string_annotation_values: annotations.string_values,
+            numeric_annotation_keys: annotations.numeric_keys,
+            numeric_annotation_values: annotations.numeric_values,
         };
         Log {
             address,
@@ -175,10 +174,12 @@ mod tests {
             42,
             "text/plain".into(),
             Bytes::from_static(b"hello"),
-            vec!["k1".into()],
-            vec!["v1".into()],
-            vec!["n1".into()],
-            vec![100],
+            LogAnnotations {
+                string_keys: vec!["k1".into()],
+                string_values: vec!["v1".into()],
+                numeric_keys: vec!["n1".into()],
+                numeric_values: vec![100],
+            },
         );
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         // Should have 3 topics: selector + entity_key + owner
@@ -223,10 +224,12 @@ mod tests {
             20,
             "application/json".into(),
             Bytes::from_static(b"updated"),
-            vec!["k1".into()],
-            vec!["v1".into()],
-            vec!["n1".into()],
-            vec![200],
+            LogAnnotations {
+                string_keys: vec!["k1".into()],
+                string_values: vec!["v1".into()],
+                numeric_keys: vec!["n1".into()],
+                numeric_values: vec![200],
+            },
         );
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         assert_eq!(log.data.topics().len(), 3);
