@@ -19,8 +19,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: Lint
+  checks:
+    name: Checks
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,7 +35,7 @@ jobs:
           name: mote
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: Lint
+      - name: Nix flake checks
         run: nix flake check
 
   clippy:
