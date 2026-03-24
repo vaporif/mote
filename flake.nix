@@ -1,32 +1,153 @@
 {
-  description = "Rust project";
-
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
-    devshells.url = "github:vaporif/nix-devshells";
-    devshells.inputs.nixpkgs.follows = "nixpkgs";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs = {
+    self,
     nixpkgs,
-    devshells,
+    fenix,
+    crane,
     ...
   }: let
     systems = ["x86_64-linux" "aarch64-darwin"];
-    forAllSystems = nixpkgs.lib.genAttrs systems;
-  in {
-    formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.alejandra);
+    forAllSystems = f:
+      nixpkgs.lib.genAttrs systems (system:
+        f {
+          pkgs = nixpkgs.legacyPackages.${system};
+          fenixPkgs = fenix.packages.${system};
+          craneLib =
+            (crane.mkLib nixpkgs.legacyPackages.${system}).overrideToolchain
+            fenix.packages.${system}.stable.toolchain;
+        });
 
-    devShells = forAllSystems (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      baseShell = devshells.devShells.${system}.rust;
-    in {
-      default = pkgs.mkShell {
-        inputsFrom = [baseShell];
-        nativeBuildInputs = [pkgs.llvmPackages.clang pkgs.llvmPackages.libclang];
+    perSystem = forAllSystems ({
+      pkgs,
+      fenixPkgs,
+      craneLib,
+    }: let
+      src = craneLib.cleanCargoSource ./.;
+
+      commonArgs = {
+        inherit src;
+        pname = "mote";
+        strictDeps = true;
+        nativeBuildInputs =
+          [
+            pkgs.pkg-config
+            pkgs.llvmPackages.clang
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.openssl
+          ];
+        buildInputs =
+          pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.openssl
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
+            pkgs.apple-sdk_26
+          ];
         LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-        BINDGEN_EXTRA_CLANG_ARGS = "-isysroot ${pkgs.apple-sdk_26.sdkroot}";
+      };
+
+      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+      mote = craneLib.buildPackage (commonArgs
+        // {
+          inherit cargoArtifacts;
+        });
+
+      toolchain = fenixPkgs.stable.withComponents [
+        "cargo"
+        "clippy"
+        "rustc"
+        "rustfmt"
+        "rust-src"
+        "rust-analyzer"
+      ];
+    in {
+      packages = {
+        default = mote;
+      };
+
+      checks = {
+        fmt = craneLib.cargoFmt {
+          inherit src;
+          pname = "mote";
+        };
+
+        clippy = craneLib.cargoClippy (commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--workspace -- -D warnings";
+          });
+
+        nextest = craneLib.cargoNextest (commonArgs
+          // {
+            inherit cargoArtifacts;
+          });
+
+        taplo =
+          pkgs.runCommand "taplo-check" {
+            nativeBuildInputs = [pkgs.taplo];
+          } ''
+            cd ${self}
+            taplo check
+            touch $out
+          '';
+
+        typos =
+          pkgs.runCommand "typos-check" {
+            nativeBuildInputs = [pkgs.typos];
+          } ''
+            cd ${self}
+            typos
+            touch $out
+          '';
+
+        nix-fmt =
+          pkgs.runCommand "nix-fmt-check" {
+            nativeBuildInputs = [pkgs.alejandra];
+          } ''
+            alejandra --check ${self}/flake.nix
+            touch $out
+          '';
+      };
+
+      devShells.default = pkgs.mkShell {
+        packages =
+          [
+            toolchain
+            pkgs.cargo-nextest
+            pkgs.taplo
+            pkgs.typos
+            pkgs.llvmPackages.clang
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.pkg-config
+            pkgs.openssl
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.apple-sdk_26
+          ];
+
+        env = {
+          RUST_BACKTRACE = "1";
+          RUST_SRC_PATH = "${toolchain}/lib/rustlib/src/rust/library";
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+        };
       };
     });
+  in {
+    formatter = nixpkgs.lib.genAttrs systems (system: nixpkgs.legacyPackages.${system}.alejandra);
+    packages = nixpkgs.lib.mapAttrs (_: s: s.packages) perSystem;
+    checks = nixpkgs.lib.mapAttrs (_: s: s.checks) perSystem;
+    devShells = nixpkgs.lib.mapAttrs (_: s: s.devShells) perSystem;
   };
 }

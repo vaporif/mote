@@ -1,51 +1,39 @@
-set dotenv-load
-
-# Default task lists all available tasks
 default:
-    just --list
+    @just --list
 
-# Build the project
-[group('build')]
+check: clippy test check-fmt lint-actions
+
+fmt: fmt-rust fmt-toml fmt-nix
+
 build *args:
-    cargo build {{args}}
+    cargo build --workspace {{args}}
 
-# Build release
-[group('build')]
-build-release:
-    cargo build --release
+clippy:
+    cargo clippy --workspace -- -D warnings
 
-# Run tests
-[group('test')]
-test *args:
-    cargo nextest run {{args}}
+test:
+    cargo nextest run --workspace
 
-# Lint code
-[group('lint')]
-lint:
+check-fmt:
     cargo fmt --all -- --check
-    cargo clippy --all-targets --all-features -- -D warnings
 
-# Lint GitHub Actions
-[group('lint')]
-lint-actions:
-    actionlint
-
-# Format code
-[group('lint')]
-fmt:
+fmt-rust:
     cargo fmt --all
 
-# Clean build artifacts
-[group('clean')]
-clean:
-    cargo clean
+lint-toml:
+    taplo check
 
-# Run the project
-[group('run')]
-run *args:
-    cargo run {{args}}
+fmt-toml:
+    taplo fmt
 
-# Watch for changes
-[group('run')]
-watch:
-    bacon
+check-nix-fmt:
+    alejandra --check flake.nix
+
+fmt-nix:
+    alejandra flake.nix
+
+check-typos:
+    typos
+
+lint-actions:
+    actionlint
