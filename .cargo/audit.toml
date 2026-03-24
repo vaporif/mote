@@ -1,6 +1,7 @@
 [advisories]
 # Transitive deps from reth — not under our control
 ignore = [
+    "RUSTSEC-2025-0055", # tracing-subscriber 0.2.25 via ark-std — can't bump
     "RUSTSEC-2025-0141", # bincode unmaintained
     "RUSTSEC-2024-0388", # derivative unmaintained
     "RUSTSEC-2024-0436", # paste unmaintained
