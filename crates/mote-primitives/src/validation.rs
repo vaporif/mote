@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::annotations::{is_reserved_annotation_key, is_valid_annotation_key};
 use crate::constants::{
-    MAX_ANNOTATION_KEY_SIZE, MAX_ANNOTATION_VALUE_SIZE, MAX_ANNOTATIONS_PER_ENTITY, MAX_BTL,
+    MAX_ANNOTATIONS_PER_ENTITY, MAX_ANNOTATION_KEY_SIZE, MAX_ANNOTATION_VALUE_SIZE, MAX_BTL,
     MAX_CONTENT_TYPE_SIZE, MAX_OPS_PER_TX, MAX_PAYLOAD_SIZE,
 };
 use crate::error::MoteError;
@@ -31,7 +31,6 @@ fn validate_payload(payload: &[u8]) -> Result<(), MoteError> {
     Ok(())
 }
 
-/// Validate a single annotation key: regex, reserved prefix, and length.
 fn validate_annotation_key(key: &str) -> Result<(), MoteError> {
     if is_reserved_annotation_key(key) {
         return Err(MoteError::ReservedAnnotationKey(key.to_owned()));

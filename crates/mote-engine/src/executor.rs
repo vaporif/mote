@@ -43,7 +43,6 @@ use std::{
 
 pub type SharedExpirationIndex = Arc<Mutex<ExpirationIndex>>;
 
-/// Plugs into reth's node builder to wire up `MoteEvmConfig`.
 #[derive(Debug, Clone)]
 pub struct MoteExecutorBuilder {
     expiration_index: SharedExpirationIndex,
@@ -70,8 +69,7 @@ where
     }
 }
 
-/// Thin wrapper around `EthEvmConfig` that swaps in `MoteBlockExecutor`
-/// for block execution while delegating everything else.
+/// Wraps `EthEvmConfig`, swaps in `MoteBlockExecutor` for block execution.
 #[derive(Debug, Clone)]
 pub struct MoteEvmConfig {
     inner: EthEvmConfig,
@@ -283,7 +281,6 @@ where
         Tx: FromRecoveredTx<TransactionSigned> + FromTxWithEncoded<TransactionSigned>,
     >,
 {
-    /// Decode calldata, run all CRUD ops, commit state, return (logs, gas).
     fn execute_mote_crud(
         &mut self,
         calldata: &[u8],
@@ -613,7 +610,7 @@ pub struct DecodedMoteTransaction<'a> {
     pub update_slices: Vec<RawContentSlices<'a>>,
 }
 
-/// Advance past one RLP item, returning the full byte range (header + payload).
+/// Skip one RLP item, return its raw bytes (header + payload).
 fn skip_rlp_item<'a>(data: &'a [u8], cursor: &mut &'a [u8]) -> Result<&'a [u8], alloy_rlp::Error> {
     use alloy_rlp::Header;
     let start = data.len() - cursor.len();

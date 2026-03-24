@@ -6,10 +6,8 @@ use mote_primitives::{
     storage::{compute_content_hash_from_raw, entity_content_hash_key, entity_storage_key},
 };
 
-/// Abstraction over trie state reads/writes for unit testing.
-/// The actual executor uses revm's Database/DatabaseCommit directly.
-///
-/// Deletion is expressed as `write_slot(key, U256::ZERO)` per EVM semantics.
+/// Testable interface for trie reads/writes. The real executor
+/// goes through revm directly.
 pub trait EntityState {
     fn read_slot(&self, key: &B256) -> Option<U256>;
     fn write_slot(&mut self, key: B256, value: U256);

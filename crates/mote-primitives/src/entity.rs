@@ -2,7 +2,7 @@ use alloy_primitives::{keccak256, Address, B256};
 
 pub type EntityKey = B256;
 
-/// On-chain metadata stored in trie slot 1 (32 bytes).
+/// Packed into 32 bytes in the trie (slot 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntityMetadata {
     pub owner: Address,
@@ -10,7 +10,7 @@ pub struct EntityMetadata {
 }
 
 impl EntityMetadata {
-    /// Encode to 32 bytes: owner (20) || reserved (4) || expires_at_block (8)
+    /// `owner (20) || reserved (4) || expires_at_block (8)`
     pub fn encode(&self) -> [u8; 32] {
         let mut buf = [0u8; 32];
         buf[0..20].copy_from_slice(self.owner.as_slice());
@@ -31,8 +31,7 @@ impl EntityMetadata {
     }
 }
 
-/// Derive entity key per spec:
-/// `keccak256(tx_hash || len(payload) as u32 || payload || left_pad_32(operation_index))`
+/// `keccak256(tx_hash || len(payload) as u32 || payload || left_pad_32(op_index))`
 pub fn derive_entity_key(tx_hash: &B256, payload: &[u8], operation_index: u32) -> EntityKey {
     let mut preimage = Vec::with_capacity(32 + 4 + payload.len() + 32);
     preimage.extend_from_slice(tx_hash.as_slice());

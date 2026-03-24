@@ -2,8 +2,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-/// Annotation key regex: starts with Unicode letter or underscore,
-/// followed by Unicode letters, digits, or underscores.
+/// Starts with a letter or underscore, then letters, digits, or underscores.
 static ANNOTATION_KEY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}_][\p{L}\p{N}_]*$").expect("valid regex"));
 

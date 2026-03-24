@@ -1,10 +1,7 @@
 use alloy_primitives::B256;
 use std::collections::HashMap;
 
-/// In-memory mapping of block_number -> Vec<EntityKey> for expiration tracking.
-///
-/// Not stored on-chain. Rebuilt from event logs on cold start by scanning
-/// the last MAX_BTL blocks.
+/// Not persisted — rebuilt from event logs on cold start.
 #[derive(Debug, Default)]
 pub struct ExpirationIndex {
     index: HashMap<u64, Vec<B256>>,
@@ -19,8 +16,7 @@ impl ExpirationIndex {
         self.index.entry(block_number).or_default().push(entity_key);
     }
 
-    /// Remove a specific entity from a block's expiration set.
-    /// Used when an entity is deleted or updated before expiration.
+    /// Called on delete/update to cancel a pending expiration.
     pub fn remove(&mut self, block_number: u64, entity_key: &B256) {
         if let Some(keys) = self.index.get_mut(&block_number) {
             keys.retain(|k| k != entity_key);
@@ -30,13 +26,11 @@ impl ExpirationIndex {
         }
     }
 
-    /// Get entities scheduled to expire at the given block.
     pub fn get_expired(&self, block_number: u64) -> Option<&[B256]> {
         self.index.get(&block_number).map(|v| v.as_slice())
     }
 
-    /// Drain all entities scheduled to expire at the given block.
-    /// Returns them sorted by entity key (deterministic ordering for consensus).
+    /// Sorted for deterministic consensus ordering.
     pub fn drain_block(&mut self, block_number: u64) -> Vec<B256> {
         let mut keys = self.index.remove(&block_number).unwrap_or_default();
         keys.sort();

@@ -10,14 +10,12 @@ pub struct Create {
     pub numeric_annotations: Vec<NumericAnnotationWire>,
 }
 
-/// Wire format for a single string annotation (key, value).
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StringAnnotationWire {
     pub key: String,
     pub value: String,
 }
 
-/// Wire format for a single numeric annotation (key, value).
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct NumericAnnotationWire {
     pub key: String,

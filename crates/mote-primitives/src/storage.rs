@@ -1,8 +1,7 @@
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{keccak256, B256, U256};
 
 const STORAGE_PREFIX: &[u8] = b"moteEntityMetaData";
 
-/// Compute the trie storage key for an entity's metadata slot (slot 1).
 /// `keccak256("moteEntityMetaData" || entity_key)`
 pub fn entity_storage_key(entity_key: &B256) -> B256 {
     let mut preimage = Vec::with_capacity(STORAGE_PREFIX.len() + 32);
@@ -11,22 +10,17 @@ pub fn entity_storage_key(entity_key: &B256) -> B256 {
     keccak256(&preimage)
 }
 
-/// Compute the trie storage key for an entity's content hash slot (slot 2).
-/// This is `entity_storage_key + 1`.
+/// `entity_storage_key + 1`
 pub fn entity_content_hash_key(entity_key: &B256) -> B256 {
     let meta_key = entity_storage_key(entity_key);
     let num = U256::from_be_bytes(meta_key.0) + U256::from(1);
     B256::from(num.to_be_bytes())
 }
 
-/// Compute content hash from raw wire bytes.
+/// `keccak256(rlp(payload) || rlp(content_type) || rlp(string_anns) || rlp(numeric_anns))`
 ///
-/// **Actual formula:**
-/// `keccak256(rlp(payload) || rlp(content_type) || rlp(string_annotations) || rlp(numeric_annotations))`
-///
-/// All four inputs are contiguous sub-slices of the transaction calldata's RLP structure.
-/// They must NEVER be decoded and re-encoded — non-canonical RLP encoding would
-/// produce different hashes on different nodes.
+/// Inputs must be raw calldata slices — re-encoding would break cross-node
+/// determinism if the original RLP was non-canonical.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
     content_type_rlp: &[u8],
