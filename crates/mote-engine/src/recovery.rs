@@ -84,19 +84,21 @@ where
 
     for block_num in start_block..=tip_block {
         if let Some(receipts) = provider.receipts_by_block(BlockHashOrNumber::Number(block_num))? {
-            for receipt in &receipts {
-                for log in receipt.logs() {
-                    if log.address != PROCESSOR_ADDRESS {
-                        continue;
+            let events = receipts
+                .iter()
+                .flat_map(|receipt| receipt.logs())
+                .filter(|log| log.address == PROCESSOR_ADDRESS)
+                .filter_map(|log| match parse_log(log) {
+                    Ok(Some(event)) => Some(event),
+                    Ok(None) => None,
+                    Err(e) => {
+                        debug!(block_num, ?e, "skipping unparseable log during recovery");
+                        None
                     }
-                    match parse_log(log) {
-                        Ok(Some(event)) => tracker.apply_event(&event),
-                        Ok(None) => {}
-                        Err(e) => {
-                            debug!(block_num, ?e, "skipping unparseable log during recovery");
-                        }
-                    }
-                }
+                });
+
+            for event in events {
+                tracker.apply_event(&event);
             }
         }
 
