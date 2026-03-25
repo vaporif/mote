@@ -1,0 +1,40 @@
+[package]
+name = "mote-analytics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Query service for Mote ephemeral entity storage"
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+mote-primitives.workspace = true
+
+alloy-primitives.workspace = true
+
+arrow.workspace = true
+tokio = { workspace = true, features = ["signal", "time", "io-util", "rt-multi-thread"] }
+datafusion.workspace = true
+arrow-flight.workspace = true
+tonic.workspace = true
+axum.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+eyre.workspace = true
+color-eyre.workspace = true
+bytes.workspace = true
+futures.workspace = true
+prost = "0.14"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+arrow = { workspace = true, features = ["prettyprint"] }
+alloy-primitives.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
