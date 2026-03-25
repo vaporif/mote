@@ -3,6 +3,7 @@ pub mod constants;
 pub mod entity;
 pub mod error;
 pub mod events;
+pub mod exex_types;
 pub mod storage;
 pub mod transaction;
 pub mod validation;
