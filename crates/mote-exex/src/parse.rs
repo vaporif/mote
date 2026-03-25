@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, Bytes, Log, B256};
 use alloy_sol_types::SolEvent;
 use mote_primitives::constants::PROCESSOR_ADDRESS;
 use mote_primitives::events::{
@@ -45,89 +45,107 @@ pub enum EntityEvent {
     },
 }
 
-/// Parse a single log into an [`EntityEvent`].
-///
-/// Returns `Ok(None)` if the log address doesn't match [`PROCESSOR_ADDRESS`].
-/// Returns `Err` if the selector is unrecognized or decoding fails.
 #[must_use = "discarding a parse result silently loses events"]
 pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
     if log.address != PROCESSOR_ADDRESS {
         return Ok(None);
     }
 
-    let selector = log
+    let selector = *log
         .data
         .topics()
         .first()
         .ok_or_else(|| eyre::eyre!("log has no topics"))?;
 
-    if *selector == EntityCreated::SIGNATURE_HASH {
-        let decoded = EntityCreated::decode_log_data(&log.data)?;
-        if decoded.string_annotation_keys.len() != decoded.string_annotation_values.len() {
-            eyre::bail!("string annotation key/value length mismatch");
+    match selector {
+        s if s == EntityCreated::SIGNATURE_HASH => {
+            let d = EntityCreated::decode_log_data(&log.data)?;
+            validate_annotations(
+                &d.string_annotation_keys,
+                &d.string_annotation_values,
+                &d.numeric_annotation_keys,
+                &d.numeric_annotation_values,
+            )?;
+            Ok(Some(EntityEvent::Created {
+                entity_key: d.entity_key,
+                owner: d.owner,
+                expires_at: d.expires_at,
+                content_type: d.content_type,
+                payload: d.payload,
+                string_keys: d.string_annotation_keys,
+                string_values: d.string_annotation_values,
+                numeric_keys: d.numeric_annotation_keys,
+                numeric_values: d.numeric_annotation_values,
+            }))
         }
-        if decoded.numeric_annotation_keys.len() != decoded.numeric_annotation_values.len() {
-            eyre::bail!("numeric annotation key/value length mismatch");
+        s if s == EntityUpdated::SIGNATURE_HASH => {
+            let d = EntityUpdated::decode_log_data(&log.data)?;
+            validate_annotations(
+                &d.string_annotation_keys,
+                &d.string_annotation_values,
+                &d.numeric_annotation_keys,
+                &d.numeric_annotation_values,
+            )?;
+            Ok(Some(EntityEvent::Updated {
+                entity_key: d.entity_key,
+                owner: d.owner,
+                old_expires_at: d.old_expires_at,
+                new_expires_at: d.new_expires_at,
+                content_type: d.content_type,
+                payload: d.payload,
+                string_keys: d.string_annotation_keys,
+                string_values: d.string_annotation_values,
+                numeric_keys: d.numeric_annotation_keys,
+                numeric_values: d.numeric_annotation_values,
+            }))
         }
-        Ok(Some(EntityEvent::Created {
-            entity_key: decoded.entity_key,
-            owner: decoded.owner,
-            expires_at: decoded.expires_at,
-            content_type: decoded.content_type,
-            payload: decoded.payload,
-            string_keys: decoded.string_annotation_keys,
-            string_values: decoded.string_annotation_values,
-            numeric_keys: decoded.numeric_annotation_keys,
-            numeric_values: decoded.numeric_annotation_values,
-        }))
-    } else if *selector == EntityUpdated::SIGNATURE_HASH {
-        let decoded = EntityUpdated::decode_log_data(&log.data)?;
-        if decoded.string_annotation_keys.len() != decoded.string_annotation_values.len() {
-            eyre::bail!("string annotation key/value length mismatch");
+        s if s == EntityDeleted::SIGNATURE_HASH => {
+            let d = EntityDeleted::decode_log_data(&log.data)?;
+            Ok(Some(EntityEvent::Deleted {
+                entity_key: d.entity_key,
+                owner: d.owner,
+            }))
         }
-        if decoded.numeric_annotation_keys.len() != decoded.numeric_annotation_values.len() {
-            eyre::bail!("numeric annotation key/value length mismatch");
+        s if s == EntityExpired::SIGNATURE_HASH => {
+            let d = EntityExpired::decode_log_data(&log.data)?;
+            Ok(Some(EntityEvent::Expired {
+                entity_key: d.entity_key,
+                owner: d.owner,
+            }))
         }
-        Ok(Some(EntityEvent::Updated {
-            entity_key: decoded.entity_key,
-            owner: decoded.owner,
-            old_expires_at: decoded.old_expires_at,
-            new_expires_at: decoded.new_expires_at,
-            content_type: decoded.content_type,
-            payload: decoded.payload,
-            string_keys: decoded.string_annotation_keys,
-            string_values: decoded.string_annotation_values,
-            numeric_keys: decoded.numeric_annotation_keys,
-            numeric_values: decoded.numeric_annotation_values,
-        }))
-    } else if *selector == EntityDeleted::SIGNATURE_HASH {
-        let decoded = EntityDeleted::decode_log_data(&log.data)?;
-        Ok(Some(EntityEvent::Deleted {
-            entity_key: decoded.entity_key,
-            owner: decoded.owner,
-        }))
-    } else if *selector == EntityExpired::SIGNATURE_HASH {
-        let decoded = EntityExpired::decode_log_data(&log.data)?;
-        Ok(Some(EntityEvent::Expired {
-            entity_key: decoded.entity_key,
-            owner: decoded.owner,
-        }))
-    } else if *selector == EntityExtended::SIGNATURE_HASH {
-        let decoded = EntityExtended::decode_log_data(&log.data)?;
-        Ok(Some(EntityEvent::Extended {
-            entity_key: decoded.entity_key,
-            old_expires_at: decoded.old_expires_at,
-            new_expires_at: decoded.new_expires_at,
-        }))
-    } else {
-        eyre::bail!("unrecognized event selector: {selector}");
+        s if s == EntityExtended::SIGNATURE_HASH => {
+            let d = EntityExtended::decode_log_data(&log.data)?;
+            Ok(Some(EntityEvent::Extended {
+                entity_key: d.entity_key,
+                old_expires_at: d.old_expires_at,
+                new_expires_at: d.new_expires_at,
+            }))
+        }
+        _ => Ok(None),
     }
+}
+
+fn validate_annotations(
+    str_keys: &[String],
+    str_values: &[String],
+    num_keys: &[String],
+    num_values: &[u64],
+) -> eyre::Result<()> {
+    eyre::ensure!(
+        str_keys.len() == str_values.len(),
+        "string annotation key/value length mismatch"
+    );
+    eyre::ensure!(
+        num_keys.len() == num_values.len(),
+        "numeric annotation key/value length mismatch"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use mote_primitives::constants::PROCESSOR_ADDRESS;
     use mote_primitives::events::{
         EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityUpdated, LogAnnotations,
@@ -285,10 +303,8 @@ mod tests {
     #[test]
     fn skip_unknown_selector() {
         let mut log = make_created_log();
-        // corrupt the selector topic
         log.data.topics_mut()[0] = B256::repeat_byte(0xFF);
-        let result = parse_log(&log);
-        assert!(result.is_err()); // decode error for unknown selector
+        assert!(parse_log(&log).unwrap().is_none());
     }
 
     #[test]

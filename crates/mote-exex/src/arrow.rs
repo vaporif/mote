@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, MapFieldNames, StringBuilder,
-    UInt8Builder, UInt32Builder, UInt64Builder,
+    UInt32Builder, UInt64Builder, UInt8Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -12,7 +12,6 @@ use mote_primitives::exex_types::{BatchOp, EntityEventType};
 
 use crate::parse::EntityEvent;
 
-/// Row wrapper pairing an [`EntityEvent`] with its transaction-level metadata.
 #[derive(Debug, Clone)]
 pub struct EventRow {
     pub event: EntityEvent,
@@ -21,9 +20,14 @@ pub struct EventRow {
     pub log_index: u32,
 }
 
-/// Returns the canonical 16-column Arrow schema for entity event batches.
+static SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| Arc::new(build_schema()));
+
 #[must_use]
-pub fn entity_events_schema() -> Schema {
+pub fn entity_events_schema() -> Arc<Schema> {
+    Arc::clone(&SCHEMA)
+}
+
+fn build_schema() -> Schema {
     Schema::new(vec![
         Field::new("block_number", DataType::UInt64, false),
         Field::new("block_hash", DataType::FixedSizeBinary(32), false),
@@ -78,7 +82,78 @@ pub fn entity_events_schema() -> Schema {
     ])
 }
 
-/// Build a [`RecordBatch`] from a slice of [`EventRow`]s with block-level metadata.
+struct BatchBuilders {
+    block_number: UInt64Builder,
+    block_hash: FixedSizeBinaryBuilder,
+    tx_index: UInt32Builder,
+    tx_hash: FixedSizeBinaryBuilder,
+    log_index: UInt32Builder,
+    event_type: UInt8Builder,
+    entity_key: FixedSizeBinaryBuilder,
+    owner: FixedSizeBinaryBuilder,
+    expires_at: UInt64Builder,
+    old_expires_at: UInt64Builder,
+    content_type: StringBuilder,
+    payload: BinaryBuilder,
+    string_ann: MapBuilder<StringBuilder, StringBuilder>,
+    numeric_ann: MapBuilder<StringBuilder, UInt64Builder>,
+    tip_block: UInt64Builder,
+    op: UInt8Builder,
+}
+
+impl BatchBuilders {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            block_number: UInt64Builder::with_capacity(cap),
+            block_hash: FixedSizeBinaryBuilder::with_capacity(cap, 32),
+            tx_index: UInt32Builder::with_capacity(cap),
+            tx_hash: FixedSizeBinaryBuilder::with_capacity(cap, 32),
+            log_index: UInt32Builder::with_capacity(cap),
+            event_type: UInt8Builder::with_capacity(cap),
+            entity_key: FixedSizeBinaryBuilder::with_capacity(cap, 32),
+            owner: FixedSizeBinaryBuilder::with_capacity(cap, 20),
+            expires_at: UInt64Builder::with_capacity(cap),
+            old_expires_at: UInt64Builder::with_capacity(cap),
+            content_type: StringBuilder::with_capacity(cap, 64),
+            payload: BinaryBuilder::with_capacity(cap, 256),
+            string_ann: MapBuilder::new(
+                Some(map_field_names()),
+                StringBuilder::new(),
+                StringBuilder::new(),
+            ),
+            numeric_ann: MapBuilder::new(
+                Some(map_field_names()),
+                StringBuilder::new(),
+                UInt64Builder::new(),
+            ),
+            tip_block: UInt64Builder::with_capacity(cap),
+            op: UInt8Builder::with_capacity(cap),
+        }
+    }
+
+    fn finish(mut self) -> RecordBatch {
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(self.block_number.finish()),
+            Arc::new(self.block_hash.finish()),
+            Arc::new(self.tx_index.finish()),
+            Arc::new(self.tx_hash.finish()),
+            Arc::new(self.log_index.finish()),
+            Arc::new(self.event_type.finish()),
+            Arc::new(self.entity_key.finish()),
+            Arc::new(self.owner.finish()),
+            Arc::new(self.expires_at.finish()),
+            Arc::new(self.old_expires_at.finish()),
+            Arc::new(self.content_type.finish()),
+            Arc::new(self.payload.finish()),
+            Arc::new(self.string_ann.finish()),
+            Arc::new(self.numeric_ann.finish()),
+            Arc::new(self.tip_block.finish()),
+            Arc::new(self.op.finish()),
+        ];
+        RecordBatch::try_new(Arc::clone(&SCHEMA), columns).expect("columns must match SCHEMA")
+    }
+}
+
 pub fn build_record_batch(
     block_number: u64,
     block_hash: B256,
@@ -86,44 +161,17 @@ pub fn build_record_batch(
     op: BatchOp,
     events: &[EventRow],
 ) -> eyre::Result<RecordBatch> {
-    let len = events.len();
-    let schema = Arc::new(entity_events_schema());
-
-    let mut block_number_builder = UInt64Builder::with_capacity(len);
-    let mut block_hash_builder = FixedSizeBinaryBuilder::with_capacity(len, 32);
-    let mut tx_index_builder = UInt32Builder::with_capacity(len);
-    let mut tx_hash_builder = FixedSizeBinaryBuilder::with_capacity(len, 32);
-    let mut log_index_builder = UInt32Builder::with_capacity(len);
-    let mut event_type_builder = UInt8Builder::with_capacity(len);
-    let mut entity_key_builder = FixedSizeBinaryBuilder::with_capacity(len, 32);
-    let mut owner_builder = FixedSizeBinaryBuilder::with_capacity(len, 20);
-    let mut expires_at_builder = UInt64Builder::with_capacity(len);
-    let mut old_expires_at_builder = UInt64Builder::with_capacity(len);
-    let mut content_type_builder = StringBuilder::with_capacity(len, 64);
-    let mut payload_builder = BinaryBuilder::with_capacity(len, 256);
-    let mut string_ann_builder = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        StringBuilder::new(),
-    );
-    let mut numeric_ann_builder = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        UInt64Builder::new(),
-    );
-    let mut tip_block_builder = UInt64Builder::with_capacity(len);
-    let mut op_builder = UInt8Builder::with_capacity(len);
-
+    let mut b = BatchBuilders::with_capacity(events.len());
     let op_val = op as u8;
 
     for row in events {
-        block_number_builder.append_value(block_number);
-        block_hash_builder.append_value(block_hash.as_slice())?;
-        tx_index_builder.append_value(row.tx_index);
-        tx_hash_builder.append_value(row.tx_hash.as_slice())?;
-        log_index_builder.append_value(row.log_index);
-        tip_block_builder.append_value(tip_block);
-        op_builder.append_value(op_val);
+        b.block_number.append_value(block_number);
+        b.block_hash.append_value(block_hash.as_slice())?;
+        b.tx_index.append_value(row.tx_index);
+        b.tx_hash.append_value(row.tx_hash.as_slice())?;
+        b.log_index.append_value(row.log_index);
+        b.tip_block.append_value(tip_block);
+        b.op.append_value(op_val);
 
         match &row.event {
             EntityEvent::Created {
@@ -137,16 +185,16 @@ pub fn build_record_batch(
                 numeric_keys,
                 numeric_values,
             } => {
-                event_type_builder.append_value(EntityEventType::Created as u8);
-                entity_key_builder.append_value(entity_key.as_slice())?;
-                owner_builder.append_value(owner.as_slice())?;
-                expires_at_builder.append_value(*expires_at);
-                old_expires_at_builder.append_null();
-                content_type_builder.append_value(content_type);
-                payload_builder.append_value(payload.as_ref());
+                b.event_type.append_value(EntityEventType::Created as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_value(owner.as_slice())?;
+                b.expires_at.append_value(*expires_at);
+                b.old_expires_at.append_null();
+                b.content_type.append_value(content_type);
+                b.payload.append_value(payload.as_ref());
 
-                append_string_annotations(&mut string_ann_builder, string_keys, string_values);
-                append_numeric_annotations(&mut numeric_ann_builder, numeric_keys, numeric_values);
+                append_string_annotations(&mut b.string_ann, string_keys, string_values)?;
+                append_numeric_annotations(&mut b.numeric_ann, numeric_keys, numeric_values)?;
             }
             EntityEvent::Updated {
                 entity_key,
@@ -160,149 +208,85 @@ pub fn build_record_batch(
                 numeric_keys,
                 numeric_values,
             } => {
-                event_type_builder.append_value(EntityEventType::Updated as u8);
-                entity_key_builder.append_value(entity_key.as_slice())?;
-                owner_builder.append_value(owner.as_slice())?;
-                expires_at_builder.append_value(*new_expires_at);
-                old_expires_at_builder.append_value(*old_expires_at);
-                content_type_builder.append_value(content_type);
-                payload_builder.append_value(payload.as_ref());
+                b.event_type.append_value(EntityEventType::Updated as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_value(owner.as_slice())?;
+                b.expires_at.append_value(*new_expires_at);
+                b.old_expires_at.append_value(*old_expires_at);
+                b.content_type.append_value(content_type);
+                b.payload.append_value(payload.as_ref());
 
-                append_string_annotations(&mut string_ann_builder, string_keys, string_values);
-                append_numeric_annotations(&mut numeric_ann_builder, numeric_keys, numeric_values);
+                append_string_annotations(&mut b.string_ann, string_keys, string_values)?;
+                append_numeric_annotations(&mut b.numeric_ann, numeric_keys, numeric_values)?;
             }
             EntityEvent::Deleted {
                 entity_key, owner, ..
             } => {
-                event_type_builder.append_value(EntityEventType::Deleted as u8);
-                entity_key_builder.append_value(entity_key.as_slice())?;
-                owner_builder.append_value(owner.as_slice())?;
-                expires_at_builder.append_null();
-                old_expires_at_builder.append_null();
-                content_type_builder.append_null();
-                payload_builder.append_null();
-                string_ann_builder.append(false)?;
-                numeric_ann_builder.append(false)?;
+                b.event_type.append_value(EntityEventType::Deleted as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_value(owner.as_slice())?;
+                append_null_fields(&mut b)?;
             }
             EntityEvent::Expired {
                 entity_key, owner, ..
             } => {
-                event_type_builder.append_value(EntityEventType::Expired as u8);
-                entity_key_builder.append_value(entity_key.as_slice())?;
-                owner_builder.append_value(owner.as_slice())?;
-                expires_at_builder.append_null();
-                old_expires_at_builder.append_null();
-                content_type_builder.append_null();
-                payload_builder.append_null();
-                string_ann_builder.append(false)?;
-                numeric_ann_builder.append(false)?;
+                b.event_type.append_value(EntityEventType::Expired as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_value(owner.as_slice())?;
+                append_null_fields(&mut b)?;
             }
             EntityEvent::Extended {
                 entity_key,
                 old_expires_at,
                 new_expires_at,
             } => {
-                event_type_builder.append_value(EntityEventType::Extended as u8);
-                entity_key_builder.append_value(entity_key.as_slice())?;
-                owner_builder.append_null();
-                expires_at_builder.append_value(*new_expires_at);
-                old_expires_at_builder.append_value(*old_expires_at);
-                content_type_builder.append_null();
-                payload_builder.append_null();
-                string_ann_builder.append(false)?;
-                numeric_ann_builder.append(false)?;
+                b.event_type.append_value(EntityEventType::Extended as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_null();
+                b.expires_at.append_value(*new_expires_at);
+                b.old_expires_at.append_value(*old_expires_at);
+                b.content_type.append_null();
+                b.payload.append_null();
+                b.string_ann.append(false)?;
+                b.numeric_ann.append(false)?;
             }
         }
     }
 
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(block_number_builder.finish()),
-        Arc::new(block_hash_builder.finish()),
-        Arc::new(tx_index_builder.finish()),
-        Arc::new(tx_hash_builder.finish()),
-        Arc::new(log_index_builder.finish()),
-        Arc::new(event_type_builder.finish()),
-        Arc::new(entity_key_builder.finish()),
-        Arc::new(owner_builder.finish()),
-        Arc::new(expires_at_builder.finish()),
-        Arc::new(old_expires_at_builder.finish()),
-        Arc::new(content_type_builder.finish()),
-        Arc::new(payload_builder.finish()),
-        Arc::new(string_ann_builder.finish()),
-        Arc::new(numeric_ann_builder.finish()),
-        Arc::new(tip_block_builder.finish()),
-        Arc::new(op_builder.finish()),
-    ];
-
-    Ok(RecordBatch::try_new(schema, columns)?)
+    Ok(b.finish())
 }
 
-/// Build a single-row watermark batch with `op = 0xFF` and all other fields zeroed/null.
 pub fn build_watermark_batch(tip_block: u64) -> eyre::Result<RecordBatch> {
-    let schema = Arc::new(entity_events_schema());
+    let mut b = BatchBuilders::with_capacity(1);
 
-    let mut block_number_builder = UInt64Builder::with_capacity(1);
-    let mut block_hash_builder = FixedSizeBinaryBuilder::with_capacity(1, 32);
-    let mut tx_index_builder = UInt32Builder::with_capacity(1);
-    let mut tx_hash_builder = FixedSizeBinaryBuilder::with_capacity(1, 32);
-    let mut log_index_builder = UInt32Builder::with_capacity(1);
-    let mut event_type_builder = UInt8Builder::with_capacity(1);
-    let mut entity_key_builder = FixedSizeBinaryBuilder::with_capacity(1, 32);
-    let mut owner_builder = FixedSizeBinaryBuilder::with_capacity(1, 20);
-    let mut expires_at_builder = UInt64Builder::with_capacity(1);
-    let mut old_expires_at_builder = UInt64Builder::with_capacity(1);
-    let mut content_type_builder = StringBuilder::with_capacity(1, 0);
-    let mut payload_builder = BinaryBuilder::with_capacity(1, 0);
-    let mut string_ann_builder = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        StringBuilder::new(),
-    );
-    let mut numeric_ann_builder = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        UInt64Builder::new(),
-    );
-    let mut tip_block_builder = UInt64Builder::with_capacity(1);
-    let mut op_builder = UInt8Builder::with_capacity(1);
+    b.block_number.append_value(0);
+    b.block_hash.append_value([0u8; 32])?;
+    b.tx_index.append_value(0);
+    b.tx_hash.append_value([0u8; 32])?;
+    b.log_index.append_value(0);
+    b.event_type.append_value(0);
+    b.entity_key.append_value([0u8; 32])?;
+    b.owner.append_null();
+    b.expires_at.append_null();
+    b.old_expires_at.append_null();
+    b.content_type.append_null();
+    b.payload.append_null();
+    b.string_ann.append(false)?;
+    b.numeric_ann.append(false)?;
+    b.tip_block.append_value(tip_block);
+    b.op.append_value(0xFF);
 
-    block_number_builder.append_value(0);
-    block_hash_builder.append_value([0u8; 32])?;
-    tx_index_builder.append_value(0);
-    tx_hash_builder.append_value([0u8; 32])?;
-    log_index_builder.append_value(0);
-    event_type_builder.append_value(0);
-    entity_key_builder.append_value([0u8; 32])?;
-    owner_builder.append_null();
-    expires_at_builder.append_null();
-    old_expires_at_builder.append_null();
-    content_type_builder.append_null();
-    payload_builder.append_null();
-    string_ann_builder.append(false)?;
-    numeric_ann_builder.append(false)?;
-    tip_block_builder.append_value(tip_block);
-    op_builder.append_value(0xFF);
+    Ok(b.finish())
+}
 
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(block_number_builder.finish()),
-        Arc::new(block_hash_builder.finish()),
-        Arc::new(tx_index_builder.finish()),
-        Arc::new(tx_hash_builder.finish()),
-        Arc::new(log_index_builder.finish()),
-        Arc::new(event_type_builder.finish()),
-        Arc::new(entity_key_builder.finish()),
-        Arc::new(owner_builder.finish()),
-        Arc::new(expires_at_builder.finish()),
-        Arc::new(old_expires_at_builder.finish()),
-        Arc::new(content_type_builder.finish()),
-        Arc::new(payload_builder.finish()),
-        Arc::new(string_ann_builder.finish()),
-        Arc::new(numeric_ann_builder.finish()),
-        Arc::new(tip_block_builder.finish()),
-        Arc::new(op_builder.finish()),
-    ];
-
-    Ok(RecordBatch::try_new(schema, columns)?)
+fn append_null_fields(b: &mut BatchBuilders) -> arrow::error::Result<()> {
+    b.expires_at.append_null();
+    b.old_expires_at.append_null();
+    b.content_type.append_null();
+    b.payload.append_null();
+    b.string_ann.append(false)?;
+    b.numeric_ann.append(false)?;
+    Ok(())
 }
 
 fn map_field_names() -> MapFieldNames {
@@ -317,38 +301,31 @@ fn append_string_annotations(
     builder: &mut MapBuilder<StringBuilder, StringBuilder>,
     keys: &[String],
     values: &[String],
-) {
+) -> arrow::error::Result<()> {
     for (k, v) in keys.iter().zip(values.iter()) {
         builder.keys().append_value(k);
         builder.values().append_value(v);
     }
-    // append(true) marks the map entry as non-null
-    #[allow(clippy::expect_used)]
-    builder
-        .append(true)
-        .expect("string map append should not fail");
+    builder.append(true)
 }
 
 fn append_numeric_annotations(
     builder: &mut MapBuilder<StringBuilder, UInt64Builder>,
     keys: &[String],
     values: &[u64],
-) {
+) -> arrow::error::Result<()> {
     for (k, v) in keys.iter().zip(values.iter()) {
         builder.keys().append_value(k);
         builder.values().append_value(*v);
     }
-    #[allow(clippy::expect_used)]
-    builder
-        .append(true)
-        .expect("numeric map append should not fail");
+    builder.append(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parse::EntityEvent;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use mote_primitives::exex_types::BatchOp;
 
     fn sample_created() -> EntityEvent {

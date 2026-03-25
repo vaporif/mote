@@ -1,4 +1,3 @@
-/// Indicates whether a batch of entity operations should be committed or reverted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BatchOp {
@@ -18,7 +17,6 @@ impl TryFrom<u8> for BatchOp {
     }
 }
 
-/// Classifies the lifecycle event that occurred on an entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EntityEventType {

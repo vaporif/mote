@@ -1,8 +1,6 @@
-// Socket listener, handshake (versioned), writer task
-
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use alloy_eips::BlockNumHash;
@@ -12,77 +10,43 @@ use eyre::ensure;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::arrow::{build_watermark_batch, entity_events_schema};
+use crate::ring_buffer::RingBufferStats;
 
-// ---------------------------------------------------------------------------
-// Handshake
-// ---------------------------------------------------------------------------
-
-const HANDSHAKE_V1_SIZE: usize = 9; // 1 byte version + 8 bytes resume_block
+const SUBSCRIBE_MSG_SIZE: usize = 9; // 1 byte msg_type + 8 bytes resume_block
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Handshake {
+pub enum ClientMessage {
     Probe,
-    V1 { resume_block: u64 },
-    Unsupported(u8),
+    Subscribe { resume_block: u64 },
+    Unknown(u8),
 }
 
-impl Handshake {
-    /// Parse a handshake from a raw byte buffer.
-    ///
-    /// - Version 0 = Probe (no additional data required)
-    /// - Version 1 = V1 with an 8-byte little-endian `resume_block`
-    /// - Any other version byte = `Unsupported`
+impl ClientMessage {
     pub fn parse(buf: &[u8]) -> eyre::Result<Self> {
-        ensure!(!buf.is_empty(), "handshake buffer is empty");
+        ensure!(!buf.is_empty(), "client message buffer is empty");
 
-        let version = buf[0];
-        match version {
+        let msg_type = buf[0];
+        match msg_type {
             0 => Ok(Self::Probe),
             1 => {
                 ensure!(
-                    buf.len() >= HANDSHAKE_V1_SIZE,
-                    "V1 handshake requires {HANDSHAKE_V1_SIZE} bytes, got {}",
+                    buf.len() >= SUBSCRIBE_MSG_SIZE,
+                    "Subscribe message requires {SUBSCRIBE_MSG_SIZE} bytes, got {}",
                     buf.len()
                 );
                 let resume_block =
-                    u64::from_le_bytes(buf[1..HANDSHAKE_V1_SIZE].try_into().unwrap_or_default());
-                Ok(Self::V1 { resume_block })
+                    u64::from_le_bytes(buf[1..SUBSCRIBE_MSG_SIZE].try_into().unwrap_or_default());
+                Ok(Self::Subscribe { resume_block })
             }
-            other => Ok(Self::Unsupported(other)),
+            other => Ok(Self::Unknown(other)),
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Handshake response
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandshakeResponse {
-    pub protocol_version: u8,
-    pub oldest_available_block: u64,
-    pub current_tip_block: u64,
-}
-
-impl HandshakeResponse {
-    /// Encode as 17 bytes: 1 byte version + 8 bytes oldest (LE) + 8 bytes tip (LE).
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(17);
-        out.push(self.protocol_version);
-        out.extend_from_slice(&self.oldest_available_block.to_le_bytes());
-        out.extend_from_slice(&self.current_tip_block.to_le_bytes());
-        out
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Probe response (JSON)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProbeResponse {
@@ -94,19 +58,11 @@ pub struct ProbeResponse {
     pub protocol_version: u8,
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot request
-// ---------------------------------------------------------------------------
-
 pub struct SnapshotRequest {
     pub resume_block: u64,
     pub reply_tx: oneshot::Sender<Vec<(BlockNumHash, RecordBatch)>>,
     pub replay_done_tx: oneshot::Sender<()>,
 }
-
-// ---------------------------------------------------------------------------
-// Backpressure / grace state
-// ---------------------------------------------------------------------------
 
 const DEFAULT_GRACE_WINDOW: Duration = Duration::from_secs(1);
 const DEFAULT_GRACE_THRESHOLD: u32 = 3;
@@ -132,60 +88,46 @@ impl Default for GraceState {
     }
 }
 
-pub fn handle_backpressure(state: &mut GraceState) {
-    let now = Instant::now();
-    match state.first_failure_time {
-        None => {
-            state.first_failure_time = Some(now);
-            state.failure_count = 1;
+impl GraceState {
+    pub fn record_failure(&mut self) {
+        let now = Instant::now();
+        match self.first_failure_time {
+            None => {
+                self.first_failure_time = Some(now);
+                self.failure_count = 1;
+            }
+            Some(first) if now.duration_since(first) > self.window => {
+                self.first_failure_time = Some(now);
+                self.failure_count = 1;
+            }
+            Some(_) => {
+                self.failure_count += 1;
+            }
         }
-        Some(first) if now.duration_since(first) > state.window => {
-            // Window expired — reset and start a new window.
-            state.first_failure_time = Some(now);
-            state.failure_count = 1;
-        }
-        Some(_) => {
-            state.failure_count += 1;
+        if self.failure_count >= self.threshold {
+            self.should_disconnect = true;
         }
     }
-    if state.failure_count >= state.threshold {
-        state.should_disconnect = true;
+
+    pub const fn reset(&mut self) {
+        self.first_failure_time = None;
+        self.failure_count = 0;
+        self.should_disconnect = false;
     }
 }
 
-pub const fn reset_grace(state: &mut GraceState) {
-    state.first_failure_time = None;
-    state.failure_count = 0;
-    state.should_disconnect = false;
-}
+const WRITER_CHANNEL_SIZE: usize = 16;
+const MAX_CLIENT_MSG_LEN: usize = 64;
 
-// ---------------------------------------------------------------------------
-// Socket writer task
-// ---------------------------------------------------------------------------
-
-/// Maximum bytes we will read from a connecting client during handshake.
-const MAX_HANDSHAKE_LEN: usize = 64;
-
-/// The main socket writer task.
-///
-/// 1. Binds a `UnixListener` at `socket_path` (removes stale file if needed).
-/// 2. Accepts connections; a new connection replaces the old one.
-/// 3. Reads handshake, dispatches probe / v1 / unsupported.
-/// 4. For V1: requests a snapshot via `snapshot_tx`, replays it, then streams
-///    live batches from `batch_rx`.
-/// 5. Respects `cancellation_token` for graceful shutdown.
-#[allow(clippy::too_many_arguments)]
 pub async fn socket_writer_task(
     socket_path: PathBuf,
     snapshot_tx: mpsc::Sender<SnapshotRequest>,
-    mut batch_rx: mpsc::Receiver<RecordBatch>,
+    mut batch_rx: mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
     delivered_tx: watch::Sender<Option<BlockNumHash>>,
     consumer_connected: Arc<AtomicBool>,
-    atomic_entries: Arc<AtomicU64>,
-    atomic_memory: Arc<AtomicU64>,
+    rb_stats: RingBufferStats,
     cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
-    // Remove stale socket file if present.
     if socket_path.exists() {
         std::fs::remove_file(&socket_path)?;
     }
@@ -194,7 +136,6 @@ pub async fn socket_writer_task(
     info!(?socket_path, "unix socket listener bound");
 
     loop {
-        // Accept a new connection or shut down.
         let stream = tokio::select! {
             biased;
             () = cancellation_token.cancelled() => {
@@ -207,9 +148,7 @@ pub async fn socket_writer_task(
             }
         };
 
-        // New connection replaces old — mark consumer as connected.
-        consumer_connected.store(true, Ordering::Release);
-        info!("new consumer connection accepted");
+        info!("new connection accepted");
 
         match handle_connection(
             stream,
@@ -217,8 +156,7 @@ pub async fn socket_writer_task(
             &mut batch_rx,
             &delivered_tx,
             &consumer_connected,
-            &atomic_entries,
-            &atomic_memory,
+            &rb_stats,
             &cancellation_token,
         )
         .await
@@ -234,49 +172,38 @@ pub async fn socket_writer_task(
         consumer_connected.store(false, Ordering::Release);
     }
 
-    // Cleanup socket file on shutdown.
     let _ = std::fs::remove_file(&socket_path);
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     mut stream: UnixStream,
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
-    batch_rx: &mut mpsc::Receiver<RecordBatch>,
+    batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
     delivered_tx: &watch::Sender<Option<BlockNumHash>>,
     consumer_connected: &Arc<AtomicBool>,
-    atomic_entries: &Arc<AtomicU64>,
-    atomic_memory: &Arc<AtomicU64>,
+    rb_stats: &RingBufferStats,
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
-    // Read handshake bytes.
-    let mut buf = vec![0u8; MAX_HANDSHAKE_LEN];
+    let mut buf = vec![0u8; MAX_CLIENT_MSG_LEN];
     let n = stream.read(&mut buf).await?;
-    ensure!(n > 0, "client disconnected before handshake");
+    ensure!(n > 0, "client disconnected before sending message");
     buf.truncate(n);
 
-    let handshake = Handshake::parse(&buf)?;
-    debug!(?handshake, "parsed handshake");
+    let msg = ClientMessage::parse(&buf)?;
+    debug!(?msg, "parsed client message");
 
-    match handshake {
-        Handshake::Probe => {
-            handle_probe(
-                &mut stream,
-                consumer_connected,
-                atomic_entries,
-                atomic_memory,
-            )
-            .await
-        }
-        Handshake::Unsupported(v) => {
-            warn!(version = v, "unsupported handshake version");
+    match msg {
+        ClientMessage::Probe => handle_probe(&mut stream, consumer_connected, rb_stats).await,
+        ClientMessage::Unknown(v) => {
+            warn!(msg_type = v, "unknown client message type");
             stream.write_all(&[0xFF]).await?;
             stream.shutdown().await?;
             Ok(())
         }
-        Handshake::V1 { resume_block } => {
-            handle_v1(
+        ClientMessage::Subscribe { resume_block } => {
+            consumer_connected.store(true, Ordering::Release);
+            handle_subscribe(
                 stream,
                 resume_block,
                 snapshot_tx,
@@ -292,20 +219,18 @@ async fn handle_connection(
 async fn handle_probe(
     stream: &mut UnixStream,
     consumer_connected: &Arc<AtomicBool>,
-    atomic_entries: &Arc<AtomicU64>,
-    atomic_memory: &Arc<AtomicU64>,
+    rb_stats: &RingBufferStats,
 ) -> eyre::Result<()> {
     let resp = ProbeResponse {
         consumer_connected: consumer_connected.load(Ordering::Acquire),
-        tip_block: 0, // will be filled from ring buffer newest in production
-        oldest_block: 0,
-        ring_buffer_entries: atomic_entries.load(Ordering::Relaxed),
-        ring_buffer_memory_bytes: atomic_memory.load(Ordering::Relaxed),
+        tip_block: rb_stats.tip.load(Ordering::Relaxed),
+        oldest_block: rb_stats.oldest.load(Ordering::Relaxed),
+        ring_buffer_entries: rb_stats.entries.load(Ordering::Relaxed),
+        ring_buffer_memory_bytes: rb_stats.memory.load(Ordering::Relaxed),
         protocol_version: 1,
     };
     let json = serde_json::to_vec(&resp)?;
 
-    // Length-prefixed: u32 LE length + JSON bytes.
     let len_bytes = u32::try_from(json.len())?.to_le_bytes();
     stream.write_all(&len_bytes).await?;
     stream.write_all(&json).await?;
@@ -315,18 +240,54 @@ async fn handle_probe(
     Ok(())
 }
 
-async fn handle_v1(
+async fn shutdown_writer(
+    writer_tx: mpsc::Sender<RecordBatch>,
+    write_handle: JoinHandle<eyre::Result<()>>,
+) {
+    drop(writer_tx);
+    match write_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(?e, "IPC writer error during shutdown"),
+        Err(e) => warn!(?e, "IPC writer thread panicked"),
+    }
+}
+
+async fn handle_subscribe(
     stream: UnixStream,
     resume_block: u64,
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
-    batch_rx: &mut mpsc::Receiver<RecordBatch>,
+    batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
     delivered_tx: &watch::Sender<Option<BlockNumHash>>,
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
+    let replay = replay_snapshot(stream, resume_block, snapshot_tx, batch_rx).await?;
+
+    stream_live(
+        batch_rx,
+        replay.writer_tx,
+        replay.write_handle,
+        delivered_tx,
+        cancel,
+        replay.tip,
+    )
+    .await
+}
+
+struct ReplayResult {
+    writer_tx: mpsc::Sender<RecordBatch>,
+    write_handle: JoinHandle<eyre::Result<()>>,
+    tip: u64,
+}
+
+async fn replay_snapshot(
+    stream: UnixStream,
+    resume_block: u64,
+    snapshot_tx: &mpsc::Sender<SnapshotRequest>,
+    batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
+) -> eyre::Result<ReplayResult> {
     let (reply_tx, reply_rx) = oneshot::channel();
     let (replay_done_tx, replay_done_rx) = oneshot::channel();
 
-    // Request snapshot from the notification loop.
     snapshot_tx
         .send(SnapshotRequest {
             resume_block,
@@ -336,7 +297,6 @@ async fn handle_v1(
         .await
         .map_err(|_| eyre::eyre!("snapshot channel closed"))?;
 
-    // Receive the snapshot.
     let snapshot = reply_rx
         .await
         .map_err(|_| eyre::eyre!("snapshot reply channel dropped"))?;
@@ -347,178 +307,185 @@ async fn handle_v1(
         "received snapshot for replay"
     );
 
-    // Drain any stale batches that were queued before the snapshot was taken.
     while batch_rx.try_recv().is_ok() {}
 
-    // Convert tokio UnixStream to std for Arrow IPC StreamWriter (needs std::io::Write).
     let std_stream = stream.into_std()?;
-    let schema = Arc::new(entity_events_schema());
-    let mut writer = StreamWriter::try_new(&std_stream, &schema)?;
+    let schema = entity_events_schema();
 
-    // Write snapshot batches.
+    let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(WRITER_CHANNEL_SIZE);
+
+    let write_handle = tokio::task::spawn_blocking(move || -> eyre::Result<()> {
+        let mut writer = StreamWriter::try_new(&std_stream, &schema)?;
+        while let Some(batch) = writer_rx.blocking_recv() {
+            writer.write(&batch)?;
+        }
+        writer.finish()?;
+        Ok(())
+    });
+
     let mut last_bnh: Option<BlockNumHash> = None;
     for (bnh, batch) in &snapshot {
-        writer.write(batch)?;
+        if writer_tx.send(batch.clone()).await.is_err() {
+            return Err(eyre::eyre!("writer closed during snapshot replay"));
+        }
         last_bnh = Some(*bnh);
     }
 
-    // Write watermark after snapshot replay.
     let tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
     let watermark = build_watermark_batch(tip)?;
-    writer.write(&watermark)?;
+    if writer_tx.send(watermark).await.is_err() {
+        return Err(eyre::eyre!("writer closed during watermark send"));
+    }
 
-    // Wait for the notification loop to signal that it is ready to queue live
-    // batches. The notification loop holds `replay_done_tx` (from the snapshot
-    // request) and sends on it once it has finished its bookkeeping.
     replay_done_rx
         .await
         .map_err(|_| eyre::eyre!("replay_done sender dropped"))?;
 
     info!(tip, "snapshot replay complete, entering live stream");
 
-    // Live streaming loop.
+    Ok(ReplayResult {
+        writer_tx,
+        write_handle,
+        tip,
+    })
+}
+
+async fn stream_live(
+    batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
+    writer_tx: mpsc::Sender<RecordBatch>,
+    write_handle: JoinHandle<eyre::Result<()>>,
+    delivered_tx: &watch::Sender<Option<BlockNumHash>>,
+    cancel: &CancellationToken,
+    initial_tip: u64,
+) -> eyre::Result<()> {
     let mut grace = GraceState::default();
+    let mut current_tip = initial_tip;
 
     loop {
-        let batch = tokio::select! {
+        let (maybe_bnh, batch) = tokio::select! {
             biased;
             () = cancel.cancelled() => {
                 debug!("live loop cancelled, draining remaining batches");
-                // Drain remaining batches on shutdown.
-                while let Ok(batch) = batch_rx.try_recv() {
-                    if writer.write(&batch).is_err() {
+                while let Ok((_, batch)) = batch_rx.try_recv() {
+                    if writer_tx.send(batch).await.is_err() {
                         break;
                     }
                 }
-                // Final watermark.
-                if let Ok(wm) = build_watermark_batch(tip) {
-                    let _ = writer.write(&wm);
+                if let Ok(wm) = build_watermark_batch(current_tip) {
+                    let _ = writer_tx.send(wm).await;
                 }
-                let _ = writer.finish();
+                shutdown_writer(writer_tx, write_handle).await;
                 return Ok(());
             }
             maybe_batch = batch_rx.recv() => {
-                if let Some(batch) = maybe_batch {
-                    batch
+                if let Some(item) = maybe_batch {
+                    item
                 } else {
                     debug!("batch channel closed");
-                    let _ = writer.finish();
+                    shutdown_writer(writer_tx, write_handle).await;
                     return Ok(());
                 }
             }
         };
 
-        match writer.write(&batch) {
+        let sent = match writer_tx.try_send(batch) {
             Ok(()) => {
-                reset_grace(&mut grace);
-                // Update delivered watermark from batch metadata if available.
-                let _ = delivered_tx.send(last_bnh);
+                grace.reset();
+                true
             }
-            Err(e) => {
-                warn!(?e, "failed to write batch to consumer");
-                handle_backpressure(&mut grace);
+            Err(mpsc::error::TrySendError::Full(batch)) => {
+                grace.record_failure();
                 if grace.should_disconnect {
                     warn!("backpressure threshold reached, disconnecting consumer");
-                    let _ = writer.finish();
+                    shutdown_writer(writer_tx, write_handle).await;
                     return Ok(());
                 }
+                if writer_tx.send(batch).await.is_err() {
+                    return Ok(());
+                }
+                true
             }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!("writer channel closed, consumer disconnected");
+                return Ok(());
+            }
+        };
+
+        if sent && let Some(bnh) = maybe_bnh {
+            current_tip = bnh.number;
+            let _ = delivered_tx.send(Some(bnh));
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parse_v1_handshake() {
+    fn parse_subscribe_message() {
         let mut buf = Vec::new();
         buf.push(1u8);
         buf.extend_from_slice(&100u64.to_le_bytes());
-        let hs = Handshake::parse(&buf).unwrap();
-        assert_eq!(hs, Handshake::V1 { resume_block: 100 });
+        let msg = ClientMessage::parse(&buf).unwrap();
+        assert_eq!(msg, ClientMessage::Subscribe { resume_block: 100 });
     }
 
     #[test]
-    fn parse_probe_handshake() {
+    fn parse_probe_message() {
         let buf = vec![0u8];
-        let hs = Handshake::parse(&buf).unwrap();
-        assert_eq!(hs, Handshake::Probe);
+        let msg = ClientMessage::parse(&buf).unwrap();
+        assert_eq!(msg, ClientMessage::Probe);
     }
 
     #[test]
-    fn parse_unsupported_version() {
+    fn parse_unknown_message_type() {
         let mut buf = Vec::new();
         buf.push(0xFE);
         buf.extend_from_slice(&0u64.to_le_bytes());
-        let hs = Handshake::parse(&buf);
-        assert!(matches!(hs, Ok(Handshake::Unsupported(0xFE))));
+        let msg = ClientMessage::parse(&buf);
+        assert!(matches!(msg, Ok(ClientMessage::Unknown(0xFE))));
     }
 
     #[test]
     fn parse_empty_buffer_is_error() {
-        let result = Handshake::parse(&[]);
+        let result = ClientMessage::parse(&[]);
         assert!(result.is_err());
     }
 
     #[test]
-    fn parse_v1_too_short_is_error() {
+    fn parse_subscribe_too_short_is_error() {
         let buf = vec![1u8, 0x00, 0x01]; // only 3 bytes, need 9
-        let result = Handshake::parse(&buf);
+        let result = ClientMessage::parse(&buf);
         assert!(result.is_err());
     }
 
     #[test]
-    fn handshake_response_encoding() {
-        let resp = HandshakeResponse {
-            protocol_version: 1,
-            oldest_available_block: 500,
-            current_tip_block: 1000,
-        };
-        let bytes = resp.encode();
-        assert_eq!(bytes.len(), 17);
-        assert_eq!(bytes[0], 1);
-
-        // Verify round-trip of encoded values.
-        let oldest = u64::from_le_bytes(bytes[1..9].try_into().unwrap());
-        let tip = u64::from_le_bytes(bytes[9..17].try_into().unwrap());
-        assert_eq!(oldest, 500);
-        assert_eq!(tip, 1000);
-    }
-
-    #[test]
-    fn backpressure_grace_no_disconnect_under_threshold() {
+    fn backpressure_no_disconnect_under_threshold() {
         let mut state = GraceState::default();
-        handle_backpressure(&mut state);
-        handle_backpressure(&mut state);
-        // 2 failures within window — no disconnect
+        state.record_failure();
+        state.record_failure();
         assert!(!state.should_disconnect);
     }
 
     #[test]
-    fn backpressure_grace_disconnect_at_threshold() {
+    fn backpressure_disconnect_at_threshold() {
         let mut state = GraceState::default();
-        handle_backpressure(&mut state);
-        handle_backpressure(&mut state);
-        handle_backpressure(&mut state);
-        // 3 failures within 1 second window
+        state.record_failure();
+        state.record_failure();
+        state.record_failure();
         assert!(state.should_disconnect);
     }
 
     #[test]
-    fn reset_grace_clears_state() {
+    fn grace_reset_clears_state() {
         let mut state = GraceState::default();
-        handle_backpressure(&mut state);
-        handle_backpressure(&mut state);
-        handle_backpressure(&mut state);
+        state.record_failure();
+        state.record_failure();
+        state.record_failure();
         assert!(state.should_disconnect);
 
-        reset_grace(&mut state);
+        state.reset();
         assert!(!state.should_disconnect);
         assert_eq!(state.failure_count, 0);
         assert!(state.first_failure_time.is_none());

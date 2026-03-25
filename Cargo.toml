@@ -33,21 +33,37 @@ keywords = ["ethereum", "reth", "ephemeral", "storage"]
 categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
+mote-primitives = { path = "crates/mote-primitives" }
+
 alloy-primitives = "1.5"
 alloy-rlp = { version = "0.3", features = ["derive"] }
 alloy-sol-types = "1.5"
 alloy-consensus = "1.7"
+alloy-eips = "1.7"
 alloy-evm = "0.27"
 
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3", features = ["node", "node-api", "evm", "cli"] }
 reth-evm = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-exex-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-trie = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 
 revm = { version = "34.0.0", default-features = false }
 revm-state = { version = "9.0.0", default-features = false }
+
+arrow = { version = "58", features = ["ipc"] }
+futures = "0.3"
+tokio = { version = "1", features = ["net", "sync", "rt", "macros"] }
+tokio-util = "0.7"
+tracing = "0.1"
+eyre = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 regex = "1"
 thiserror = "2"
