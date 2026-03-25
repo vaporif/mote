@@ -11,7 +11,7 @@ use arrow::record_batch::RecordBatch;
 use mote_exex::arrow::{EventRow, build_record_batch};
 use mote_exex::parse::EntityEvent;
 use mote_exex::ring_buffer::RingBufferStats;
-use mote_exex::stream::{SnapshotRequest, socket_writer_task};
+use mote_exex::stream::{ProbeResponse, SnapshotRequest, socket_writer_task};
 use mote_primitives::exex_types::BatchOp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -227,7 +227,7 @@ async fn full_subscribe_and_replay() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn probe_returns_json_status() {
+async fn probe_returns_status() {
     let harness = TestHarness::spawn();
     harness.wait_for_socket().await;
 
@@ -235,38 +235,17 @@ async fn probe_returns_json_status() {
 
     client.write_all(&[0x00]).await.unwrap();
 
-    let mut len_buf = [0u8; 4];
-    timeout(Duration::from_secs(5), client.read_exact(&mut len_buf))
+    let mut buf = Vec::new();
+    timeout(Duration::from_secs(5), client.read_to_end(&mut buf))
         .await
-        .expect("timed out reading length")
-        .unwrap();
-    let json_len = u32::from_le_bytes(len_buf) as usize;
-    assert!(json_len > 0, "JSON payload should not be empty");
-    assert!(
-        json_len < 4096,
-        "JSON payload unexpectedly large: {json_len}"
-    );
-
-    let mut json_buf = vec![0u8; json_len];
-    timeout(Duration::from_secs(5), client.read_exact(&mut json_buf))
-        .await
-        .expect("timed out reading json")
+        .expect("timed out reading probe")
         .unwrap();
 
-    let value: serde_json::Value = serde_json::from_slice(&json_buf).unwrap();
-
-    assert_eq!(value["protocol_version"], 1);
-    assert_eq!(value["ring_buffer_entries"], 42);
-    assert_eq!(value["ring_buffer_memory_bytes"], 8192);
-    assert_eq!(value["tip_block"], 100);
-    assert_eq!(value["oldest_block"], 1);
-
-    let mut trailing = [0u8; 1];
-    let n = timeout(Duration::from_secs(2), client.read(&mut trailing))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(n, 0, "connection not closed after probe");
+    let resp: ProbeResponse = borsh::from_slice(&buf).unwrap();
+    assert_eq!(resp.ring_buffer_entries, 42);
+    assert_eq!(resp.ring_buffer_memory_bytes, 8192);
+    assert_eq!(resp.tip_block, 100);
+    assert_eq!(resp.oldest_block, 1);
 
     assert!(!harness.consumer_connected.load(Ordering::Acquire));
 }

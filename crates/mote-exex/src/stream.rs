@@ -48,14 +48,13 @@ impl ClientMessage {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, borsh::BorshSerialize, borsh::BorshDeserialize)]
 pub struct ProbeResponse {
     pub consumer_connected: bool,
     pub tip_block: u64,
     pub oldest_block: u64,
     pub ring_buffer_entries: u64,
     pub ring_buffer_memory_bytes: u64,
-    pub protocol_version: u8,
 }
 
 pub struct SnapshotRequest {
@@ -227,13 +226,9 @@ async fn handle_probe(
         oldest_block: rb_stats.oldest.load(Ordering::Relaxed),
         ring_buffer_entries: rb_stats.entries.load(Ordering::Relaxed),
         ring_buffer_memory_bytes: rb_stats.memory.load(Ordering::Relaxed),
-        protocol_version: 1,
     };
-    let json = serde_json::to_vec(&resp)?;
-
-    let len_bytes = u32::try_from(json.len())?.to_le_bytes();
-    stream.write_all(&len_bytes).await?;
-    stream.write_all(&json).await?;
+    let bytes = borsh::to_vec(&resp)?;
+    stream.write_all(&bytes).await?;
     stream.shutdown().await?;
 
     debug!("probe response sent");
@@ -493,17 +488,18 @@ mod tests {
     }
 
     #[test]
-    fn probe_response_serializes() {
+    fn probe_response_roundtrip() {
         let resp = ProbeResponse {
             consumer_connected: true,
             tip_block: 42,
             oldest_block: 1,
             ring_buffer_entries: 100,
             ring_buffer_memory_bytes: 8192,
-            protocol_version: 1,
         };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"consumer_connected\":true"));
-        assert!(json.contains("\"tip_block\":42"));
+        let bytes = borsh::to_vec(&resp).unwrap();
+        let decoded: ProbeResponse = borsh::from_slice(&bytes).unwrap();
+        assert!(decoded.consumer_connected);
+        assert_eq!(decoded.tip_block, 42);
+        assert_eq!(decoded.ring_buffer_entries, 100);
     }
 }
