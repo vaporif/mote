@@ -9,7 +9,7 @@ use arrow::array::UInt8Array;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use mote_exex::arrow::{EventRow, build_record_batch};
-use mote_exex::parse::EntityEvent;
+use mote_primitives::parse::EntityEvent;
 use mote_exex::ring_buffer::RingBufferStats;
 use mote_exex::stream::{ProbeResponse, SnapshotRequest, socket_writer_task};
 use mote_primitives::exex_types::BatchOp;

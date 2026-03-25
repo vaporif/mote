@@ -15,7 +15,7 @@ fn genesis_config_round_trips_through_extraction() {
 #[test]
 fn cold_start_pipeline_tracker_to_index() {
     use mote_engine::expiration::ExpirationIndex;
-    use mote_node::recovery::LiveEntityTracker;
+    use mote_engine::recovery::LiveEntityTracker;
     use mote_primitives::parse::EntityEvent;
 
     let mut tracker = LiveEntityTracker::new();
