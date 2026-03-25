@@ -16,9 +16,7 @@ mote-primitives.workspace = true
 reth-exex.workspace = true
 reth-exex-types.workspace = true
 reth-node-api.workspace = true
-reth-ethereum = { workspace = true, features = ["node"] }
 reth-execution-types.workspace = true
-reth-provider.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-primitives.workspace = true

@@ -65,8 +65,6 @@ impl RingBuffer {
                 self.memory_usage = self
                     .memory_usage
                     .saturating_sub(Self::batch_memory(&evicted));
-            } else {
-                break;
             }
         }
         self.update_atomics();

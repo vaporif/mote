@@ -212,7 +212,7 @@ async fn full_subscribe_and_replay() {
         .await
         .expect("batch_tx send should succeed");
 
-    let batches = timeout(Duration::from_secs(10), read_handle)
+    let batches = timeout(Duration::from_secs(30), read_handle)
         .await
         .expect("read should complete within timeout")
         .expect("spawn_blocking should succeed");

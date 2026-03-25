@@ -218,7 +218,7 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
         ring_buffer.truncate_from(reorg_start);
     }
 
-    // blocks_and_receipts() is a forward iterator; reverts must go newest-to-oldest.
+    // Reverts must go newest-to-oldest; collect needed because the iterator isn't DoubleEnded
     #[allow(clippy::needless_collect)]
     let blocks: Vec<_> = chain.blocks_and_receipts().collect();
     for (block, receipts) in blocks.into_iter().rev() {

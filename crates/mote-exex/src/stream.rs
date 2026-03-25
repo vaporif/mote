@@ -307,6 +307,7 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
+    // Drain stale batches queued before the snapshot was taken
     while batch_rx.try_recv().is_ok() {}
 
     let std_stream = stream.into_std()?;
