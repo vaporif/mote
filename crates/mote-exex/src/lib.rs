@@ -7,6 +7,8 @@ use ::arrow::record_batch::RecordBatch;
 use alloy_consensus::BlockHeader;
 use alloy_eips::BlockNumHash;
 use futures::StreamExt;
+use futures::future::OptionFuture;
+use mote_primitives::constants::MAX_BTL;
 use mote_primitives::exex_types::BatchOp;
 use reth_primitives_traits::BlockBody;
 use ring_buffer::RingBuffer;
@@ -68,7 +70,8 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
         }
     });
 
-    let mut pending_replay_done: Option<oneshot::Sender<()>> = None;
+    let mut replay_in_progress = false;
+    let mut pending_replay_done_rx: Option<oneshot::Receiver<()>> = None;
 
     let mut max_reported = BlockNumHash::default();
     let mut grace = stream::GraceState::default();
@@ -76,11 +79,6 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
     loop {
         tokio::select! {
             biased;
-
-            () = cancellation_token.cancelled() => {
-                info!("mote exex shutting down via cancellation");
-                break;
-            }
 
             Some(snap_req) = snapshot_rx.recv() => {
                 let snapshot = ring_buffer.snapshot_from(snap_req.resume_block);
@@ -90,7 +88,8 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
                     "fulfilling snapshot request"
                 );
                 let _ = snap_req.reply_tx.send(snapshot);
-                pending_replay_done = Some(snap_req.replay_done_tx);
+                pending_replay_done_rx = Some(snap_req.replay_done_rx);
+                replay_in_progress = true;
             }
 
             maybe_notification = ctx.notifications.next() => {
@@ -115,6 +114,7 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
                             &batch_tx,
                             &consumer_connected,
                             &mut grace,
+                            replay_in_progress,
                         );
                         new.tip().num_hash()
                     }
@@ -126,6 +126,7 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
                             &batch_tx,
                             &consumer_connected,
                             &mut grace,
+                            replay_in_progress,
                         );
                         tip
                     }
@@ -136,6 +137,7 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
                             &batch_tx,
                             &consumer_connected,
                             &mut grace,
+                            replay_in_progress,
                         );
                         process_committed_chain(
                             new,
@@ -143,6 +145,7 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
                             &batch_tx,
                             &consumer_connected,
                             &mut grace,
+                            replay_in_progress,
                         );
                         new.tip().num_hash()
                     }
@@ -150,16 +153,25 @@ async fn mote_exex<Node: reth_node_api::FullNodeComponents>(
 
                 ring_buffer.evict_if_needed(current_tip.number);
 
-                if let Some(tx) = pending_replay_done.take() {
-                    let _ = tx.send(());
-                }
-
                 report_finished_height(
                     &ctx,
+                    &ring_buffer,
                     &delivered_rx,
                     current_tip,
                     &mut max_reported,
                 );
+            }
+
+            Some(result) = OptionFuture::from(pending_replay_done_rx.as_mut().map(|rx| &mut *rx)) => {
+                if result.is_ok() {
+                    replay_in_progress = false;
+                }
+                pending_replay_done_rx = None;
+            }
+
+            () = cancellation_token.cancelled() => {
+                info!("mote exex shutting down via cancellation");
+                break;
             }
         }
     }
@@ -174,6 +186,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
     batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
+    replay_in_progress: bool,
 ) {
     let tip_block = chain.tip().header().number();
 
@@ -194,9 +207,17 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
         ) {
             Ok(batch) => {
                 ring_buffer.push(bnh, batch.clone());
-                try_send_batch(batch_tx, Some(bnh), batch, consumer_connected, grace);
+                try_send_batch(
+                    batch_tx,
+                    Some(bnh),
+                    batch,
+                    consumer_connected,
+                    grace,
+                    replay_in_progress,
+                );
             }
             Err(e) => {
+                // TODO: metrics::counter!("mote_exex_decode_errors_total").increment(1);
                 error!(block_number, ?e, "failed to build commit record batch");
             }
         }
@@ -209,18 +230,16 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
+    replay_in_progress: bool,
 ) {
     let tip_block = chain.tip().header().number();
 
-    let first_reverted = chain.blocks_iter().next().map(|b| b.header().number());
-
-    if let Some(reorg_start) = first_reverted {
-        ring_buffer.truncate_from(reorg_start);
-    }
-
-    // Reverts must go newest-to-oldest; collect needed because the iterator isn't DoubleEnded
+    // Revert delivery is correctness-critical — missed reverts leave the consumer
+    // with corrupt state, so any try_send failure force-disconnects.
     #[allow(clippy::needless_collect)]
     let blocks: Vec<_> = chain.blocks_and_receipts().collect();
+    let mut revert_failed = false;
+
     for (block, receipts) in blocks.into_iter().rev() {
         let block_number = block.header().number();
         let block_hash = block.hash();
@@ -236,12 +255,30 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
             &events,
         ) {
             Ok(batch) => {
-                try_send_batch(batch_tx, None, batch, consumer_connected, grace);
+                if consumer_connected.load(Ordering::Acquire)
+                    && !replay_in_progress
+                    && batch_tx.try_send((None, batch)).is_err()
+                {
+                    revert_failed = true;
+                    // TODO: metrics::counter!("mote_exex_batches_dropped_total").increment(1);
+                }
             }
             Err(e) => {
+                // TODO: metrics::counter!("mote_exex_decode_errors_total").increment(1);
                 error!(block_number, ?e, "failed to build revert record batch");
             }
         }
+    }
+
+    if revert_failed {
+        warn!("revert delivery failed, disconnecting consumer (corrupt state)");
+        // TODO: metrics::counter!("mote_exex_consumer_disconnects_total").increment(1);
+        grace.force_disconnect();
+    }
+
+    let first_reverted = chain.blocks_iter().next().map(|b| b.header().number());
+    if let Some(reorg_start) = first_reverted {
+        ring_buffer.truncate_from(reorg_start);
     }
 }
 
@@ -252,6 +289,7 @@ where
     T: alloy_consensus::transaction::TxHashRef,
 {
     let mut events = Vec::new();
+    let mut global_log_index: u32 = 0;
 
     for (tx_idx, receipt) in receipts.iter().enumerate() {
         let tx_hash = transactions
@@ -260,21 +298,23 @@ where
             .copied()
             .unwrap_or_default();
 
-        for (log_offset, log) in receipt.logs().iter().enumerate() {
+        for log in receipt.logs() {
             match parse_log(log) {
                 Ok(Some(entity_event)) => {
                     events.push(EventRow {
                         event: entity_event,
                         tx_index: tx_idx as u32,
                         tx_hash,
-                        log_index: log_offset as u32,
+                        log_index: global_log_index,
                     });
                 }
                 Ok(None) => {}
                 Err(e) => {
+                    // TODO: metrics::counter!("mote_exex_decode_errors_total").increment(1);
                     warn!(tx_index = tx_idx, ?e, "failed to parse log");
                 }
             }
+            global_log_index += 1;
         }
     }
 
@@ -287,6 +327,7 @@ fn try_send_batch(
     batch: RecordBatch,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
+    replay_in_progress: bool,
 ) {
     if !consumer_connected.load(Ordering::Acquire) {
         return;
@@ -294,13 +335,22 @@ fn try_send_batch(
 
     match batch_tx.try_send((bnh, batch)) {
         Ok(()) => {
+            // TODO: metrics::counter!("mote_exex_batches_sent_total").increment(1);
             grace.reset();
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
-            debug!("batch channel full, applying backpressure");
-            grace.record_failure();
-            if grace.should_disconnect {
-                warn!("backpressure threshold exceeded in notification loop");
+            // TODO: metrics::counter!("mote_exex_batches_dropped_total").increment(1);
+            if replay_in_progress {
+                // Suppress backpressure disconnect during replay — batches are
+                // dropped but remain in the ring buffer for future snapshots
+                debug!("batch channel full during replay, suppressing disconnect");
+            } else {
+                debug!("batch channel full, applying backpressure");
+                grace.record_failure();
+                if grace.should_disconnect {
+                    // TODO: metrics::counter!("mote_exex_consumer_disconnects_total").increment(1);
+                    warn!("backpressure threshold exceeded in notification loop");
+                }
             }
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -311,14 +361,34 @@ fn try_send_batch(
 
 fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
     ctx: &reth_exex::ExExContext<Node>,
+    ring_buffer: &RingBuffer,
     delivered_rx: &watch::Receiver<Option<BlockNumHash>>,
     current_tip: BlockNumHash,
     max_reported: &mut BlockNumHash,
 ) {
-    let candidate = delivered_rx.borrow().unwrap_or(current_tip);
-    if candidate.number > max_reported.number {
-        *max_reported = candidate;
-        let _ = ctx.send_finished_height(candidate);
-        debug!(number = candidate.number, "reported finished height");
+    let consumer_last_delivered = *delivered_rx.borrow();
+    let ring_buffer_oldest = ring_buffer.oldest();
+
+    let computed = consumer_last_delivered.unwrap_or_else(|| {
+        // No consumer yet — hold at oldest ring buffer entry to prevent WAL pruning
+        // of unseen blocks. If ring buffer is empty, report current tip.
+        ring_buffer_oldest.unwrap_or(current_tip)
+    });
+
+    // Safety cap: never fall behind tip - MAX_BTL to prevent unbounded WAL growth
+    let absolute_floor = current_tip.number.saturating_sub(MAX_BTL);
+    let height = if computed.number < absolute_floor {
+        ring_buffer
+            .first_at_or_after(absolute_floor)
+            .unwrap_or(current_tip)
+    } else {
+        computed
+    };
+
+    // Monotonic: never report lower than previously reported
+    if height.number > max_reported.number {
+        *max_reported = height;
+        let _ = ctx.send_finished_height(height);
+        debug!(number = height.number, "reported finished height");
     }
 }

@@ -138,6 +138,14 @@ impl RingBuffer {
     }
 
     #[must_use]
+    pub fn first_at_or_after(&self, min_block: u64) -> Option<BlockNumHash> {
+        self.entries
+            .iter()
+            .find(|(bnh, _)| bnh.number >= min_block)
+            .map(|(bnh, _)| *bnh)
+    }
+
+    #[must_use]
     pub const fn memory_usage(&self) -> u64 {
         self.memory_usage
     }

@@ -1,4 +1,4 @@
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -75,6 +75,13 @@ fn is_watermark(batch: &RecordBatch) -> bool {
         .column_by_name("op")
         .and_then(|c| c.as_any().downcast_ref::<UInt8Array>())
         .is_some_and(|col| !col.is_empty() && col.value(0) == 0xFF)
+}
+
+/// Read and discard the 17-byte handshake response after subscribing.
+fn consume_handshake(stream: &std::os::unix::net::UnixStream) {
+    let mut buf = [0u8; 17];
+    (&*stream).read_exact(&mut buf).expect("handshake read");
+    assert_eq!(buf[0], 1, "protocol version echo should be 1");
 }
 
 struct TestHarness {
@@ -161,6 +168,9 @@ async fn full_subscribe_and_replay() {
 
     (&std_client).write_all(&subscribe_msg(0)).unwrap();
 
+    // Read handshake response before IPC stream
+    consume_handshake(&std_client);
+
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let reader = StreamReader::try_new(&std_client, None).unwrap();
@@ -194,11 +204,12 @@ async fn full_subscribe_and_replay() {
         .send(vec![(snapshot_bnh, snapshot_batch)])
         .unwrap();
 
-    snap_req.replay_done_tx.send(()).unwrap();
+    // Writer signals replay_done automatically after writing snapshot + watermark.
+    // The notification loop (us in this test) awaits the Receiver.
+    // We just need to wait for it to complete.
+    let _ = snap_req.replay_done_rx.await;
 
     // Wait for the server to finish replay and enter the live stream loop.
-    // The server drains batch_rx after receiving the snapshot reply, so sending
-    // a live batch too early would cause it to be discarded.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let live_bnh = BlockNumHash::new(20, B256::repeat_byte(20));
@@ -288,6 +299,9 @@ async fn cancellation_disconnects_consumer() {
 
     (&std_a).write_all(&subscribe_msg(0)).unwrap();
 
+    // Read handshake response before draining
+    consume_handshake(&std_a);
+
     let _drain_a = tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -303,7 +317,8 @@ async fn cancellation_disconnects_consumer() {
         .expect("snapshot request timed out")
         .unwrap();
     snap_a.reply_tx.send(vec![]).unwrap();
-    snap_a.replay_done_tx.send(()).unwrap();
+    // Writer signals replay_done automatically; await it
+    let _ = snap_a.replay_done_rx.await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 

@@ -60,7 +60,8 @@ pub struct ProbeResponse {
 pub struct SnapshotRequest {
     pub resume_block: u64,
     pub reply_tx: oneshot::Sender<Vec<(BlockNumHash, RecordBatch)>>,
-    pub replay_done_tx: oneshot::Sender<()>,
+    /// Notification loop awaits this; writer sends when replay is complete.
+    pub replay_done_rx: oneshot::Receiver<()>,
 }
 
 const DEFAULT_GRACE_WINDOW: Duration = Duration::from_secs(1);
@@ -108,6 +109,10 @@ impl GraceState {
         }
     }
 
+    pub const fn force_disconnect(&mut self) {
+        self.should_disconnect = true;
+    }
+
     pub const fn reset(&mut self) {
         self.first_failure_time = None;
         self.failure_count = 0;
@@ -117,6 +122,7 @@ impl GraceState {
 
 const WRITER_CHANNEL_SIZE: usize = 16;
 const MAX_CLIENT_MSG_LEN: usize = 64;
+const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
 
 pub async fn socket_writer_task(
     socket_path: PathBuf,
@@ -169,6 +175,7 @@ pub async fn socket_writer_task(
         }
 
         consumer_connected.store(false, Ordering::Release);
+        // TODO: metrics::gauge!("mote_exex_consumer_connected").set(0);
     }
 
     let _ = std::fs::remove_file(&socket_path);
@@ -202,6 +209,16 @@ async fn handle_connection(
         }
         ClientMessage::Subscribe { resume_block } => {
             consumer_connected.store(true, Ordering::Release);
+            // TODO: metrics::gauge!("mote_exex_consumer_connected").set(1);
+
+            let oldest = rb_stats.oldest.load(Ordering::Relaxed);
+            let tip = rb_stats.tip.load(Ordering::Relaxed);
+            let mut resp = [0u8; HANDSHAKE_RESPONSE_SIZE];
+            resp[0] = 1; // protocol version echo
+            resp[1..9].copy_from_slice(&oldest.to_le_bytes());
+            resp[9..17].copy_from_slice(&tip.to_le_bytes());
+            stream.write_all(&resp).await?;
+
             handle_subscribe(
                 stream,
                 resume_block,
@@ -287,7 +304,7 @@ async fn replay_snapshot(
         .send(SnapshotRequest {
             resume_block,
             reply_tx,
-            replay_done_tx,
+            replay_done_rx,
         })
         .await
         .map_err(|_| eyre::eyre!("snapshot channel closed"))?;
@@ -302,7 +319,6 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // Drain stale batches queued before the snapshot was taken
     while batch_rx.try_recv().is_ok() {}
 
     let std_stream = stream.into_std()?;
@@ -319,12 +335,11 @@ async fn replay_snapshot(
         Ok(())
     });
 
-    let mut last_bnh: Option<BlockNumHash> = None;
-    for (bnh, batch) in &snapshot {
+    let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
+    for (_, batch) in &snapshot {
         if writer_tx.send(batch.clone()).await.is_err() {
             return Err(eyre::eyre!("writer closed during snapshot replay"));
         }
-        last_bnh = Some(*bnh);
     }
 
     let tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
@@ -333,9 +348,7 @@ async fn replay_snapshot(
         return Err(eyre::eyre!("writer closed during watermark send"));
     }
 
-    replay_done_rx
-        .await
-        .map_err(|_| eyre::eyre!("replay_done sender dropped"))?;
+    let _ = replay_done_tx.send(());
 
     info!(tip, "snapshot replay complete, entering live stream");
 
@@ -386,6 +399,7 @@ async fn stream_live(
 
         let sent = match writer_tx.try_send(batch) {
             Ok(()) => {
+                // TODO: metrics::counter!("mote_exex_batches_sent_total").increment(1);
                 grace.reset();
                 true
             }
@@ -393,6 +407,7 @@ async fn stream_live(
                 grace.record_failure();
                 if grace.should_disconnect {
                     warn!("backpressure threshold reached, disconnecting consumer");
+                    // TODO: metrics::counter!("mote_exex_consumer_disconnects_total").increment(1);
                     shutdown_writer(writer_tx, write_handle).await;
                     return Ok(());
                 }
@@ -485,6 +500,14 @@ mod tests {
         assert!(!state.should_disconnect);
         assert_eq!(state.failure_count, 0);
         assert!(state.first_failure_time.is_none());
+    }
+
+    #[test]
+    fn force_disconnect_sets_flag() {
+        let mut state = GraceState::default();
+        assert!(!state.should_disconnect);
+        state.force_disconnect();
+        assert!(state.should_disconnect);
     }
 
     #[test]
