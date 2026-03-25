@@ -97,6 +97,10 @@ graph TB
 
 `mote-analytics` runs as a separate binary consuming that stream. In-memory table of all live entities, SQL via Flight SQL, JSON-RPC endpoint. If it crashes or falls behind, blocks keep getting produced - the node doesn't know or care.
 
+### Why columnar (not row-oriented)
+
+All the analytics queries are scans and filters - entities by annotation, aggregation by expiration block - not point lookups by key. That's what the on-chain trie is for. Columnar wins here, and the whole pipeline is already Arrow from ExEx through the ring buffer into DataFusion. A row store would just mean serializing Arrow into rows on ingest and back to columnar on query for no reason.
+
 ### Why Arrow + DataFusion (not SQLite)
 
 Arrow is the in-memory format at every stage - from ExEx output through query execution. Nothing gets serialized or copied between formats.
