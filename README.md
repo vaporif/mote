@@ -151,17 +151,6 @@ On analytics restart, `mote-analytics` connects to the ExEx IPC stream and rebui
 
 If the ExEx's IPC buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects mote-analytics, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and the WAL retains notifications until the ExEx catches up.
 
-## Crate structure
-
-```
-mote/crates/
-├── mote-primitives/     # Core types: Entity, MoteTransaction, annotations, storage keys
-├── mote-engine/         # Custom BlockExecutorFactory wrapping EthBlockExecutorFactory
-├── mote-exex/           # ExEx: event logs → Arrow RecordBatch → IPC stream
-├── mote-analytics/      # Separate binary: DataFusion + Flight SQL + entity RPC
-└── mote-node/           # Node binary: reth NodeBuilder + custom executor + ExEx
-```
-
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
