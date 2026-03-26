@@ -1,0 +1,24 @@
+[package]
+name = "glint-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight Rust SDK for the Glint ephemeral entity layer"
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+glint-primitives.workspace = true
+
+alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
+alloy-rlp.workspace = true
+
+jsonrpsee = { workspace = true, features = ["http-client"] }
+tokio = { workspace = true, features = ["full"] }
+eyre.workspace = true
+serde.workspace = true

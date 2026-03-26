@@ -6,7 +6,8 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes};
 use arrow::{
     array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder,
+        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
+        UInt64Builder,
         builder::{MapBuilder, MapFieldNames},
     },
     datatypes::{DataType, Field, Fields, Schema, SchemaRef},
@@ -24,6 +25,8 @@ pub struct EntityRow {
     pub numeric_annotations: Vec<(String, u64)>,
     pub created_at_block: u64,
     pub tx_hash: B256,
+    pub extend_policy: u8,
+    pub operator: Option<Address>,
 }
 
 #[derive(Debug, Default)]
@@ -94,6 +97,8 @@ impl EntityStore {
         self.by_owner.clear();
     }
 
+    // O(n) rebuild every block; fine up to ~1M entities.
+    // Skip when no mutations occurred.
     pub fn to_record_batch(&self) -> RecordBatch {
         let n = self.entities.len();
 
@@ -116,6 +121,8 @@ impl EntityStore {
 
         let mut created_b = UInt64Builder::with_capacity(n);
         let mut tx_hash_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
+        let mut extend_policy_b = UInt8Builder::with_capacity(n);
+        let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
 
         for row in self.entities.values() {
             entity_key_b
@@ -148,6 +155,13 @@ impl EntityStore {
             tx_hash_b
                 .append_value(row.tx_hash.as_slice())
                 .expect("B256 is always 32 bytes");
+            extend_policy_b.append_value(row.extend_policy);
+            match row.operator {
+                Some(op) => operator_b
+                    .append_value(op.as_slice())
+                    .expect("Address is always 20 bytes"),
+                None => operator_b.append_null(),
+            }
         }
 
         let columns: Vec<ArrayRef> = vec![
@@ -160,6 +174,8 @@ impl EntityStore {
             Arc::new(numeric_ann_b.finish()),
             Arc::new(created_b.finish()),
             Arc::new(tx_hash_b.finish()),
+            Arc::new(extend_policy_b.finish()),
+            Arc::new(operator_b.finish()),
         ];
 
         RecordBatch::try_new(entity_schema(), columns).expect("columns must match entity schema")
@@ -210,6 +226,8 @@ fn build_entity_schema() -> Schema {
         ),
         Field::new("created_at_block", DataType::UInt64, false),
         Field::new("tx_hash", DataType::FixedSizeBinary(32), false),
+        Field::new("extend_policy", DataType::UInt8, false),
+        Field::new("operator", DataType::FixedSizeBinary(20), true),
     ])
 }
 
@@ -235,6 +253,8 @@ mod tests {
             numeric_annotations: vec![("n1".into(), 42)],
             created_at_block: 1,
             tx_hash: B256::repeat_byte(0xAA),
+            extend_policy: 0,
+            operator: Some(Address::ZERO),
         }
     }
 
@@ -282,7 +302,7 @@ mod tests {
         store.insert(sample_row(0x01));
         let batch = store.to_record_batch();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 9);
+        assert_eq!(batch.num_columns(), 11);
         assert!(batch.schema().field_with_name("entity_key").is_ok());
         assert!(batch.schema().field_with_name("owner").is_ok());
         assert!(batch.schema().field_with_name("expires_at_block").is_ok());
@@ -297,6 +317,8 @@ mod tests {
         );
         assert!(batch.schema().field_with_name("created_at_block").is_ok());
         assert!(batch.schema().field_with_name("tx_hash").is_ok());
+        assert!(batch.schema().field_with_name("extend_policy").is_ok());
+        assert!(batch.schema().field_with_name("operator").is_ok());
     }
 
     #[test]
@@ -304,6 +326,6 @@ mod tests {
         let store = EntityStore::new();
         let batch = store.to_record_batch();
         assert_eq!(batch.num_rows(), 0);
-        assert_eq!(batch.num_columns(), 9);
+        assert_eq!(batch.num_columns(), 11);
     }
 }

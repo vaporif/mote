@@ -1,12 +1,12 @@
 use alloy_evm::{
-    Database, EvmFactory,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::EthTxResult,
     precompiles::PrecompilesMap,
+    Database, EvmFactory,
 };
 use alloy_primitives::Log;
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
-use revm::{Inspector, context::result::ResultAndState, database::State};
+use revm::{context::result::ResultAndState, database::State, Inspector};
 use std::marker::PhantomData;
 
 use super::{GlintBlockExecutor, GlintBlockExecutorFactory, GlintResultBuilder, GlintTransaction};
@@ -30,7 +30,6 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
                 blob_gas_used: 0,
                 tx_type,
             },
-            // CRUD results are system-processed; the real sender is in entity metadata
             is_deposit: false,
             sender: alloy_primitives::Address::ZERO,
         }

@@ -299,6 +299,8 @@ mod tests {
             numeric_annotations: vec![("price".into(), 1000)],
             created_at_block: 1,
             tx_hash: B256::repeat_byte(0xAA),
+            extend_policy: 0,
+            operator: Some(Address::ZERO),
         });
         store
     }

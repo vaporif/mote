@@ -17,6 +17,8 @@ pub enum EntityEvent {
         string_values: Vec<String>,
         numeric_keys: Vec<String>,
         numeric_values: Vec<u64>,
+        extend_policy: u8,
+        operator: Address,
     },
     Updated {
         entity_key: B256,
@@ -29,10 +31,13 @@ pub enum EntityEvent {
         string_values: Vec<String>,
         numeric_keys: Vec<String>,
         numeric_values: Vec<u64>,
+        extend_policy: u8,
+        operator: Address,
     },
     Deleted {
         entity_key: B256,
         owner: Address,
+        sender: Address,
     },
     Expired {
         entity_key: B256,
@@ -42,6 +47,7 @@ pub enum EntityEvent {
         entity_key: B256,
         old_expires_at: u64,
         new_expires_at: u64,
+        owner: Address,
     },
 }
 
@@ -75,6 +81,8 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 string_values: d.string_annotation_values,
                 numeric_keys: d.numeric_annotation_keys,
                 numeric_values: d.numeric_annotation_values,
+                extend_policy: d.extend_policy,
+                operator: d.operator,
             }))
         }
         s if s == EntityUpdated::SIGNATURE_HASH => {
@@ -96,6 +104,8 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 string_values: d.string_annotation_values,
                 numeric_keys: d.numeric_annotation_keys,
                 numeric_values: d.numeric_annotation_values,
+                extend_policy: d.extend_policy,
+                operator: d.operator,
             }))
         }
         s if s == EntityDeleted::SIGNATURE_HASH => {
@@ -103,6 +113,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
             Ok(Some(EntityEvent::Deleted {
                 entity_key: d.entity_key,
                 owner: d.owner,
+                sender: d.sender,
             }))
         }
         s if s == EntityExpired::SIGNATURE_HASH => {
@@ -118,6 +129,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 entity_key: d.entity_key,
                 old_expires_at: d.old_expires_at,
                 new_expires_at: d.new_expires_at,
+                owner: d.owner,
             }))
         }
         _ => {
@@ -177,6 +189,8 @@ mod tests {
                 numeric_keys: vec!["n1".into()],
                 numeric_values: vec![42],
             },
+            0,
+            Address::ZERO,
         )
     }
 
@@ -191,6 +205,8 @@ mod tests {
                 expires_at,
                 content_type,
                 payload,
+                extend_policy,
+                operator,
                 ..
             } => {
                 assert_eq!(entity_key, B256::repeat_byte(0x01));
@@ -198,6 +214,8 @@ mod tests {
                 assert_eq!(expires_at, 100);
                 assert_eq!(content_type, "text/plain");
                 assert_eq!(payload.as_ref(), b"hello");
+                assert_eq!(extend_policy, 0);
+                assert_eq!(operator, Address::ZERO);
             }
             _ => panic!("expected Created"),
         }
@@ -218,12 +236,16 @@ mod tests {
                 numeric_keys: vec![],
                 numeric_values: vec![],
             },
+            1,
+            Address::repeat_byte(0x42),
         );
         let EntityEvent::Updated {
             old_expires_at,
             new_expires_at,
             content_type,
             payload,
+            extend_policy,
+            operator,
             ..
         } = parse_log(&log).unwrap().unwrap()
         else {
@@ -233,6 +255,8 @@ mod tests {
         assert_eq!(new_expires_at, 100);
         assert_eq!(content_type, "application/json");
         assert_eq!(payload.as_ref(), b"updated");
+        assert_eq!(extend_policy, 1);
+        assert_eq!(operator, Address::repeat_byte(0x42));
     }
 
     #[test]
@@ -241,11 +265,21 @@ mod tests {
             PROCESSOR_ADDRESS,
             B256::repeat_byte(0x03),
             Address::repeat_byte(0x04),
+            Address::repeat_byte(0x05),
         );
-        assert!(matches!(
-            parse_log(&del_log).unwrap().unwrap(),
-            EntityEvent::Deleted { entity_key, .. } if entity_key == B256::repeat_byte(0x03)
-        ));
+        let event = parse_log(&del_log).unwrap().unwrap();
+        match event {
+            EntityEvent::Deleted {
+                entity_key,
+                owner,
+                sender,
+            } => {
+                assert_eq!(entity_key, B256::repeat_byte(0x03));
+                assert_eq!(owner, Address::repeat_byte(0x04));
+                assert_eq!(sender, Address::repeat_byte(0x05));
+            }
+            _ => panic!("expected Deleted"),
+        }
 
         let exp_log = EntityExpired::new_log(
             PROCESSOR_ADDRESS,
@@ -259,11 +293,14 @@ mod tests {
     }
 
     #[test]
-    fn extended_has_no_owner() {
-        let log = EntityExtended::new_log(PROCESSOR_ADDRESS, B256::repeat_byte(0x05), 10, 20);
+    fn extended_has_owner() {
+        let owner = Address::repeat_byte(0x09);
+        let log =
+            EntityExtended::new_log(PROCESSOR_ADDRESS, B256::repeat_byte(0x05), 10, 20, owner);
         let EntityEvent::Extended {
             old_expires_at,
             new_expires_at,
+            owner: ext_owner,
             ..
         } = parse_log(&log).unwrap().unwrap()
         else {
@@ -271,6 +308,7 @@ mod tests {
         };
         assert_eq!(old_expires_at, 10);
         assert_eq!(new_expires_at, 20);
+        assert_eq!(ext_owner, owner);
     }
 
     #[test]
@@ -283,6 +321,8 @@ mod tests {
             "text/plain".into(),
             Bytes::from_static(b"hello"),
             empty_annotations(),
+            0,
+            Address::ZERO,
         );
         assert!(parse_log(&log).unwrap().is_none());
     }
@@ -309,6 +349,8 @@ mod tests {
                 numeric_keys: vec![],
                 numeric_values: vec![],
             },
+            0,
+            Address::ZERO,
         );
         assert!(parse_log(&log).is_err());
     }

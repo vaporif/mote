@@ -1,6 +1,7 @@
-use alloy_primitives::{B256, U256, keccak256};
+use alloy_primitives::{keccak256, Address, B256, U256};
 
 const STORAGE_PREFIX: &[u8] = b"glintEntityMetaData";
+const OPERATOR_PREFIX: &[u8] = b"glintOperator";
 
 /// `keccak256("glintEntityMetaData" || entity_key)`
 pub fn entity_storage_key(entity_key: &B256) -> B256 {
@@ -17,10 +18,35 @@ pub fn entity_content_hash_key(entity_key: &B256) -> B256 {
     B256::from(num.to_be_bytes())
 }
 
-/// `keccak256(rlp(payload) || rlp(content_type) || rlp(string_anns) || rlp(numeric_anns))`
-///
-/// Inputs must be raw calldata slices — re-encoding would break cross-node
-/// determinism if the original RLP was non-canonical.
+#[must_use]
+pub fn entity_count_key() -> B256 {
+    keccak256(b"glintEntityCount")
+}
+
+/// `keccak256("glintOperator" || entity_key)`
+pub fn entity_operator_key(entity_key: &B256) -> B256 {
+    let mut preimage = Vec::with_capacity(OPERATOR_PREFIX.len() + 32);
+    preimage.extend_from_slice(OPERATOR_PREFIX);
+    preimage.extend_from_slice(entity_key.as_slice());
+    keccak256(&preimage)
+}
+
+/// Left-aligned: `address (20) || zero-pad (12)`.
+#[must_use]
+pub fn encode_operator_value(addr: Address) -> U256 {
+    let mut bytes = [0u8; 32];
+    bytes[0..20].copy_from_slice(addr.as_slice());
+    U256::from_be_bytes(bytes)
+}
+
+/// Inverse of [`encode_operator_value`].
+#[must_use]
+pub fn decode_operator_value(value: U256) -> Address {
+    let bytes: [u8; 32] = value.to_be_bytes();
+    Address::from_slice(&bytes[0..20])
+}
+
+/// Hash raw RLP slices — don't re-encode, non-canonical RLP would break determinism.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
     content_type_rlp: &[u8],
@@ -84,6 +110,49 @@ mod tests {
         expected_preimage.extend_from_slice(string_annotations_rlp);
         expected_preimage.extend_from_slice(numeric_annotations_rlp);
         assert_eq!(hash, keccak256(&expected_preimage));
+    }
+
+    #[test]
+    fn operator_key_is_deterministic() {
+        let entity_key = B256::repeat_byte(0x42);
+        let key1 = entity_operator_key(&entity_key);
+        let key2 = entity_operator_key(&entity_key);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn operator_key_matches_spec_preimage() {
+        let entity_key = B256::repeat_byte(0x01);
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(b"glintOperator");
+        preimage.extend_from_slice(entity_key.as_slice());
+        let expected = keccak256(&preimage);
+        assert_eq!(entity_operator_key(&entity_key), expected);
+    }
+
+    #[test]
+    fn operator_value_roundtrip() {
+        use alloy_primitives::Address;
+
+        let addr = Address::repeat_byte(0x42);
+        let encoded = super::encode_operator_value(addr);
+        let decoded = super::decode_operator_value(encoded);
+        assert_eq!(decoded, addr);
+    }
+
+    #[test]
+    fn operator_value_zero_is_zero_address() {
+        let decoded = super::decode_operator_value(U256::ZERO);
+        assert_eq!(decoded, alloy_primitives::Address::ZERO);
+    }
+
+    #[test]
+    fn operator_key_differs_from_storage_key() {
+        let entity_key = B256::repeat_byte(0x01);
+        assert_ne!(
+            entity_operator_key(&entity_key),
+            entity_storage_key(&entity_key)
+        );
     }
 
     #[test]

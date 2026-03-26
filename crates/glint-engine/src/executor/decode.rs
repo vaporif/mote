@@ -15,8 +15,7 @@ fn skip_rlp_item<'a>(data: &'a [u8], cursor: &mut &'a [u8]) -> Result<&'a [u8], 
     Ok(&data[start..end])
 }
 
-/// Decodes the tx normally, then walks the RLP headers a second time to
-/// capture the raw byte slices needed for deterministic content hashing.
+/// Decode tx and extract raw RLP slices for deterministic content hashing.
 pub fn decode_with_raw_slices(
     calldata: &[u8],
 ) -> Result<DecodedGlintTransaction<'_>, alloy_rlp::Error> {
@@ -37,13 +36,16 @@ pub fn decode_with_raw_slices(
     if creates_header.list && creates_header.payload_length > 0 {
         let creates_end = calldata.len() - cursor.len() + creates_header.payload_length;
         while calldata.len() - cursor.len() < creates_end {
-            // [btl, content_type, payload, string_anns, numeric_anns]
-            let _item_header = Header::decode(&mut cursor)?;
+            let item_header = Header::decode(&mut cursor)?;
+            let item_end = calldata.len() - cursor.len() + item_header.payload_length;
             let _btl = skip_rlp_item(calldata, &mut cursor)?;
             let ct = skip_rlp_item(calldata, &mut cursor)?;
             let payload = skip_rlp_item(calldata, &mut cursor)?;
             let sa = skip_rlp_item(calldata, &mut cursor)?;
             let na = skip_rlp_item(calldata, &mut cursor)?;
+            while calldata.len() - cursor.len() < item_end {
+                let _ = skip_rlp_item(calldata, &mut cursor)?;
+            }
 
             create_slices.push(RawContentSlices {
                 content_type_rlp: ct,
@@ -58,14 +60,17 @@ pub fn decode_with_raw_slices(
     if updates_header.list && updates_header.payload_length > 0 {
         let updates_end = calldata.len() - cursor.len() + updates_header.payload_length;
         while calldata.len() - cursor.len() < updates_end {
-            // [entity_key, btl, content_type, payload, string_anns, numeric_anns]
-            let _item_header = Header::decode(&mut cursor)?;
+            let item_header = Header::decode(&mut cursor)?;
+            let item_end = calldata.len() - cursor.len() + item_header.payload_length;
             let _ek = skip_rlp_item(calldata, &mut cursor)?;
             let _btl = skip_rlp_item(calldata, &mut cursor)?;
             let ct = skip_rlp_item(calldata, &mut cursor)?;
             let payload = skip_rlp_item(calldata, &mut cursor)?;
             let sa = skip_rlp_item(calldata, &mut cursor)?;
             let na = skip_rlp_item(calldata, &mut cursor)?;
+            while calldata.len() - cursor.len() < item_end {
+                let _ = skip_rlp_item(calldata, &mut cursor)?;
+            }
 
             update_slices.push(RawContentSlices {
                 content_type_rlp: ct,
@@ -111,6 +116,8 @@ mod tests {
                     key: "priority".into(),
                     value: 1,
                 }],
+                extend_policy: Default::default(),
+                operator: None,
             }],
             updates: vec![],
             deletes: vec![],
@@ -153,6 +160,8 @@ mod tests {
                     payload: b"{\"a\":1}".to_vec(),
                     string_annotations: vec![],
                     numeric_annotations: vec![],
+                    extend_policy: Default::default(),
+                    operator: None,
                 },
                 Create {
                     btl: 200,
@@ -163,6 +172,8 @@ mod tests {
                         value: "v2".into(),
                     }],
                     numeric_annotations: vec![],
+                    extend_policy: Default::default(),
+                    operator: None,
                 },
             ],
             updates: vec![],
@@ -205,6 +216,8 @@ mod tests {
                     value: "2".into(),
                 }],
                 numeric_annotations: vec![],
+                extend_policy: None,
+                operator: None,
             }],
             deletes: vec![],
             extends: vec![],

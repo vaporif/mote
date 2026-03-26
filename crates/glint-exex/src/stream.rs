@@ -60,7 +60,6 @@ pub struct ProbeResponse {
 pub struct SnapshotRequest {
     pub resume_block: u64,
     pub reply_tx: oneshot::Sender<Vec<(BlockNumHash, RecordBatch)>>,
-    /// Notification loop awaits this; writer sends when replay is complete.
     pub replay_done_rx: oneshot::Receiver<()>,
 }
 

@@ -1,10 +1,10 @@
 use alloy_primitives::B256;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// Not persisted - rebuilt from event logs on cold start.
 #[derive(Debug, Default)]
 pub struct ExpirationIndex {
-    index: HashMap<u64, Vec<B256>>,
+    index: HashMap<u64, BTreeSet<B256>>,
     last_drained: Option<u64>,
 }
 
@@ -14,28 +14,31 @@ impl ExpirationIndex {
     }
 
     pub fn insert(&mut self, block_number: u64, entity_key: B256) {
-        self.index.entry(block_number).or_default().push(entity_key);
+        self.index
+            .entry(block_number)
+            .or_default()
+            .insert(entity_key);
     }
 
     pub fn remove(&mut self, block_number: u64, entity_key: &B256) {
         if let Some(keys) = self.index.get_mut(&block_number) {
-            keys.retain(|k| k != entity_key);
+            keys.remove(entity_key);
             if keys.is_empty() {
                 self.index.remove(&block_number);
             }
         }
     }
 
-    pub fn get_expired(&self, block_number: u64) -> Option<&[B256]> {
-        self.index.get(&block_number).map(Vec::as_slice)
+    pub fn get_expired(&self, block_number: u64) -> Option<&BTreeSet<B256>> {
+        self.index.get(&block_number)
     }
 
-    /// Sorted for deterministic consensus ordering.
     pub fn drain_block(&mut self, block_number: u64) -> Vec<B256> {
         self.last_drained = Some(block_number);
-        let mut keys = self.index.remove(&block_number).unwrap_or_default();
-        keys.sort();
-        keys
+        self.index
+            .remove(&block_number)
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default()
     }
 
     pub const fn last_drained_block(&self) -> Option<u64> {
@@ -59,6 +62,10 @@ impl ExpirationIndex {
             self.insert(expires_at_block, entity_key);
         }
     }
+
+    pub fn iter_entries(&self) -> impl Iterator<Item = (&u64, &BTreeSet<B256>)> {
+        self.index.iter()
+    }
 }
 
 #[cfg(test)]
@@ -71,8 +78,9 @@ mod tests {
         let mut idx = ExpirationIndex::new();
         let key = B256::repeat_byte(0x01);
         idx.insert(100, key);
-        let entities = idx.get_expired(100);
-        assert_eq!(entities, Some(vec![key].as_slice()));
+        let expired = idx.get_expired(100).unwrap();
+        assert!(expired.contains(&key));
+        assert_eq!(expired.len(), 1);
     }
 
     #[test]
@@ -92,8 +100,7 @@ mod tests {
         idx.insert(100, key_c);
 
         let drained = idx.drain_block(100);
-        let mut expected = vec![key_a, key_b, key_c];
-        expected.sort();
+        let expected = vec![key_b, key_c, key_a]; // 0x11 < 0x55 < 0xAA
         assert_eq!(drained, expected);
     }
 
@@ -115,8 +122,10 @@ mod tests {
 
         idx.remove(100, &key_a);
 
-        let remaining = idx.get_expired(100);
-        assert_eq!(remaining, Some(vec![key_b].as_slice()));
+        let remaining = idx.get_expired(100).unwrap();
+        assert!(remaining.contains(&key_b));
+        assert!(!remaining.contains(&key_a));
+        assert_eq!(remaining.len(), 1);
     }
 
     #[test]
@@ -141,7 +150,7 @@ mod tests {
         assert_eq!(idx.get_expired(100), None);
         assert_eq!(idx.get_expired(101), None);
         assert_eq!(idx.get_expired(102), None);
-        assert_eq!(idx.get_expired(200).map(<[B256]>::len), Some(1));
+        assert_eq!(idx.get_expired(200).map(BTreeSet::len), Some(1));
     }
 
     #[test]
@@ -177,8 +186,24 @@ mod tests {
 
         idx.rebuild_from_logs(logs.into_iter());
 
-        assert_eq!(idx.get_expired(100).map(<[B256]>::len), Some(2));
-        assert_eq!(idx.get_expired(200).map(<[B256]>::len), Some(1));
+        assert_eq!(idx.get_expired(100).map(BTreeSet::len), Some(2));
+        assert_eq!(idx.get_expired(200).map(BTreeSet::len), Some(1));
         assert_eq!(idx.get_expired(300), None);
+    }
+
+    #[test]
+    fn iter_entries_yields_all_blocks() {
+        let mut idx = ExpirationIndex::new();
+        let key_a = B256::repeat_byte(0x01);
+        let key_b = B256::repeat_byte(0x02);
+        let key_c = B256::repeat_byte(0x03);
+
+        idx.insert(100, key_a);
+        idx.insert(100, key_b);
+        idx.insert(200, key_c);
+
+        let mut entries: Vec<_> = idx.iter_entries().map(|(b, s)| (*b, s.len())).collect();
+        entries.sort_by_key(|(b, _)| *b);
+        assert_eq!(entries, vec![(100, 2), (200, 1)]);
     }
 }

@@ -1,0 +1,127 @@
+use alloy_primitives::{Address, B256, U256};
+use jsonrpsee::core::RpcResult;
+use jsonrpsee::core::async_trait;
+use jsonrpsee::proc_macros::rpc;
+use reth_provider::StateProviderFactory;
+
+use glint_engine::slot_counter::ENTITY_COUNT_KEY;
+use glint_primitives::constants::PROCESSOR_ADDRESS;
+use glint_primitives::entity::EntityMetadata;
+use glint_primitives::storage::{
+    decode_operator_value, entity_content_hash_key, entity_operator_key, entity_storage_key,
+};
+use glint_primitives::transaction::ExtendPolicy;
+
+// TODO: glint_getEntitiesByOwner -- needs reverse index (Level B)
+// TODO: glint_getUsedSlots -- trivial, read one slot (Level B)
+// TODO: glint_getBlockTiming -- needs parent header (Level B)
+// TODO: glint_queryEntities -- needs query engine / sidecar proxy (Level C)
+// TODO: glint_getEntityPayload -- needs event logs / sidecar (Level C)
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityInfo {
+    pub owner: Address,
+    pub expires_at_block: u64,
+    pub extend_policy: ExtendPolicy,
+    pub operator: Option<Address>,
+    pub content_hash: B256,
+}
+
+#[rpc(server, namespace = "glint")]
+pub trait GlintApi {
+    #[method(name = "getEntity")]
+    async fn get_entity(&self, entity_key: B256) -> RpcResult<Option<EntityInfo>>;
+
+    #[method(name = "getEntityCount")]
+    async fn get_entity_count(&self) -> RpcResult<u64>;
+}
+
+#[derive(Debug, Clone)]
+pub struct GlintRpc<Provider> {
+    provider: Provider,
+}
+
+impl<Provider> GlintRpc<Provider> {
+    pub const fn new(provider: Provider) -> Self {
+        Self { provider }
+    }
+}
+
+#[async_trait]
+impl<Provider> GlintApiServer for GlintRpc<Provider>
+where
+    Provider: StateProviderFactory + 'static,
+{
+    async fn get_entity(&self, entity_key: B256) -> RpcResult<Option<EntityInfo>> {
+        let state = self
+            .provider
+            .latest()
+            .map_err(|e| internal_err(format!("failed to get latest state: {e}")))?;
+
+        let meta_slot = entity_storage_key(&entity_key);
+        let meta_value = state
+            .storage(PROCESSOR_ADDRESS, meta_slot)
+            .map_err(|e| internal_err(format!("failed to read metadata slot: {e}")))?;
+
+        let Some(meta_value) = meta_value else {
+            return Ok(None);
+        };
+
+        if meta_value == U256::ZERO {
+            return Ok(None);
+        }
+
+        let meta = EntityMetadata::decode(&meta_value.to_be_bytes::<32>());
+
+        let operator = if meta.has_operator {
+            let op_slot = entity_operator_key(&entity_key);
+            state
+                .storage(PROCESSOR_ADDRESS, op_slot)
+                .map_err(|e| internal_err(format!("failed to read operator slot: {e}")))?
+                .map(decode_operator_value)
+        } else {
+            None
+        };
+
+        let content_hash_slot = entity_content_hash_key(&entity_key);
+        let content_hash = state
+            .storage(PROCESSOR_ADDRESS, content_hash_slot)
+            .map_err(|e| internal_err(format!("failed to read content hash slot: {e}")))?
+            .map_or(B256::ZERO, |v| B256::from(v.to_be_bytes::<32>()));
+
+        Ok(Some(EntityInfo {
+            owner: meta.owner,
+            expires_at_block: meta.expires_at_block,
+            extend_policy: meta.extend_policy,
+            operator,
+            content_hash,
+        }))
+    }
+
+    async fn get_entity_count(&self) -> RpcResult<u64> {
+        let state = self
+            .provider
+            .latest()
+            .map_err(|e| internal_err(format!("failed to get latest state: {e}")))?;
+
+        let count_value = state
+            .storage(PROCESSOR_ADDRESS, *ENTITY_COUNT_KEY)
+            .map_err(|e| internal_err(format!("failed to read entity count slot: {e}")))?;
+
+        let count: u64 = count_value
+            .unwrap_or(U256::ZERO)
+            .try_into()
+            .unwrap_or(u64::MAX);
+
+        Ok(count)
+    }
+}
+
+fn internal_err(msg: impl std::fmt::Display) -> jsonrpsee::types::ErrorObject<'static> {
+    jsonrpsee::types::ErrorObject::owned(
+        jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+        msg.to_string(),
+        None::<()>,
+    )
+}

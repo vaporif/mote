@@ -1,3 +1,4 @@
+pub mod checkpoint;
 pub mod executor;
 pub mod expiration;
 pub mod processor;

@@ -12,6 +12,10 @@ pub struct GlintArgs {
     )]
     pub exex_socket_path: PathBuf,
 
+    /// Path for expiration index checkpoint file
+    #[arg(long = "glint.checkpoint-path", default_value = None)]
+    pub checkpoint_path: Option<PathBuf>,
+
     /// Run without `ExEx` (debug builds only)
     #[cfg(debug_assertions)]
     #[arg(long = "glint.disable-exex")]
@@ -36,7 +40,6 @@ mod tests {
 
     use super::*;
 
-    // Wrapper struct since GlintArgs uses Args trait (flatten), not Parser
     #[derive(Debug, Parser)]
     struct TestCli {
         #[command(flatten)]
@@ -58,6 +61,25 @@ mod tests {
         assert_eq!(
             cli.glint.exex_socket_path,
             PathBuf::from("/custom/path.sock")
+        );
+    }
+
+    #[test]
+    fn default_checkpoint_path_is_none() {
+        let cli = TestCli::parse_from(["test"]);
+        assert_eq!(cli.glint.checkpoint_path, None);
+    }
+
+    #[test]
+    fn custom_checkpoint_path() {
+        let cli = TestCli::parse_from([
+            "test",
+            "--glint.checkpoint-path",
+            "/data/glint/expiration-index.bin",
+        ]);
+        assert_eq!(
+            cli.glint.checkpoint_path,
+            Some(PathBuf::from("/data/glint/expiration-index.bin"))
         );
     }
 

@@ -41,6 +41,8 @@ fn sample_created_event() -> EntityEvent {
         string_values: vec!["v1".into()],
         numeric_keys: vec!["n1".into()],
         numeric_values: vec![42],
+        extend_policy: 0,
+        operator: Address::ZERO,
     }
 }
 
@@ -77,7 +79,6 @@ fn is_watermark(batch: &RecordBatch) -> bool {
         .is_some_and(|col| !col.is_empty() && col.value(0) == 0xFF)
 }
 
-/// Read and discard the 17-byte handshake response after subscribing.
 fn consume_handshake(stream: &std::os::unix::net::UnixStream) {
     let mut buf = [0u8; 17];
     (&*stream).read_exact(&mut buf).expect("handshake read");
@@ -168,7 +169,6 @@ async fn full_subscribe_and_replay() {
 
     (&std_client).write_all(&subscribe_msg(0)).unwrap();
 
-    // Read handshake response before IPC stream
     consume_handshake(&std_client);
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
@@ -204,12 +204,8 @@ async fn full_subscribe_and_replay() {
         .send(vec![(snapshot_bnh, snapshot_batch)])
         .unwrap();
 
-    // Writer signals replay_done automatically after writing snapshot + watermark.
-    // The notification loop (us in this test) awaits the Receiver.
-    // We just need to wait for it to complete.
     let _ = snap_req.replay_done_rx.await;
 
-    // Wait for the server to finish replay and enter the live stream loop.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let live_bnh = BlockNumHash::new(20, B256::repeat_byte(20));
@@ -299,7 +295,6 @@ async fn cancellation_disconnects_consumer() {
 
     (&std_a).write_all(&subscribe_msg(0)).unwrap();
 
-    // Read handshake response before draining
     consume_handshake(&std_a);
 
     let _drain_a = tokio::task::spawn_blocking(move || {
@@ -317,7 +312,6 @@ async fn cancellation_disconnects_consumer() {
         .expect("snapshot request timed out")
         .unwrap();
     snap_a.reply_tx.send(vec![]).unwrap();
-    // Writer signals replay_done automatically; await it
     let _ = snap_a.replay_done_rx.await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;

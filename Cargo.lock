@@ -398,6 +398,7 @@ checksum = "de3b431b4e72cd8bd0ec7a50b4be18e73dab74de0dba180eef171055e5d5926e"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
+ "borsh",
  "bytes",
  "cfg-if",
  "const-hex",
@@ -4413,6 +4414,8 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
+ "blake3",
+ "borsh",
  "color-eyre",
  "eyre",
  "glint-primitives",
@@ -4426,6 +4429,7 @@ dependencies = [
  "reth-provider",
  "reth-trie",
  "revm",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4461,6 +4465,9 @@ dependencies = [
  "eyre",
  "glint-engine",
  "glint-primitives",
+ "jsonrpsee",
+ "reth-provider",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -4470,12 +4477,16 @@ dependencies = [
 name = "glint-node-eth"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "clap",
+ "eyre",
  "glint-engine",
  "glint-exex",
  "glint-node",
+ "glint-primitives",
  "parking_lot",
  "reth-ethereum",
+ "reth-provider",
  "serde_json",
  "tracing",
 ]
@@ -4484,16 +4495,20 @@ dependencies = [
 name = "glint-node-op"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "clap",
+ "eyre",
  "glint-engine",
  "glint-exex",
  "glint-node",
+ "glint-primitives",
  "parking_lot",
  "reth-cli-util",
  "reth-node-builder",
  "reth-optimism-cli",
  "reth-optimism-evm",
  "reth-optimism-node",
+ "reth-provider",
  "serde_json",
  "tracing",
 ]
@@ -4511,6 +4526,19 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "glint-sdk"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "eyre",
+ "glint-primitives",
+ "jsonrpsee",
+ "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -10959,6 +10987,7 @@ dependencies = [
  "ark-ff 0.3.0",
  "ark-ff 0.4.2",
  "ark-ff 0.5.0",
+ "borsh",
  "bytes",
  "fastrlp 0.3.1",
  "fastrlp 0.4.0",

@@ -18,9 +18,13 @@ path = "src/main.rs"
 glint-engine = { path = "../../crates/glint-engine" }
 glint-exex = { path = "../../crates/glint-exex" }
 glint-node = { path = "../../crates/glint-node" }
+glint-primitives.workspace = true
 
 reth-ethereum.workspace = true
+reth-provider.workspace = true
 
+alloy-primitives.workspace = true
+eyre.workspace = true
 parking_lot.workspace = true
 clap.workspace = true
 serde_json.workspace = true

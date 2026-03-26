@@ -31,6 +31,8 @@ eyre = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
+borsh = { workspace = true }
+blake3.workspace = true
 
 # OP Stack support (optional)
 alloy-op-evm = { workspace = true, optional = true }
@@ -47,3 +49,4 @@ op = [
 [dev-dependencies]
 reth-ethereum = { workspace = true }
 reth-optimism-chainspec = { workspace = true }
+tempfile = "3"

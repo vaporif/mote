@@ -2,7 +2,7 @@ use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
     ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, MapFieldNames, StringBuilder,
-    UInt8Builder, UInt32Builder, UInt64Builder,
+    UInt32Builder, UInt64Builder, UInt8Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -77,6 +77,8 @@ fn build_schema() -> Schema {
             ),
             true,
         ),
+        Field::new("extend_policy", DataType::UInt8, true),
+        Field::new("operator", DataType::FixedSizeBinary(20), true),
         Field::new("tip_block", DataType::UInt64, false),
         Field::new("op", DataType::UInt8, false),
     ])
@@ -97,6 +99,8 @@ struct BatchBuilders {
     payload: BinaryBuilder,
     string_ann: MapBuilder<StringBuilder, StringBuilder>,
     numeric_ann: MapBuilder<StringBuilder, UInt64Builder>,
+    extend_policy: UInt8Builder,
+    operator: FixedSizeBinaryBuilder,
     tip_block: UInt64Builder,
     op: UInt8Builder,
 }
@@ -126,6 +130,8 @@ impl BatchBuilders {
                 StringBuilder::new(),
                 UInt64Builder::new(),
             ),
+            extend_policy: UInt8Builder::with_capacity(cap),
+            operator: FixedSizeBinaryBuilder::with_capacity(cap, 20),
             tip_block: UInt64Builder::with_capacity(cap),
             op: UInt8Builder::with_capacity(cap),
         }
@@ -147,6 +153,8 @@ impl BatchBuilders {
             Arc::new(self.payload.finish()),
             Arc::new(self.string_ann.finish()),
             Arc::new(self.numeric_ann.finish()),
+            Arc::new(self.extend_policy.finish()),
+            Arc::new(self.operator.finish()),
             Arc::new(self.tip_block.finish()),
             Arc::new(self.op.finish()),
         ];
@@ -184,6 +192,8 @@ pub fn build_record_batch(
                 string_values,
                 numeric_keys,
                 numeric_values,
+                extend_policy,
+                operator,
             } => {
                 b.event_type.append_value(EntityEventType::Created as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
@@ -195,6 +205,9 @@ pub fn build_record_batch(
 
                 append_string_annotations(&mut b.string_ann, string_keys, string_values)?;
                 append_numeric_annotations(&mut b.numeric_ann, numeric_keys, numeric_values)?;
+
+                b.extend_policy.append_value(*extend_policy);
+                b.operator.append_value(operator.as_slice())?;
             }
             EntityEvent::Updated {
                 entity_key,
@@ -207,6 +220,8 @@ pub fn build_record_batch(
                 string_values,
                 numeric_keys,
                 numeric_values,
+                extend_policy,
+                operator,
             } => {
                 b.event_type.append_value(EntityEventType::Updated as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
@@ -218,6 +233,9 @@ pub fn build_record_batch(
 
                 append_string_annotations(&mut b.string_ann, string_keys, string_values)?;
                 append_numeric_annotations(&mut b.numeric_ann, numeric_keys, numeric_values)?;
+
+                b.extend_policy.append_value(*extend_policy);
+                b.operator.append_value(operator.as_slice())?;
             }
             EntityEvent::Deleted {
                 entity_key, owner, ..
@@ -239,16 +257,19 @@ pub fn build_record_batch(
                 entity_key,
                 old_expires_at,
                 new_expires_at,
+                owner,
             } => {
                 b.event_type.append_value(EntityEventType::Extended as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
-                b.owner.append_null();
+                b.owner.append_value(owner.as_slice())?;
                 b.expires_at.append_value(*new_expires_at);
                 b.old_expires_at.append_value(*old_expires_at);
                 b.content_type.append_null();
                 b.payload.append_null();
                 b.string_ann.append(false)?;
                 b.numeric_ann.append(false)?;
+                b.extend_policy.append_null();
+                b.operator.append_null();
             }
         }
     }
@@ -273,6 +294,8 @@ pub fn build_watermark_batch(tip_block: u64) -> eyre::Result<RecordBatch> {
     b.payload.append_null();
     b.string_ann.append(false)?;
     b.numeric_ann.append(false)?;
+    b.extend_policy.append_null();
+    b.operator.append_null();
     b.tip_block.append_value(tip_block);
     b.op.append_value(0xFF);
 
@@ -286,6 +309,8 @@ fn append_null_fields(b: &mut BatchBuilders) -> arrow::error::Result<()> {
     b.payload.append_null();
     b.string_ann.append(false)?;
     b.numeric_ann.append(false)?;
+    b.extend_policy.append_null();
+    b.operator.append_null();
     Ok(())
 }
 
@@ -324,7 +349,7 @@ fn append_numeric_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use glint_primitives::exex_types::BatchOp;
 
     fn sample_created() -> EntityEvent {
@@ -338,6 +363,8 @@ mod tests {
             string_values: vec!["v1".into()],
             numeric_keys: vec!["n1".into()],
             numeric_values: vec![42],
+            extend_policy: 0,
+            operator: Address::ZERO,
         }
     }
 
@@ -345,6 +372,7 @@ mod tests {
         EntityEvent::Deleted {
             entity_key: B256::repeat_byte(0x03),
             owner: Address::repeat_byte(0x04),
+            sender: Address::repeat_byte(0x04),
         }
     }
 
@@ -353,13 +381,14 @@ mod tests {
             entity_key: B256::repeat_byte(0x05),
             old_expires_at: 10,
             new_expires_at: 20,
+            owner: Address::ZERO,
         }
     }
 
     #[test]
     fn schema_column_count() {
         let schema = entity_events_schema();
-        assert_eq!(schema.fields().len(), 16);
+        assert_eq!(schema.fields().len(), 18);
         assert!(schema.field_with_name("block_number").is_ok());
         assert!(schema.field_with_name("block_hash").is_ok());
         assert!(schema.field_with_name("tx_index").is_ok());
@@ -374,6 +403,8 @@ mod tests {
         assert!(schema.field_with_name("payload").is_ok());
         assert!(schema.field_with_name("string_annotations").is_ok());
         assert!(schema.field_with_name("numeric_annotations").is_ok());
+        assert!(schema.field_with_name("extend_policy").is_ok());
+        assert!(schema.field_with_name("operator").is_ok());
         assert!(schema.field_with_name("tip_block").is_ok());
         assert!(schema.field_with_name("op").is_ok());
     }
@@ -395,7 +426,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 16);
+        assert_eq!(batch.num_columns(), 18);
     }
 
     #[test]
@@ -432,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn extended_nulls_owner() {
+    fn extended_populates_owner() {
         let events = vec![EventRow {
             event: sample_extended(),
             tx_index: 0,
@@ -441,7 +472,9 @@ mod tests {
         }];
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
         let owner_col = batch.column_by_name("owner").unwrap();
-        assert!(owner_col.is_null(0));
+        assert!(!owner_col.is_null(0));
+        assert!(batch.column_by_name("extend_policy").unwrap().is_null(0));
+        assert!(batch.column_by_name("operator").unwrap().is_null(0));
     }
 
     #[test]
@@ -456,6 +489,8 @@ mod tests {
         assert!(batch.column_by_name("expires_at_block").unwrap().is_null(0));
         assert!(batch.column_by_name("payload").unwrap().is_null(0));
         assert!(batch.column_by_name("content_type").unwrap().is_null(0));
+        assert!(batch.column_by_name("extend_policy").unwrap().is_null(0));
+        assert!(batch.column_by_name("operator").unwrap().is_null(0));
     }
 
     #[test]

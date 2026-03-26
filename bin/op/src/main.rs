@@ -2,18 +2,25 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use alloy_primitives::B256;
 use clap::{Args, Parser};
 use glint_engine::executor::GlintEvmConfig;
+use glint_engine::expiration::ExpirationIndex;
+use glint_engine::recovery::{
+    load_checkpoint, rebuild_expiration_index, rebuild_expiration_index_partial, save_checkpoint,
+};
 use reth_node_builder::BuilderContext;
 use reth_optimism_cli::Cli;
 use reth_optimism_cli::chainspec::OpChainSpecParser;
 use reth_optimism_evm::OpEvmConfig;
 use reth_optimism_node::OpNode;
 use reth_optimism_node::args::RollupArgs;
-use tracing::info;
+use reth_provider::BlockHashReader;
+use tracing::{info, warn};
 
 use glint_node::cli::GlintArgs;
 use glint_node::genesis::extract_glint_config;
+use glint_node::rpc::{GlintApiServer as _, GlintRpc};
 
 #[derive(Debug, Args)]
 struct GlintOpArgs {
@@ -41,9 +48,16 @@ fn main() {
 
             let enable_exex = !ext.glint.disable_exex();
             let socket_path = ext.glint.exex_socket_path.clone();
+            let checkpoint_path = ext.glint.checkpoint_path.clone();
             let rollup_args = ext.rollup;
 
             let op_node = OpNode::new(rollup_args);
+
+            let shutdown_index: Arc<Mutex<Option<Arc<Mutex<ExpirationIndex>>>>> =
+                Arc::new(Mutex::new(None));
+            let shutdown_index_writer = Arc::clone(&shutdown_index);
+            let shutdown_tip: Arc<Mutex<(u64, B256)>> = Arc::new(Mutex::new((0, B256::ZERO)));
+            let shutdown_tip_writer = Arc::clone(&shutdown_tip);
 
             let handle =
                 builder
@@ -51,15 +65,22 @@ fn main() {
                     .with_components(op_node.components().executor(
                         move |ctx: &BuilderContext<_>| {
                             let tip_block = ctx.head().number;
-                            let expiration_index = glint_engine::recovery::rebuild_expiration_index(
+                            let tip_hash = ctx.head().hash;
+
+                            let expiration_index = try_load_or_rebuild(
                                 ctx.provider(),
                                 &config,
                                 tip_block,
+                                checkpoint_path.as_deref(),
                             );
+
                             let chain_spec = ctx.chain_spec();
 
                             async move {
-                                let shared_index = Arc::new(Mutex::new(expiration_index?));
+                                let idx = expiration_index?;
+                                let shared_index = Arc::new(Mutex::new(idx));
+                                *shutdown_index_writer.lock() = Some(Arc::clone(&shared_index));
+                                *shutdown_tip_writer.lock() = (tip_block, tip_hash);
 
                                 Ok(GlintEvmConfig::new(
                                     OpEvmConfig::optimism(chain_spec),
@@ -70,6 +91,13 @@ fn main() {
                         },
                     ))
                     .with_add_ons(reth_optimism_node::OpAddOns::default())
+                    .extend_rpc_modules(|ctx| {
+                        let provider = ctx.provider().clone();
+                        let glint_rpc = GlintRpc::new(provider);
+                        ctx.modules.merge_configured(glint_rpc.into_rpc())?;
+                        tracing::info!("glint RPC namespace registered");
+                        Ok(())
+                    })
                     .install_exex_if(enable_exex, "glint", move |ctx| {
                         let exex = glint_exex::install(socket_path);
                         async move { Ok(exex(ctx)) }
@@ -77,10 +105,71 @@ fn main() {
                     .launch_with_debug_capabilities()
                     .await?;
 
-            handle.wait_for_node_exit().await
+            let result = handle.wait_for_node_exit().await;
+
+            if let Some(ref path) = ext.glint.checkpoint_path {
+                let maybe_index = shutdown_index.lock().take();
+                if let Some(index_arc) = maybe_index {
+                    let (tip_block, tip_hash) = *shutdown_tip.lock();
+                    let index = index_arc.lock();
+                    if let Err(e) = save_checkpoint(&index, tip_block, &tip_hash, path) {
+                        warn!(?e, "failed to save expiration checkpoint on shutdown");
+                    }
+                }
+            }
+
+            result
         })
     {
         eprintln!("Error: {err:?}");
         std::process::exit(1);
     }
+}
+
+fn try_load_or_rebuild<P>(
+    provider: &P,
+    config: &glint_primitives::config::GlintChainConfig,
+    tip_block: u64,
+    checkpoint_path: Option<&std::path::Path>,
+) -> eyre::Result<ExpirationIndex>
+where
+    P: reth_provider::ReceiptProvider + BlockHashReader,
+{
+    if let Some(path) = checkpoint_path
+        && path.exists()
+    {
+        match load_checkpoint(path) {
+            Ok((index, ckpt_tip, ckpt_hash)) => match provider.block_hash(ckpt_tip) {
+                Ok(Some(canonical_hash)) if canonical_hash == ckpt_hash => {
+                    info!(
+                        ckpt_tip,
+                        tip_block, "checkpoint valid, using partial rebuild"
+                    );
+                    return rebuild_expiration_index_partial(
+                        provider, config, tip_block, ckpt_tip, index,
+                    );
+                }
+                Ok(_) => {
+                    warn!(
+                        ckpt_tip,
+                        "checkpoint hash mismatch, falling back to full rebuild"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        ?e,
+                        "failed to verify checkpoint hash, falling back to full rebuild"
+                    );
+                }
+            },
+            Err(e) => {
+                warn!(
+                    ?e,
+                    "failed to load checkpoint, falling back to full rebuild"
+                );
+            }
+        }
+    }
+
+    rebuild_expiration_index(provider, config, tip_block)
 }

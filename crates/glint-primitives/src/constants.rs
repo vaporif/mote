@@ -16,3 +16,5 @@ pub const MAX_ANNOTATIONS_PER_ENTITY: usize = 64;
 pub const MAX_ANNOTATION_KEY_SIZE: usize = 256;
 /// String annotations only.
 pub const MAX_ANNOTATION_VALUE_SIZE: usize = 1024;
+
+pub const SLOTS_PER_ENTITY_WITH_OPERATOR: u64 = 3;

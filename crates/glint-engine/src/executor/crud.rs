@@ -1,23 +1,25 @@
-use alloy_primitives::{B256, Log, U256};
+use alloy_primitives::{Address, Log, B256, U256};
 use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
-    entity::{EntityMetadata, derive_entity_key},
+    entity::{derive_entity_key, EntityMetadata},
     events::{EntityCreated, EntityDeleted, EntityExtended, EntityUpdated, LogAnnotations},
-    storage::{compute_content_hash_from_raw, entity_content_hash_key, entity_storage_key},
+    storage::{
+        compute_content_hash_from_raw, decode_operator_value, encode_operator_value,
+        entity_content_hash_key, entity_operator_key, entity_storage_key,
+    },
 };
-use reth_evm::{Evm, block::BlockExecutionError};
+use reth_evm::{block::BlockExecutionError, Evm};
 use revm::DatabaseCommit;
 use std::collections::HashMap;
 
-use super::decode::{DecodedGlintTransaction, decode_with_raw_slices};
-use super::{GlintBlockExecutor, GlintResultBuilder, commit_storage_changes, glint_err};
+use super::decode::{decode_with_raw_slices, DecodedGlintTransaction};
+use super::{commit_storage_changes, glint_err, GlintBlockExecutor, GlintResultBuilder};
 
 use super::{
     GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, GLINT_GAS_PER_CREATE, GLINT_GAS_PER_DELETE,
     GLINT_GAS_PER_EXTEND, GLINT_GAS_PER_UPDATE,
 };
 
-/// Staged until all ops succeed, then applied atomically.
 pub(super) enum ExpirationChange {
     Insert(u64, B256),
     Remove(u64, B256),
@@ -29,6 +31,7 @@ pub(super) struct CrudAccumulator {
     pub(super) exp_changes: Vec<ExpirationChange>,
     pub(super) state_changes: HashMap<B256, U256>,
     pub(super) slot_counter_delta: i64,
+    pub(super) entity_counter_delta: i64,
 }
 
 impl<InnerExec, RB> GlintBlockExecutor<InnerExec, RB>
@@ -65,12 +68,13 @@ where
             exp_changes: Vec::new(),
             state_changes: HashMap::new(),
             slot_counter_delta: 0,
+            entity_counter_delta: 0,
         };
 
         Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block, self.config.max_btl)?;
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;
-        self.process_extends(&mut acc, &decoded.tx.extends, current_block)?;
+        self.process_extends(&mut acc, &decoded.tx.extends, current_block, sender)?;
 
         Ok(acc)
     }
@@ -82,6 +86,11 @@ where
         super::update_slot_counter(
             self.inner.evm_mut(),
             acc.slot_counter_delta,
+            &mut acc.state_changes,
+        )?;
+        super::update_entity_counter(
+            self.inner.evm_mut(),
+            acc.entity_counter_delta,
             &mut acc.state_changes,
         )?;
         commit_storage_changes(self.inner.evm_mut(), &acc.state_changes);
@@ -123,9 +132,12 @@ where
             );
             let expires_at = current_block + create.btl;
 
+            let has_operator = create.operator.is_some();
             let metadata = EntityMetadata {
                 owner: sender,
                 expires_at_block: expires_at,
+                extend_policy: create.extend_policy,
+                has_operator,
             };
             let content_hash = compute_content_hash_from_raw(
                 slices.payload_rlp,
@@ -141,12 +153,20 @@ where
             acc.state_changes
                 .insert(content_slot, U256::from_be_bytes(content_hash.0));
 
+            if let Some(operator_addr) = create.operator {
+                let op_slot = entity_operator_key(&entity_key);
+                acc.state_changes
+                    .insert(op_slot, encode_operator_value(operator_addr));
+            }
+
             acc.exp_changes
                 .push(ExpirationChange::Insert(expires_at, entity_key));
 
             let annotations =
                 unzip_annotations(&create.string_annotations, &create.numeric_annotations);
 
+            let extend_policy_u8 = create.extend_policy as u8;
+            let operator_for_log = create.operator.unwrap_or(Address::ZERO);
             acc.logs.push(EntityCreated::new_log(
                 PROCESSOR_ADDRESS,
                 entity_key,
@@ -155,6 +175,8 @@ where
                 create.content_type.clone(),
                 create.payload.clone().into(),
                 annotations,
+                extend_policy_u8,
+                operator_for_log,
             ));
 
             acc.gas_used += GLINT_GAS_PER_CREATE
@@ -163,7 +185,17 @@ where
                 + annotation_gas_bytes(&create.string_annotations, &create.numeric_annotations)
                     * GAS_PER_DATA_BYTE;
 
-            acc.slot_counter_delta += crate::slot_counter::SLOTS_PER_ENTITY.cast_signed();
+            if has_operator {
+                acc.gas_used += 20_000;
+            }
+
+            let slots = if has_operator {
+                glint_primitives::constants::SLOTS_PER_ENTITY_WITH_OPERATOR
+            } else {
+                crate::slot_counter::SLOTS_PER_ENTITY
+            };
+            acc.slot_counter_delta += slots.cast_signed();
+            acc.entity_counter_delta += 1;
         }
         Ok(())
     }
@@ -177,18 +209,50 @@ where
     ) -> Result<(), BlockExecutionError> {
         for (update, slices) in decoded.tx.updates.iter().zip(&decoded.update_slices) {
             let old_meta = self.read_entity_metadata(&update.entity_key)?;
-            if old_meta.owner != sender {
-                return Err(glint_err("sender is not the entity owner"));
+
+            let operator = if old_meta.has_operator {
+                acc.gas_used += 2_100;
+                read_operator_slot(self.inner.evm_mut(), &update.entity_key)?
+            } else {
+                None
+            };
+
+            if !authorize_mutation(sender, old_meta.owner, operator) {
+                return Err(glint_err("sender is not authorized to update entity"));
+            }
+
+            let is_owner = old_meta.owner == sender;
+
+            if !is_owner && (update.extend_policy.is_some() || update.operator.is_some()) {
+                return Err(glint_err("operator cannot change permissions"));
             }
 
             if update.btl > self.config.max_btl {
                 return Err(glint_err("update BTL exceeds chain max_btl"));
             }
 
+            let new_extend_policy = if is_owner {
+                update.extend_policy.unwrap_or(old_meta.extend_policy)
+            } else {
+                old_meta.extend_policy
+            };
+
+            let new_has_operator = if is_owner {
+                match update.operator {
+                    Some(None) => false,
+                    Some(Some(_)) => true,
+                    None => old_meta.has_operator,
+                }
+            } else {
+                old_meta.has_operator
+            };
+
             let new_expires = current_block + update.btl;
             let new_meta = EntityMetadata {
                 owner: old_meta.owner,
                 expires_at_block: new_expires,
+                extend_policy: new_extend_policy,
+                has_operator: new_has_operator,
             };
             let content_hash = compute_content_hash_from_raw(
                 slices.payload_rlp,
@@ -204,6 +268,27 @@ where
             acc.state_changes
                 .insert(content_slot, U256::from_be_bytes(content_hash.0));
 
+            if is_owner {
+                match update.operator {
+                    Some(None) => {
+                        let op_slot = entity_operator_key(&update.entity_key);
+                        acc.state_changes.insert(op_slot, U256::ZERO);
+                        acc.slot_counter_delta -= 1;
+                    }
+                    Some(Some(addr)) => {
+                        let op_slot = entity_operator_key(&update.entity_key);
+                        acc.state_changes
+                            .insert(op_slot, encode_operator_value(addr));
+                        acc.gas_used += 20_000;
+
+                        if !old_meta.has_operator {
+                            acc.slot_counter_delta += 1;
+                        }
+                    }
+                    None => {}
+                }
+            }
+
             acc.exp_changes.push(ExpirationChange::Remove(
                 old_meta.expires_at_block,
                 update.entity_key,
@@ -214,6 +299,12 @@ where
             let annotations =
                 unzip_annotations(&update.string_annotations, &update.numeric_annotations);
 
+            let extend_policy_u8 = new_extend_policy as u8;
+            let operator_for_log = match update.operator {
+                Some(Some(addr)) => addr,
+                _ if new_has_operator => operator.unwrap_or(Address::ZERO),
+                _ => Address::ZERO,
+            };
             acc.logs.push(EntityUpdated::new_log(
                 PROCESSOR_ADDRESS,
                 update.entity_key,
@@ -222,6 +313,8 @@ where
                 update.content_type.clone(),
                 update.payload.clone().into(),
                 annotations,
+                extend_policy_u8,
+                operator_for_log,
             ));
 
             acc.gas_used += GLINT_GAS_PER_UPDATE
@@ -241,14 +334,27 @@ where
     ) -> Result<(), BlockExecutionError> {
         for entity_key in deletes {
             let meta = self.read_entity_metadata(entity_key)?;
-            if meta.owner != sender {
-                return Err(glint_err("sender is not the entity owner"));
+
+            let operator = if meta.has_operator {
+                acc.gas_used += 2_100;
+                read_operator_slot(self.inner.evm_mut(), entity_key)?
+            } else {
+                None
+            };
+
+            if !authorize_mutation(sender, meta.owner, operator) {
+                return Err(glint_err("sender is not authorized to delete entity"));
             }
 
             let meta_slot = entity_storage_key(entity_key);
             let content_slot = entity_content_hash_key(entity_key);
             acc.state_changes.insert(meta_slot, U256::ZERO);
             acc.state_changes.insert(content_slot, U256::ZERO);
+
+            if meta.has_operator {
+                let op_slot = entity_operator_key(entity_key);
+                acc.state_changes.insert(op_slot, U256::ZERO);
+            }
 
             acc.exp_changes
                 .push(ExpirationChange::Remove(meta.expires_at_block, *entity_key));
@@ -257,11 +363,14 @@ where
                 PROCESSOR_ADDRESS,
                 *entity_key,
                 meta.owner,
+                sender,
             ));
 
             acc.gas_used += GLINT_GAS_PER_DELETE;
 
-            acc.slot_counter_delta -= crate::slot_counter::SLOTS_PER_ENTITY.cast_signed();
+            acc.slot_counter_delta -=
+                crate::slot_counter::slots_for_entity(meta.has_operator).cast_signed();
+            acc.entity_counter_delta -= 1;
         }
         Ok(())
     }
@@ -271,9 +380,28 @@ where
         acc: &mut CrudAccumulator,
         extends: &[glint_primitives::transaction::Extend],
         current_block: u64,
+        sender: Address,
     ) -> Result<(), BlockExecutionError> {
+        use glint_primitives::transaction::ExtendPolicy;
+
         for extend in extends {
             let old_meta = self.read_entity_metadata(&extend.entity_key)?;
+
+            if old_meta.extend_policy != ExtendPolicy::AnyoneCanExtend
+                && sender != old_meta.owner
+            {
+                if old_meta.has_operator {
+                    acc.gas_used += 2_100;
+                    let operator =
+                        read_operator_slot(self.inner.evm_mut(), &extend.entity_key)?;
+                    if operator.is_none_or(|op| op != sender) {
+                        return Err(glint_err("not authorized to extend"));
+                    }
+                } else {
+                    return Err(glint_err("not authorized to extend"));
+                }
+            }
+
             let new_expires = old_meta
                 .expires_at_block
                 .saturating_add(extend.additional_blocks);
@@ -286,6 +414,8 @@ where
             let new_meta = EntityMetadata {
                 owner: old_meta.owner,
                 expires_at_block: new_expires,
+                extend_policy: old_meta.extend_policy,
+                has_operator: old_meta.has_operator,
             };
             let meta_slot = entity_storage_key(&extend.entity_key);
             acc.state_changes
@@ -303,12 +433,36 @@ where
                 extend.entity_key,
                 old_meta.expires_at_block,
                 new_expires,
+                old_meta.owner,
             ));
 
             acc.gas_used += GLINT_GAS_PER_EXTEND + (extend.additional_blocks * GAS_PER_BTL_BLOCK);
         }
         Ok(())
     }
+}
+
+fn read_operator_slot<E: Evm<DB: revm::Database<Error: core::fmt::Display>>>(
+    evm: &mut E,
+    entity_key: &B256,
+) -> Result<Option<Address>, BlockExecutionError> {
+    use revm::Database as _;
+
+    let slot = entity_operator_key(entity_key);
+    let value = evm
+        .db_mut()
+        .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(slot.0))
+        .map_err(|e| glint_err(format!("operator read: {e}")))?;
+
+    if value == U256::ZERO {
+        Ok(None)
+    } else {
+        Ok(Some(decode_operator_value(value)))
+    }
+}
+
+fn authorize_mutation(sender: Address, owner: Address, operator: Option<Address>) -> bool {
+    sender == owner || operator.is_some_and(|op| op == sender)
 }
 
 fn annotation_gas_bytes(

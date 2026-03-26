@@ -1,32 +1,51 @@
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{keccak256, Address, B256};
+
+use crate::transaction::ExtendPolicy;
 
 pub type EntityKey = B256;
 
-/// Packed into 32 bytes in the trie (slot 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntityMetadata {
     pub owner: Address,
     pub expires_at_block: u64,
+    pub extend_policy: ExtendPolicy,
+    pub has_operator: bool,
 }
 
 impl EntityMetadata {
-    /// `owner (20) || reserved (4) || expires_at_block (8)`
+    /// `owner (20) || flags (1) || reserved (3) || expires_at_block (8)`
     pub fn encode(&self) -> [u8; 32] {
         let mut buf = [0u8; 32];
         buf[0..20].copy_from_slice(self.owner.as_slice());
-        // bytes 20..24 reserved (zero)
+        let mut flags: u8 = 0;
+        if self.extend_policy == ExtendPolicy::AnyoneCanExtend {
+            flags |= 0b01;
+        }
+        if self.has_operator {
+            flags |= 0b10;
+        }
+        buf[20] = flags;
         buf[24..32].copy_from_slice(&self.expires_at_block.to_be_bytes());
         buf
     }
 
     pub fn decode(bytes: &[u8; 32]) -> Self {
         let owner = Address::from_slice(&bytes[0..20]);
+        let flags = bytes[20];
+        let extend_policy = if flags & 0b01 != 0 {
+            ExtendPolicy::AnyoneCanExtend
+        } else {
+            ExtendPolicy::OwnerOnly
+        };
+        let has_operator = flags & 0b10 != 0;
         let mut expire_bytes = [0u8; 8];
         expire_bytes.copy_from_slice(&bytes[24..32]);
         let expires_at_block = u64::from_be_bytes(expire_bytes);
         Self {
             owner,
             expires_at_block,
+            extend_policy,
+            has_operator,
         }
     }
 }
@@ -109,6 +128,8 @@ mod tests {
         let meta = EntityMetadata {
             owner: Address::repeat_byte(0x42),
             expires_at_block: 302_400,
+            extend_policy: ExtendPolicy::OwnerOnly,
+            has_operator: false,
         };
         let encoded = meta.encode();
         let decoded = EntityMetadata::decode(&encoded);
@@ -120,8 +141,73 @@ mod tests {
         let meta = EntityMetadata {
             owner: Address::repeat_byte(0xFF),
             expires_at_block: u64::MAX,
+            extend_policy: ExtendPolicy::OwnerOnly,
+            has_operator: false,
         };
         let encoded = meta.encode();
-        assert_eq!(&encoded[20..24], &[0, 0, 0, 0]);
+        assert_eq!(&encoded[21..24], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn metadata_flags_roundtrip_anyone_can_extend() {
+        let meta = EntityMetadata {
+            owner: Address::repeat_byte(0x01),
+            expires_at_block: 1000,
+            extend_policy: ExtendPolicy::AnyoneCanExtend,
+            has_operator: false,
+        };
+        let encoded = meta.encode();
+        assert_eq!(encoded[20] & 0b01, 1);
+        assert_eq!(encoded[20] & 0b10, 0);
+        let decoded = EntityMetadata::decode(&encoded);
+        assert_eq!(meta, decoded);
+    }
+
+    #[test]
+    fn metadata_flags_roundtrip_has_operator() {
+        let meta = EntityMetadata {
+            owner: Address::repeat_byte(0x02),
+            expires_at_block: 2000,
+            extend_policy: ExtendPolicy::OwnerOnly,
+            has_operator: true,
+        };
+        let encoded = meta.encode();
+        assert_eq!(encoded[20] & 0b01, 0);
+        assert_eq!(encoded[20] & 0b10, 2);
+        let decoded = EntityMetadata::decode(&encoded);
+        assert_eq!(meta, decoded);
+    }
+
+    #[test]
+    fn metadata_flags_roundtrip_both() {
+        let meta = EntityMetadata {
+            owner: Address::repeat_byte(0x03),
+            expires_at_block: 3000,
+            extend_policy: ExtendPolicy::AnyoneCanExtend,
+            has_operator: true,
+        };
+        let encoded = meta.encode();
+        assert_eq!(encoded[20], 0b11);
+        let decoded = EntityMetadata::decode(&encoded);
+        assert_eq!(meta, decoded);
+    }
+
+    #[test]
+    fn legacy_metadata_decodes_as_defaults() {
+        let meta = EntityMetadata {
+            owner: Address::repeat_byte(0x42),
+            expires_at_block: 302_400,
+            extend_policy: ExtendPolicy::OwnerOnly,
+            has_operator: false,
+        };
+        let mut legacy = [0u8; 32];
+        legacy[0..20].copy_from_slice(meta.owner.as_slice());
+        legacy[24..32].copy_from_slice(&meta.expires_at_block.to_be_bytes());
+
+        let decoded = EntityMetadata::decode(&legacy);
+        assert_eq!(decoded.owner, meta.owner);
+        assert_eq!(decoded.expires_at_block, meta.expires_at_block);
+        assert_eq!(decoded.extend_policy, ExtendPolicy::OwnerOnly);
+        assert!(!decoded.has_operator);
     }
 }

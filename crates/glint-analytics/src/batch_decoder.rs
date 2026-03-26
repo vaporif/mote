@@ -1,6 +1,7 @@
 mod columns;
 
 use alloy_primitives::Bytes;
+use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 use eyre::WrapErr;
 use glint_primitives::exex_types::{BatchOp, EntityEventType};
@@ -8,7 +9,7 @@ use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
     decode_numeric_map, decode_string_map,
 };
 
@@ -26,7 +27,7 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
 
     let op_col = col_u8(batch, "op")?;
 
-    // Every row in a batch has the same op, so just check the first.
+    // Batches are homogeneous by op.
     let op_val = op_col.value(0);
     if op_val == 0xFF {
         return Ok(ApplyResult::Watermark);
@@ -56,6 +57,8 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
     let payload_col = col_binary(batch, "payload")?;
     let str_ann_col = col_map(batch, "string_annotations")?;
     let num_ann_col = col_map(batch, "numeric_annotations")?;
+    let extend_policy_col = col_u8(batch, "extend_policy")?;
+    let operator_col = col_fsb(batch, "operator")?;
 
     for i in 0..nrows {
         let event_type_raw = event_type_col.value(i);
@@ -83,6 +86,13 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
                         .map_or(block_number, |r| r.created_at_block)
                 };
 
+                let extend_policy = extend_policy_col.value(i);
+                let operator = if operator_col.is_null(i) {
+                    None
+                } else {
+                    Some(addr_from_fsb(operator_col, i))
+                };
+
                 store.insert(EntityRow {
                     entity_key,
                     owner,
@@ -93,6 +103,8 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
                     numeric_annotations,
                     created_at_block,
                     tx_hash,
+                    extend_policy,
+                    operator,
                 });
             }
             EntityEventType::Deleted | EntityEventType::Expired => {
@@ -163,12 +175,12 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
 mod tests {
     use std::sync::Arc;
 
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use arrow::{
         array::{
-            ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-            UInt32Builder, UInt64Builder,
             builder::{MapBuilder, MapFieldNames},
+            ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt32Builder,
+            UInt64Builder, UInt8Builder,
         },
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
@@ -190,6 +202,8 @@ mod tests {
             string_values: Vec<String>,
             numeric_keys: Vec<String>,
             numeric_values: Vec<u64>,
+            extend_policy: u8,
+            operator: Address,
         },
         Updated {
             entity_key: B256,
@@ -202,6 +216,8 @@ mod tests {
             string_values: Vec<String>,
             numeric_keys: Vec<String>,
             numeric_values: Vec<u64>,
+            extend_policy: u8,
+            operator: Address,
         },
         Deleted {
             entity_key: B256,
@@ -215,6 +231,7 @@ mod tests {
             entity_key: B256,
             old_expires_at: u64,
             new_expires_at: u64,
+            owner: Address,
         },
     }
 
@@ -276,6 +293,8 @@ mod tests {
                 ),
                 true,
             ),
+            Field::new("extend_policy", DataType::UInt8, true),
+            Field::new("operator", DataType::FixedSizeBinary(20), true),
             Field::new("tip_block", DataType::UInt64, false),
             Field::new("op", DataType::UInt8, false),
         ])
@@ -312,6 +331,8 @@ mod tests {
             StringBuilder::new(),
             UInt64Builder::new(),
         );
+        let mut extend_policy_b = UInt8Builder::with_capacity(cap);
+        let mut operator_b = FixedSizeBinaryBuilder::with_capacity(cap, 20);
         let mut tip_block_b = UInt64Builder::with_capacity(cap);
         let mut op_b = UInt8Builder::with_capacity(cap);
 
@@ -335,6 +356,8 @@ mod tests {
                     string_values,
                     numeric_keys,
                     numeric_values,
+                    extend_policy,
+                    operator,
                 } => {
                     event_type_b.append_value(EntityEventType::Created as u8);
                     entity_key_b.append_value(entity_key.as_slice()).unwrap();
@@ -353,6 +376,8 @@ mod tests {
                         num_ann_b.values().append_value(*v);
                     }
                     num_ann_b.append(true).unwrap();
+                    extend_policy_b.append_value(*extend_policy);
+                    operator_b.append_value(operator.as_slice()).unwrap();
                 }
                 TestEvent::Updated {
                     entity_key,
@@ -365,6 +390,8 @@ mod tests {
                     string_values,
                     numeric_keys,
                     numeric_values,
+                    extend_policy,
+                    operator,
                 } => {
                     event_type_b.append_value(EntityEventType::Updated as u8);
                     entity_key_b.append_value(entity_key.as_slice()).unwrap();
@@ -383,6 +410,8 @@ mod tests {
                         num_ann_b.values().append_value(*v);
                     }
                     num_ann_b.append(true).unwrap();
+                    extend_policy_b.append_value(*extend_policy);
+                    operator_b.append_value(operator.as_slice()).unwrap();
                 }
                 TestEvent::Deleted { entity_key, owner }
                 | TestEvent::Expired { entity_key, owner } => {
@@ -400,21 +429,26 @@ mod tests {
                     payload_b.append_null();
                     str_ann_b.append(false).unwrap();
                     num_ann_b.append(false).unwrap();
+                    extend_policy_b.append_null();
+                    operator_b.append_null();
                 }
                 TestEvent::Extended {
                     entity_key,
                     old_expires_at,
                     new_expires_at,
+                    owner,
                 } => {
                     event_type_b.append_value(EntityEventType::Extended as u8);
                     entity_key_b.append_value(entity_key.as_slice()).unwrap();
-                    owner_b.append_null();
+                    owner_b.append_value(owner.as_slice()).unwrap();
                     expires_b.append_value(*new_expires_at);
                     old_expires_b.append_value(*old_expires_at);
                     content_type_b.append_null();
                     payload_b.append_null();
                     str_ann_b.append(false).unwrap();
                     num_ann_b.append(false).unwrap();
+                    extend_policy_b.append_null();
+                    operator_b.append_null();
                 }
             }
         }
@@ -435,6 +469,8 @@ mod tests {
             Arc::new(payload_b.finish()),
             Arc::new(str_ann_b.finish()),
             Arc::new(num_ann_b.finish()),
+            Arc::new(extend_policy_b.finish()),
+            Arc::new(operator_b.finish()),
             Arc::new(tip_block_b.finish()),
             Arc::new(op_b.finish()),
         ];
@@ -464,6 +500,8 @@ mod tests {
             string_values: vec!["sv".into()],
             numeric_keys: vec!["nk".into()],
             numeric_values: vec![99],
+            extend_policy: 0,
+            operator: Address::ZERO,
         }
     }
 
@@ -488,6 +526,8 @@ mod tests {
             vec![("sk".to_owned(), "sv".to_owned())]
         );
         assert_eq!(row.numeric_annotations, vec![("nk".to_owned(), 99u64)]);
+        assert_eq!(row.extend_policy, 0);
+        assert_eq!(row.operator, Some(Address::ZERO));
     }
 
     #[test]
@@ -531,6 +571,7 @@ mod tests {
                 entity_key: default_key(),
                 old_expires_at: 200,
                 new_expires_at: 500,
+                owner: default_owner(),
             }],
         );
         let result = apply_batch(&mut store, &extend_batch).unwrap();
@@ -575,6 +616,7 @@ mod tests {
                 entity_key: default_key(),
                 old_expires_at: 200,
                 new_expires_at: 500,
+                owner: default_owner(),
             }],
         );
         apply_batch(&mut store, &extend_batch).unwrap();
@@ -588,6 +630,7 @@ mod tests {
                 entity_key: default_key(),
                 old_expires_at: 200,
                 new_expires_at: 500,
+                owner: default_owner(),
             }],
         );
         let result = apply_batch(&mut store, &revert_extend_batch).unwrap();
@@ -619,6 +662,8 @@ mod tests {
                 string_values: vec![],
                 numeric_keys: vec![],
                 numeric_values: vec![],
+                extend_policy: 0,
+                operator: Address::ZERO,
             }],
         );
         let result = apply_batch(&mut store, &revert_batch).unwrap();

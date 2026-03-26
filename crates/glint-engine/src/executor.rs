@@ -17,7 +17,7 @@ use glint_primitives::{
     config::GlintChainConfig,
     constants::PROCESSOR_ADDRESS,
     entity::EntityMetadata,
-    storage::{entity_content_hash_key, entity_storage_key},
+    storage::{entity_content_hash_key, entity_operator_key, entity_storage_key},
 };
 use parking_lot::Mutex;
 use reth_evm::{
@@ -386,6 +386,8 @@ where
         }
 
         let mut state_changes: HashMap<B256, U256> = HashMap::new();
+        let mut expired_slot_count: u64 = 0;
+        let mut expired_entity_count: u64 = 0;
 
         for entity_key in &expired_keys {
             let meta_slot = entity_storage_key(entity_key);
@@ -417,15 +419,25 @@ where
             let content_slot = entity_content_hash_key(entity_key);
             state_changes.insert(meta_slot, U256::ZERO);
             state_changes.insert(content_slot, U256::ZERO);
+
+            if meta.has_operator {
+                let op_slot = entity_operator_key(entity_key);
+                state_changes.insert(op_slot, U256::ZERO);
+            }
+
+            expired_slot_count += crate::slot_counter::slots_for_entity(meta.has_operator);
+            expired_entity_count += 1;
         }
 
         if !state_changes.is_empty() {
-            let expired_slots =
-                (state_changes.len() as u64 / 2) * crate::slot_counter::SLOTS_PER_ENTITY;
-
             update_slot_counter(
                 self.inner.evm_mut(),
-                -(expired_slots.cast_signed()),
+                -(expired_slot_count.cast_signed()),
+                &mut state_changes,
+            )?;
+            update_entity_counter(
+                self.inner.evm_mut(),
+                -(expired_entity_count.cast_signed()),
                 &mut state_changes,
             )?;
             commit_storage_changes(self.inner.evm_mut(), &state_changes);
@@ -451,6 +463,33 @@ fn update_slot_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core::f
         .db_mut()
         .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(counter_slot.0))
         .map_err(|e| glint_err(format!("counter read: {e}")))?;
+
+    let new_value = if delta > 0 {
+        current.saturating_add(U256::from(delta.cast_unsigned()))
+    } else {
+        current.saturating_sub(U256::from((-delta).cast_unsigned()))
+    };
+
+    state_changes.insert(counter_slot, new_value);
+    Ok(())
+}
+
+fn update_entity_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core::fmt::Display>>>(
+    evm: &mut E,
+    delta: i64,
+    state_changes: &mut HashMap<B256, U256>,
+) -> Result<(), BlockExecutionError> {
+    use revm::Database as _;
+
+    if delta == 0 {
+        return Ok(());
+    }
+
+    let counter_slot = *crate::slot_counter::ENTITY_COUNT_KEY;
+    let current = evm
+        .db_mut()
+        .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(counter_slot.0))
+        .map_err(|e| glint_err(format!("entity counter read: {e}")))?;
 
     let new_value = if delta > 0 {
         current.saturating_add(U256::from(delta.cast_unsigned()))
@@ -519,6 +558,8 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: expires_at,
+            extend_policy: glint_primitives::transaction::ExtendPolicy::OwnerOnly,
+            has_operator: false,
         };
         let meta_slot = entity_storage_key(entity_key);
         let content_slot = entity_content_hash_key(entity_key);
