@@ -35,8 +35,10 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
 impl<R, Spec, EvmF> BlockExecutorFactory
     for GlintBlockExecutorFactory<EthBlockExecutorFactory<R, Spec, EvmF>>
 where
-    R: ReceiptBuilder<Transaction: GlintTransaction, Receipt: alloy_consensus::TxReceipt<Log = Log>>
-        + 'static,
+    R: ReceiptBuilder<
+            Transaction: GlintTransaction,
+            Receipt: alloy_consensus::TxReceipt<Log = Log>,
+        > + 'static,
     Spec: EthExecutorSpec + 'static,
     EvmF: EvmFactory<
             Tx: FromRecoveredTx<R::Transaction> + FromTxWithEncoded<R::Transaction>,

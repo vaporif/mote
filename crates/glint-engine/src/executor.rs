@@ -217,8 +217,7 @@ const GAS_PER_BTL_BLOCK: u64 = 10;
 
 impl<InnerExec, RB> BlockExecutor for GlintBlockExecutor<InnerExec, RB>
 where
-    InnerExec:
-        BlockExecutor<Transaction: GlintTransaction, Receipt: alloy_consensus::TxReceipt<Log = Log>>,
+    InnerExec: BlockExecutor<Transaction: GlintTransaction, Receipt: alloy_consensus::TxReceipt<Log = Log>>,
     InnerExec::Evm: Evm<DB: revm::Database<Error: core::fmt::Display> + DatabaseCommit>,
     RB: GlintResultBuilder<
             Result = InnerExec::Result,
@@ -332,8 +331,7 @@ where
 
 impl<InnerExec, RB> GlintBlockExecutor<InnerExec, RB>
 where
-    InnerExec:
-        BlockExecutor<Transaction: GlintTransaction, Receipt: alloy_consensus::TxReceipt<Log = Log>>,
+    InnerExec: BlockExecutor<Transaction: GlintTransaction, Receipt: alloy_consensus::TxReceipt<Log = Log>>,
     InnerExec::Evm: Evm<DB: revm::Database<Error: core::fmt::Display> + DatabaseCommit>,
     RB: GlintResultBuilder<
             Result = InnerExec::Result,

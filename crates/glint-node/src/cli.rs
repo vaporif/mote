@@ -6,7 +6,10 @@ use clap::Args;
 #[command(next_help_heading = "Glint")]
 pub struct GlintArgs {
     /// Unix socket path for `ExEx` -> Analytics IPC
-    #[arg(long = "glint.exex-socket-path", default_value = "/tmp/glint-exex.sock")]
+    #[arg(
+        long = "glint.exex-socket-path",
+        default_value = "/tmp/glint-exex.sock"
+    )]
     pub exex_socket_path: PathBuf,
 
     /// Run without `ExEx` (debug builds only)

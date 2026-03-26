@@ -19,7 +19,10 @@ pub trait EntityState {
     fn write_slot(&mut self, key: B256, value: U256);
 }
 
-fn read_metadata(state: &impl EntityState, entity_key: &B256) -> Result<EntityMetadata, GlintError> {
+fn read_metadata(
+    state: &impl EntityState,
+    entity_key: &B256,
+) -> Result<EntityMetadata, GlintError> {
     let slot_key = entity_storage_key(entity_key);
     let value = state
         .read_slot(&slot_key)
