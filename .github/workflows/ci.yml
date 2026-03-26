@@ -81,14 +81,13 @@ jobs:
         run: nix develop --command cargo nextest run --workspace
 
   build:
-    name: Nix build ${{ matrix.package }} (${{ matrix.os }})
+    name: Nix build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        package: [eth-glint, op-glint]
     steps:
       - uses: actions/checkout@v6
 
@@ -101,8 +100,14 @@ jobs:
           name: glint
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
 
-      - name: Nix build ${{ matrix.package }}
-        run: nix build .#${{ matrix.package }}
+      - name: Nix build deps
+        run: nix build .#cargoArtifacts
+
+      - name: Nix build eth-glint
+        run: nix build .#eth-glint
+
+      - name: Nix build op-glint
+        run: nix build .#op-glint
 
   gitleaks:
     name: Gitleaks

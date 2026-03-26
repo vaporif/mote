@@ -82,7 +82,7 @@
       ];
     in {
       packages = {
-        inherit op-glint eth-glint;
+        inherit op-glint eth-glint cargoArtifacts;
         default = op-glint;
       };
 
