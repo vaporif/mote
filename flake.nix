@@ -33,28 +33,32 @@
     }: let
       src = craneLib.cleanCargoSource ./.;
 
-      commonArgs = {
-        inherit src;
-        pname = "glint";
-        strictDeps = true;
-        nativeBuildInputs =
-          [
-            pkgs.pkg-config
-            pkgs.llvmPackages.clang
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.openssl
-          ];
-        buildInputs =
-          pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.openssl
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.libiconv
-            pkgs.apple-sdk_26
-          ];
-        LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-      };
+      commonArgs =
+        {
+          inherit src;
+          pname = "glint";
+          strictDeps = true;
+          nativeBuildInputs =
+            [
+              pkgs.pkg-config
+              pkgs.llvmPackages.clang
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.openssl
+            ];
+          buildInputs =
+            pkgs.lib.optionals pkgs.stdenv.isLinux [
+              pkgs.openssl
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.libiconv
+              pkgs.apple-sdk_26
+            ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl];
+        };
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
