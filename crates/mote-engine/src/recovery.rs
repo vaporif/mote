@@ -4,7 +4,7 @@ use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::B256;
 use mote_primitives::config::MoteChainConfig;
 use mote_primitives::constants::PROCESSOR_ADDRESS;
-use mote_primitives::parse::{parse_log, EntityEvent};
+use mote_primitives::parse::{EntityEvent, parse_log};
 use reth_provider::ReceiptProvider;
 use tracing::{debug, info};
 
