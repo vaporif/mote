@@ -498,6 +498,72 @@ mod tests {
         assert!(state.should_disconnect);
     }
 
+    #[tokio::test]
+    async fn stream_live_delivers_all_batches() {
+        use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+        let (batch_tx, mut batch_rx) = mpsc::channel(16);
+        // Small writer channel to exercise backpressure path
+        let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(1);
+        let (delivered_tx, mut delivered_rx) = watch::channel(None);
+        let cancel = CancellationToken::new();
+
+        let writer_count = Arc::new(AtomicU32::new(0));
+        let writer_count_clone = Arc::clone(&writer_count);
+
+        let write_handle = tokio::spawn(async move {
+            while let Some(_batch) = writer_rx.recv().await {
+                writer_count_clone.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            Ok::<(), eyre::Report>(())
+        });
+
+        let cancel_clone = cancel.clone();
+        let live_handle = tokio::spawn(async move {
+            stream_live(
+                &mut batch_rx,
+                writer_tx,
+                write_handle,
+                &delivered_tx,
+                &cancel_clone,
+                0,
+            )
+            .await
+        });
+
+        let batch = build_watermark_batch(1).unwrap();
+        let bnh1 = BlockNumHash::new(10, alloy_primitives::B256::repeat_byte(0x0A));
+        let bnh2 = BlockNumHash::new(20, alloy_primitives::B256::repeat_byte(0x14));
+        let bnh3 = BlockNumHash::new(30, alloy_primitives::B256::repeat_byte(0x1E));
+
+        batch_tx.send((Some(bnh1), batch.clone())).await.unwrap();
+        batch_tx.send((Some(bnh2), batch.clone())).await.unwrap();
+        batch_tx.send((Some(bnh3), batch.clone())).await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                delivered_rx.changed().await.unwrap();
+                if delivered_rx.borrow().is_some_and(|bnh| bnh.number == 30) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("delivered_tx should advance to block 30");
+
+        assert_eq!(delivered_rx.borrow().unwrap().number, 30);
+
+        cancel.cancel();
+        live_handle.await.unwrap().unwrap();
+
+        // +1 for the watermark sent on cancellation
+        assert_eq!(
+            writer_count.load(AtomicOrdering::Relaxed),
+            4,
+            "writer must receive all 3 batches + 1 shutdown watermark (no drops)"
+        );
+    }
+
     #[test]
     fn probe_response_roundtrip() {
         let resp = ProbeResponse {
