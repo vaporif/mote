@@ -91,7 +91,7 @@ where
                     Ok(Some(event)) => Some(event),
                     Ok(None) => None,
                     Err(e) => {
-                        debug!(block_num, ?e, "skipping unparseable log during recovery");
+                        debug!(block_num, ?e, "skipping unparsable log during recovery");
                         None
                     }
                 });
