@@ -20,7 +20,6 @@ use glint_primitives::{
     storage::{entity_content_hash_key, entity_operator_key, entity_storage_key},
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, instrument, warn};
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, Evm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
     OnStateHook,
@@ -33,6 +32,7 @@ use revm::{
     state::{Account, AccountInfo, AccountStatus, EvmStorageSlot},
 };
 use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc};
+use tracing::{debug, info, instrument, warn};
 
 pub use decode::{DecodedGlintTransaction, decode_with_raw_slices};
 pub use eth::EthGlintResultBuilder;
@@ -265,7 +265,10 @@ where
         let total_gas = intrinsic_gas.saturating_add(staged.gas_used);
 
         if gas_limit < total_gas {
-            warn!(gas_limit, total_gas, "insufficient gas for glint ops, reverting");
+            warn!(
+                gas_limit,
+                total_gas, "insufficient gas for glint ops, reverting"
+            );
             let result = ResultAndState {
                 result: ExecutionResult::Revert {
                     gas_used: gas_limit,
@@ -306,7 +309,10 @@ where
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<InnerExec::Receipt>), BlockExecutionError> {
         if !self.pending_logs.is_empty() {
-            debug!(pending_log_count = self.pending_logs.len(), "flushing pending expiration logs as system receipt");
+            debug!(
+                pending_log_count = self.pending_logs.len(),
+                "flushing pending expiration logs as system receipt"
+            );
             let logs = std::mem::take(&mut self.pending_logs);
             let state = std::mem::take(&mut self.pending_state);
             let result = ResultAndState {
@@ -401,7 +407,11 @@ where
         if expired_keys.is_empty() {
             return Ok(());
         }
-        info!(current_block, count = expired_keys.len(), "expiring entities");
+        info!(
+            current_block,
+            count = expired_keys.len(),
+            "expiring entities"
+        );
 
         let mut state_changes: HashMap<B256, U256> = HashMap::new();
         let mut expired_slot_count: u64 = 0;
@@ -528,10 +538,12 @@ fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState
         );
     }
 
-    // Use nonce=1 to prevent the account from being treated as empty
-    // (EIP-161 state clear would delete it otherwise, discarding storage).
-    let mut info = AccountInfo::default();
-    info.nonce = 1;
+    // nonce=1 prevents EIP-161 state clear from treating the account as empty
+    // and discarding its storage.
+    let info = AccountInfo {
+        nonce: 1,
+        ..Default::default()
+    };
 
     let account = Account {
         info,
@@ -543,7 +555,6 @@ fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState
 
     revm::state::EvmState::from_iter([(PROCESSOR_ADDRESS, account)])
 }
-
 
 fn glint_err(msg: impl Into<Box<dyn core::error::Error + Send + Sync>>) -> BlockExecutionError {
     BlockExecutionError::Internal(InternalBlockExecutionError::Other(msg.into()))

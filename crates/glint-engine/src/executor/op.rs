@@ -1,12 +1,12 @@
 use alloy_evm::{
+    Database, EvmFactory,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::EthTxResult,
     precompiles::PrecompilesMap,
-    Database, EvmFactory,
 };
 use alloy_primitives::Log;
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
-use revm::{context::result::ResultAndState, database::State, Inspector};
+use revm::{Inspector, context::result::ResultAndState, database::State};
 use std::marker::PhantomData;
 
 use super::{GlintBlockExecutor, GlintBlockExecutorFactory, GlintResultBuilder, GlintTransaction};
