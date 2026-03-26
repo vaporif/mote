@@ -44,7 +44,6 @@ pub use decode::{DecodedMoteTransaction, decode_with_raw_slices};
 
 pub type SharedExpirationIndex = Arc<Mutex<ExpirationIndex>>;
 
-/// Bounds on `Transaction` required by the mote engine.
 pub trait MoteTransaction:
     Transaction
     + alloy_eips::Encodable2718
@@ -58,11 +57,6 @@ impl<T> MoteTransaction for T where
 {
 }
 
-/// Abstracts construction of transaction execution results for CRUD operations.
-///
-/// Allows `MoteBlockExecutor` to produce the correct result type regardless of
-/// whether the inner executor is Eth-based (`EthTxResult`) or OP-based
-/// (`OpTxResult`).
 pub trait MoteResultBuilder: Send + Sync + 'static {
     type HaltReason: Send + Sync + 'static;
     type TxType: Default + Clone + Send + Sync + 'static;
@@ -92,8 +86,6 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> MoteR
     }
 }
 
-/// Wraps any `Inner: ConfigureEvm`, adding Mote's CRUD execution and entity
-/// expiration housekeeping.
 pub struct MoteEvmConfig<Inner: ConfigureEvm> {
     inner: Inner,
     factory: MoteBlockExecutorFactory<Inner::BlockExecutorFactory>,
@@ -142,8 +134,6 @@ where
     }
 }
 
-/// Wraps an inner `BlockExecutorFactory`, producing `MoteBlockExecutor`
-/// instances that intercept CRUD transactions.
 #[derive(Debug, Clone)]
 pub struct MoteBlockExecutorFactory<F> {
     inner: F,
@@ -151,7 +141,6 @@ pub struct MoteBlockExecutorFactory<F> {
     config: MoteChainConfig,
 }
 
-/// `BlockExecutorFactory` impl for Eth-backed factories.
 impl<R, Spec, EvmF> BlockExecutorFactory
     for MoteBlockExecutorFactory<EthBlockExecutorFactory<R, Spec, EvmF>>
 where
@@ -193,10 +182,6 @@ where
     }
 }
 
-/// [`MoteResultBuilder`] implementation for OP Stack executors.
-///
-/// Wraps an `EthTxResult` inside an `OpTxResult` with `is_deposit: false`
-/// and `sender: Address::ZERO` (system-originated CRUD results).
 #[cfg(feature = "op")]
 pub struct OpMoteResultBuilder<H, T>(PhantomData<(H, T)>);
 
@@ -225,7 +210,6 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> MoteR
     }
 }
 
-/// `BlockExecutorFactory` impl for OP-backed factories.
 #[cfg(feature = "op")]
 impl<R, Spec, EvmF> BlockExecutorFactory
     for MoteBlockExecutorFactory<reth_optimism_evm::OpBlockExecutorFactory<R, Spec, EvmF>>
@@ -378,8 +362,6 @@ where
     }
 }
 
-/// Wraps any `InnerExec: BlockExecutor`, intercepting transactions addressed
-/// to the Mote processor contract and routing them through the CRUD engine.
 pub struct MoteBlockExecutor<InnerExec, RB> {
     inner: InnerExec,
     _rb: PhantomData<RB>,
