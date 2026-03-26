@@ -49,6 +49,7 @@ pub async fn connect_and_subscribe(
     );
 
     let std_stream = stream.into_std()?;
+    std_stream.set_nonblocking(false)?;
     Ok((handshake, std_stream))
 }
 

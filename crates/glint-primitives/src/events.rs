@@ -181,7 +181,8 @@ mod tests {
 
     #[test]
     fn entity_deleted_has_two_indexed_topics() {
-        assert!(!EntityDeleted::ANONYMOUS);
+        let anonymous = EntityDeleted::ANONYMOUS;
+        assert!(!anonymous);
     }
 
     #[test]

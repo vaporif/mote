@@ -7,3 +7,7 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = "package(glint-exex) & kind(test)"
 test-group = "socket-tests"
+
+[[profile.default.overrides]]
+filter = "package(glint-e2e)"
+test-group = "socket-tests"

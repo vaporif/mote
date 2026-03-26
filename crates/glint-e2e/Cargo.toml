@@ -1,0 +1,34 @@
+[package]
+name = "glint-e2e"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "End-to-end tests for Glint"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+eyre.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+glint-sdk = { path = "../glint-sdk" }
+glint-primitives = { path = "../glint-primitives" }
+
+alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
+alloy-provider.workspace = true
+alloy-network.workspace = true
+alloy-signer-local.workspace = true
+alloy-transport-http.workspace = true
+
+arrow.workspace = true
+arrow-flight.workspace = true
+tonic.workspace = true
+futures.workspace = true
+prost = "0.14"
+
+tokio = { workspace = true, features = ["full"] }

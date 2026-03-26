@@ -296,6 +296,22 @@ async fn replay_snapshot(
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
 ) -> eyre::Result<ReplayResult> {
+    // Start the IPC writer immediately so the client can read the schema
+    // header while we wait for the snapshot.
+    let std_stream = stream.into_std()?;
+    std_stream.set_nonblocking(false)?;
+    let schema = entity_events_schema();
+    let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(WRITER_CHANNEL_SIZE);
+
+    let write_handle = tokio::task::spawn_blocking(move || -> eyre::Result<()> {
+        let mut writer = StreamWriter::try_new(&std_stream, &schema)?;
+        while let Some(batch) = writer_rx.blocking_recv() {
+            writer.write(&batch)?;
+        }
+        writer.finish()?;
+        Ok(())
+    });
+
     let (reply_tx, reply_rx) = oneshot::channel();
     let (replay_done_tx, replay_done_rx) = oneshot::channel();
 
@@ -319,20 +335,6 @@ async fn replay_snapshot(
     );
 
     while batch_rx.try_recv().is_ok() {}
-
-    let std_stream = stream.into_std()?;
-    let schema = entity_events_schema();
-
-    let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(WRITER_CHANNEL_SIZE);
-
-    let write_handle = tokio::task::spawn_blocking(move || -> eyre::Result<()> {
-        let mut writer = StreamWriter::try_new(&std_stream, &schema)?;
-        while let Some(batch) = writer_rx.blocking_recv() {
-            writer.write(&batch)?;
-        }
-        writer.finish()?;
-        Ok(())
-    });
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
     for (_, batch) in &snapshot {

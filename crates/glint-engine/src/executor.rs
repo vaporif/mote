@@ -32,6 +32,7 @@ use revm::{
     state::{Account, AccountInfo, AccountStatus, EvmStorageSlot},
 };
 use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc};
+use tracing::{debug, info, instrument, warn};
 
 pub use decode::{DecodedGlintTransaction, decode_with_raw_slices};
 pub use eth::EthGlintResultBuilder;
@@ -203,6 +204,7 @@ pub struct GlintBlockExecutor<InnerExec, RB> {
     expiration_index: SharedExpirationIndex,
     config: Arc<GlintChainConfig>,
     pending_logs: Vec<Log>,
+    pending_state: revm::state::EvmState,
     _marker: PhantomData<RB>,
 }
 
@@ -229,11 +231,13 @@ where
     type Evm = InnerExec::Evm;
     type Result = InnerExec::Result;
 
+    #[instrument(skip_all, name = "glint::apply_pre_execution_changes")]
     fn apply_pre_execution_changes(&mut self) -> Result<(), BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
         self.run_expiration_housekeeping()
     }
 
+    #[instrument(skip_all, name = "glint::execute_tx")]
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
@@ -253,12 +257,18 @@ where
         let tx_type = tx_ref.tx_type();
         let tx_hash = recovered.tx().trie_hash();
 
+        info!(%sender, %tx_hash, calldata_len = calldata.len(), gas_limit, "intercepted glint tx");
+
         let staged = self.execute_glint_crud(calldata, sender, tx_hash)?;
 
         let intrinsic_gas = INTRINSIC_GAS + calldata.len() as u64 * GAS_PER_DATA_BYTE;
         let total_gas = intrinsic_gas.saturating_add(staged.gas_used);
 
         if gas_limit < total_gas {
+            warn!(
+                gas_limit,
+                total_gas, "insufficient gas for glint ops, reverting"
+            );
             let result = ResultAndState {
                 result: ExecutionResult::Revert {
                     gas_used: gas_limit,
@@ -271,7 +281,10 @@ where
             return Ok(RB::build_crud_result(result, tx_type));
         }
 
-        let logs = self.commit_crud(staged)?;
+        let log_count = staged.logs.len();
+        let (logs, state) = self.commit_crud(staged)?;
+
+        info!(total_gas, log_count, "glint tx executed successfully");
 
         let result = ResultAndState {
             result: ExecutionResult::Success {
@@ -281,7 +294,7 @@ where
                 logs,
                 output: revm::context::result::Output::Call(alloy_primitives::Bytes::new()),
             },
-            state: HashMap::default(),
+            state,
         };
 
         Ok(RB::build_crud_result(result, tx_type))
@@ -291,11 +304,17 @@ where
         self.inner.commit_transaction(output)
     }
 
+    #[instrument(skip_all, name = "glint::finish")]
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<InnerExec::Receipt>), BlockExecutionError> {
         if !self.pending_logs.is_empty() {
+            debug!(
+                pending_log_count = self.pending_logs.len(),
+                "flushing pending expiration logs as system receipt"
+            );
             let logs = std::mem::take(&mut self.pending_logs);
+            let state = std::mem::take(&mut self.pending_state);
             let result = ResultAndState {
                 result: ExecutionResult::Success {
                     reason: revm::context::result::SuccessReason::Stop,
@@ -304,7 +323,7 @@ where
                     logs,
                     output: revm::context::result::Output::Call(alloy_primitives::Bytes::new()),
                 },
-                state: HashMap::default(),
+                state,
             };
             self.inner
                 .commit_transaction(RB::build_crud_result(result, Default::default()))?;
@@ -362,12 +381,14 @@ where
         Ok(EntityMetadata::decode(&bytes))
     }
 
+    #[instrument(skip_all, name = "glint::expiration_housekeeping")]
     fn run_expiration_housekeeping(&mut self) -> Result<(), BlockExecutionError> {
         use alloy_evm::revm::context::Block as _;
         use glint_primitives::events::EntityExpired;
         use revm::Database as _;
 
         let current_block: u64 = self.inner.evm().block().number().saturating_to();
+        debug!(current_block, "running expiration housekeeping");
 
         let mut exp_idx = self.expiration_index.lock();
 
@@ -386,6 +407,11 @@ where
         if expired_keys.is_empty() {
             return Ok(());
         }
+        info!(
+            current_block,
+            count = expired_keys.len(),
+            "expiring entities"
+        );
 
         let mut state_changes: HashMap<B256, U256> = HashMap::new();
         let mut expired_slot_count: u64 = 0;
@@ -442,7 +468,7 @@ where
                 -(expired_entity_count.cast_signed()),
                 &mut state_changes,
             )?;
-            commit_storage_changes(self.inner.evm_mut(), &state_changes);
+            self.pending_state = build_processor_state(&state_changes);
         }
 
         Ok(())
@@ -503,25 +529,38 @@ fn update_entity_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core:
     Ok(())
 }
 
-fn commit_storage_changes<E: Evm<DB: DatabaseCommit>>(evm: &mut E, changes: &HashMap<B256, U256>) {
+fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState {
     let mut storage = revm::state::EvmStorage::default();
     for (&slot, &value) in changes {
+        // original must differ from present so is_changed() returns true
+        // and State::commit doesn't silently drop the slot.
+        let original = if value == U256::ZERO {
+            U256::from(1)
+        } else {
+            U256::ZERO
+        };
         storage.insert(
             U256::from_be_bytes(slot.0),
-            EvmStorageSlot::new_changed(U256::ZERO, value, 0),
+            EvmStorageSlot::new_changed(original, value, 0),
         );
     }
 
+    // nonce=1 prevents EIP-161 state clear from treating the account as empty
+    // and discarding its storage.
+    let info = AccountInfo {
+        nonce: 1,
+        ..Default::default()
+    };
+
     let account = Account {
-        info: AccountInfo::default(),
+        info,
         original_info: Box::default(),
         transaction_id: 0,
         storage,
         status: AccountStatus::Touched,
     };
 
-    evm.db_mut()
-        .commit_iter(&mut std::iter::once((PROCESSOR_ADDRESS, account)));
+    revm::state::EvmState::from_iter([(PROCESSOR_ADDRESS, account)])
 }
 
 fn glint_err(msg: impl Into<Box<dyn core::error::Error + Send + Sync>>) -> BlockExecutionError {
@@ -599,8 +638,10 @@ mod tests {
             .with_bundle_update()
             .build();
 
-        let mut block_env = revm::context::BlockEnv::default();
-        block_env.number = U256::from(TEST_BLOCK);
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
 
         let env = EvmEnv {
             block_env,
@@ -645,8 +686,10 @@ mod tests {
             .with_bundle_update()
             .build();
 
-        let mut block_env = revm::context::BlockEnv::default();
-        block_env.number = U256::from(TEST_BLOCK);
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
 
         let env = EvmEnv {
             block_env,
@@ -672,6 +715,93 @@ mod tests {
         assert!(
             result.receipts.is_empty(),
             "no receipts expected when nothing expires"
+        );
+    }
+
+    #[test]
+    fn build_processor_state_sets_nonce_to_prevent_eip161_clear() {
+        let mut changes = HashMap::new();
+        let slot_a = B256::repeat_byte(0xAA);
+        let slot_b = B256::repeat_byte(0xBB);
+        changes.insert(slot_a, U256::from(42));
+        changes.insert(slot_b, U256::ZERO);
+
+        let state = build_processor_state(&changes);
+
+        let account = state
+            .get(&PROCESSOR_ADDRESS)
+            .expect("processor account should be present");
+
+        assert_eq!(
+            account.info.nonce, 1,
+            "nonce must be non-zero to prevent EIP-161 state clear"
+        );
+        assert!(account.is_touched(), "account must be marked as touched");
+
+        let evm_slot_a = U256::from_be_bytes(slot_a.0);
+        let storage_a = account.storage.get(&evm_slot_a).unwrap();
+        assert!(storage_a.is_changed(), "non-zero slot should be changed");
+        assert_eq!(storage_a.present_value(), U256::from(42));
+
+        let evm_slot_b = U256::from_be_bytes(slot_b.0);
+        let storage_b = account.storage.get(&evm_slot_b).unwrap();
+        assert!(
+            storage_b.is_changed(),
+            "zero-value slot must be marked as changed to persist deletion"
+        );
+        assert_eq!(storage_b.present_value(), U256::ZERO);
+    }
+
+    #[test]
+    fn expiration_persists_state_through_result() {
+        use revm::Database as _;
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+
+        let mut exp_idx = ExpirationIndex::new();
+        exp_idx.insert(TEST_BLOCK, entity_key);
+        let config = test_evm_config(exp_idx);
+
+        let mut db = CacheDB::new(revm::database::EmptyDB::default());
+        seed_entity(&mut db, &entity_key, owner, TEST_BLOCK);
+        let mut state = State::builder()
+            .with_database(db)
+            .with_bundle_update()
+            .build();
+
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
+
+        let env = EvmEnv {
+            block_env,
+            cfg_env: revm::context::CfgEnv::default(),
+        };
+        let evm = EthEvmBuilder::new(&mut state, env).build();
+
+        let ctx = EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: alloy_primitives::Bytes::new(),
+            tx_count_hint: None,
+        };
+
+        let mut executor = config.create_executor(evm, ctx);
+        executor.apply_pre_execution_changes().unwrap();
+        let (evm, _result) = executor.finish().unwrap();
+
+        let meta_slot = entity_storage_key(&entity_key);
+        let db = evm.into_db();
+        let value = db
+            .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(meta_slot.0))
+            .expect("storage read should succeed");
+        assert_eq!(
+            value,
+            U256::ZERO,
+            "expired entity metadata slot should be zeroed in persisted state"
         );
     }
 

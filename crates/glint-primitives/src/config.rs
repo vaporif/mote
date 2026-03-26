@@ -91,22 +91,28 @@ mod tests {
 
     #[test]
     fn validate_zero_max_btl_rejected() {
-        let mut config = GlintChainConfig::default();
-        config.max_btl = 0;
+        let config = GlintChainConfig {
+            max_btl: 0,
+            ..GlintChainConfig::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_zero_address_rejected() {
-        let mut config = GlintChainConfig::default();
-        config.processor_address = Address::ZERO;
+        let config = GlintChainConfig {
+            processor_address: Address::ZERO,
+            ..GlintChainConfig::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_zero_sizes_rejected() {
-        let mut config = GlintChainConfig::default();
-        config.max_payload_size = 0;
+        let config = GlintChainConfig {
+            max_payload_size: 0,
+            ..GlintChainConfig::default()
+        };
         assert!(config.validate().is_err());
     }
 

@@ -66,6 +66,16 @@ pub fn derive_entity_key(tx_hash: &B256, payload: &[u8], operation_index: u32) -
     keccak256(&preimage)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityInfo {
+    pub owner: Address,
+    pub expires_at_block: u64,
+    pub extend_policy: ExtendPolicy,
+    pub operator: Option<Address>,
+    pub content_hash: B256,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

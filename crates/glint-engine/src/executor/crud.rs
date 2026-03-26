@@ -11,9 +11,10 @@ use glint_primitives::{
 use reth_evm::{Evm, block::BlockExecutionError};
 use revm::DatabaseCommit;
 use std::collections::HashMap;
+use tracing::{debug, info, instrument};
 
 use super::decode::{DecodedGlintTransaction, decode_with_raw_slices};
-use super::{GlintBlockExecutor, GlintResultBuilder, commit_storage_changes, glint_err};
+use super::{GlintBlockExecutor, GlintResultBuilder, glint_err};
 
 use super::{
     GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, GLINT_GAS_PER_CREATE, GLINT_GAS_PER_DELETE,
@@ -46,6 +47,7 @@ where
         TxType = <<InnerExec as reth_evm::block::BlockExecutor>::Transaction as alloy_consensus::TransactionEnvelope>::TxType,
     >,
 {
+    #[instrument(skip_all, fields(%sender, %tx_hash), name = "glint::execute_crud")]
     pub(super) fn execute_glint_crud(
         &mut self,
         calldata: &[u8],
@@ -59,6 +61,14 @@ where
 
         let decoded =
             decode_with_raw_slices(calldata).map_err(|e| glint_err(format!("RLP decode: {e}")))?;
+
+        info!(
+            creates = decoded.tx.creates.len(),
+            updates = decoded.tx.updates.len(),
+            deletes = decoded.tx.deletes.len(),
+            extends = decoded.tx.extends.len(),
+            "decoded glint transaction"
+        );
 
         validate_transaction(&decoded.tx).map_err(|e| glint_err(format!("validation: {e}")))?;
 
@@ -76,13 +86,23 @@ where
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;
         self.process_extends(&mut acc, &decoded.tx.extends, current_block, sender)?;
 
+        debug!(
+            state_changes = acc.state_changes.len(),
+            exp_changes = acc.exp_changes.len(),
+            entity_counter_delta = acc.entity_counter_delta,
+            slot_counter_delta = acc.slot_counter_delta,
+            gas_used = acc.gas_used,
+            "crud execution complete"
+        );
+
         Ok(acc)
     }
 
+    #[instrument(skip_all, name = "glint::commit_crud")]
     pub(super) fn commit_crud(
         &mut self,
         mut acc: CrudAccumulator,
-    ) -> Result<Vec<Log>, BlockExecutionError> {
+    ) -> Result<(Vec<Log>, revm::state::EvmState), BlockExecutionError> {
         super::update_slot_counter(
             self.inner.evm_mut(),
             acc.slot_counter_delta,
@@ -93,7 +113,8 @@ where
             acc.entity_counter_delta,
             &mut acc.state_changes,
         )?;
-        commit_storage_changes(self.inner.evm_mut(), &acc.state_changes);
+
+        let state = super::build_processor_state(&acc.state_changes);
 
         let mut exp_idx = self.expiration_index.lock();
         for change in acc.exp_changes {
@@ -103,9 +124,10 @@ where
             }
         }
 
-        Ok(acc.logs)
+        Ok((acc.logs, state))
     }
 
+    #[instrument(skip_all, fields(%sender, %tx_hash, current_block, max_btl), name = "glint::process_creates")]
     fn process_creates(
         acc: &mut CrudAccumulator,
         decoded: &DecodedGlintTransaction<'_>,
@@ -131,6 +153,15 @@ where
                 u32::try_from(op_index).expect("op count bounded by MAX_OPS_PER_TX"),
             );
             let expires_at = current_block + create.btl;
+            info!(
+                %entity_key,
+                op_index,
+                btl = create.btl,
+                expires_at,
+                payload_len = create.payload.len(),
+                content_type = %create.content_type,
+                "creating entity"
+            );
 
             let has_operator = create.operator.is_some();
             let metadata = EntityMetadata {
@@ -200,6 +231,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all, fields(%sender, current_block), name = "glint::process_updates")]
     fn process_updates(
         &mut self,
         acc: &mut CrudAccumulator,
@@ -328,6 +360,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all, fields(%sender, count = deletes.len()), name = "glint::process_deletes")]
     fn process_deletes(
         &mut self,
         acc: &mut CrudAccumulator,
@@ -377,6 +410,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all, fields(%sender, current_block, count = extends.len()), name = "glint::process_extends")]
     fn process_extends(
         &mut self,
         acc: &mut CrudAccumulator,

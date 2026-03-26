@@ -17,6 +17,9 @@ glint-primitives.workspace = true
 
 alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
 alloy-rlp.workspace = true
+alloy-provider.workspace = true
+alloy-network.workspace = true
+alloy-rpc-types-eth.workspace = true
 
 jsonrpsee = { workspace = true, features = ["http-client"] }
 tokio = { workspace = true, features = ["full"] }

@@ -579,7 +579,7 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: 1100,
-            extend_policy: Default::default(),
+            extend_policy: ExtendPolicy::default(),
             has_operator: false,
         };
         let meta_slot = entity_storage_key(&entity_key);
@@ -607,7 +607,7 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: 1100,
-            extend_policy: Default::default(),
+            extend_policy: ExtendPolicy::default(),
             has_operator: false,
         };
         let meta_slot = entity_storage_key(&entity_key);
@@ -705,7 +705,7 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: 1100,
-            extend_policy: Default::default(),
+            extend_policy: ExtendPolicy::default(),
             has_operator: false,
         };
         let meta_slot = entity_storage_key(&entity_key);
@@ -733,7 +733,7 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: current_block + MAX_BTL - 10,
-            extend_policy: Default::default(),
+            extend_policy: ExtendPolicy::default(),
             has_operator: false,
         };
         let meta_slot = entity_storage_key(&entity_key);
@@ -872,7 +872,7 @@ mod tests {
         let meta = EntityMetadata {
             owner,
             expires_at_block: current_block + custom_max_btl - 10,
-            extend_policy: Default::default(),
+            extend_policy: ExtendPolicy::default(),
             has_operator: false,
         };
         let meta_slot = entity_storage_key(&entity_key);

@@ -80,6 +80,7 @@ where
             expiration_index: self.expiration_index.clone(),
             config: self.config.clone(),
             pending_logs: Vec::new(),
+            pending_state: revm::state::EvmState::default(),
             _marker: PhantomData,
         }
     }
