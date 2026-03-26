@@ -26,7 +26,6 @@ fn main() {
             let config = extract_mote_config(&genesis_json)?;
             info!(?config, "loaded mote chain config");
 
-            let mote_config = config.clone();
             let enable_exex = !ext.disable_exex();
             let socket_path = ext.exex_socket_path.clone();
 
@@ -37,7 +36,7 @@ fn main() {
                         let tip_block = ctx.head().number;
                         let expiration_index = mote_engine::recovery::rebuild_expiration_index(
                             ctx.provider(),
-                            &mote_config,
+                            &config,
                             tip_block,
                         );
                         let chain_spec = ctx.chain_spec();
@@ -47,7 +46,7 @@ fn main() {
 
                             Ok(MoteEvmConfig::new(
                                 EthEvmConfig::new(chain_spec),
-                                mote_config,
+                                config,
                                 shared_index,
                             ))
                         }

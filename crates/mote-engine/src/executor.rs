@@ -58,31 +58,22 @@ impl<T> MoteTransaction for T where
 {
 }
 
-// ---------------------------------------------------------------------------
-// MoteResultBuilder — abstracts CRUD result construction
-// ---------------------------------------------------------------------------
-
 /// Abstracts construction of transaction execution results for CRUD operations.
 ///
 /// Allows `MoteBlockExecutor` to produce the correct result type regardless of
 /// whether the inner executor is Eth-based (`EthTxResult`) or OP-based
 /// (`OpTxResult`).
 pub trait MoteResultBuilder: Send + Sync + 'static {
-    /// The halt reason type used by the EVM.
     type HaltReason: Send + Sync + 'static;
-    /// The transaction type identifier (e.g. `TxType`).
     type TxType: Default + Clone + Send + Sync + 'static;
-    /// The full result type produced by `BlockExecutor`.
     type Result: TxResult<HaltReason = Self::HaltReason>;
 
-    /// Construct a CRUD result from the raw EVM output.
     fn build_crud_result(
         result: ResultAndState<Self::HaltReason>,
         tx_type: Self::TxType,
     ) -> Self::Result;
 }
 
-/// [`MoteResultBuilder`] implementation for Ethereum-style executors.
 pub struct EthMoteResultBuilder<H, T>(PhantomData<(H, T)>);
 
 impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> MoteResultBuilder
@@ -100,10 +91,6 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> MoteR
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// MoteEvmConfig<Inner> — single generic, fully delegating
-// ---------------------------------------------------------------------------
 
 /// Wraps any `Inner: ConfigureEvm`, adding Mote's CRUD execution and entity
 /// expiration housekeeping.
@@ -153,23 +140,7 @@ where
         };
         Self { inner, factory }
     }
-
-    pub const fn inner(&self) -> &Inner {
-        &self.inner
-    }
-
-    pub const fn expiration_index(&self) -> &SharedExpirationIndex {
-        &self.factory.expiration_index
-    }
-
-    pub const fn config(&self) -> &MoteChainConfig {
-        &self.factory.config
-    }
 }
-
-// ---------------------------------------------------------------------------
-// MoteBlockExecutorFactory<F> — generic over any BlockExecutorFactory
-// ---------------------------------------------------------------------------
 
 /// Wraps an inner `BlockExecutorFactory`, producing `MoteBlockExecutor`
 /// instances that intercept CRUD transactions.
@@ -221,10 +192,6 @@ where
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// OP Stack support — behind `cfg(feature = "op")`
-// ---------------------------------------------------------------------------
 
 /// [`MoteResultBuilder`] implementation for OP Stack executors.
 ///
@@ -410,10 +377,6 @@ where
         self.inner.tx_iterator_for_payload(payload)
     }
 }
-
-// ---------------------------------------------------------------------------
-// MoteBlockExecutor<InnerExec, RB> — fully generic over inner executor
-// ---------------------------------------------------------------------------
 
 /// Wraps any `InnerExec: BlockExecutor`, intercepting transactions addressed
 /// to the Mote processor contract and routing them through the CRUD engine.

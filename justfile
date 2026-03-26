@@ -40,17 +40,11 @@ check-typos:
 lint-actions:
     actionlint
 
-run-node *args:
-    cargo run -p mote-node -- node --chain etc/genesis.json {{args}}
+run-eth *args:
+    cargo run -p mote-node-eth -- node --chain etc/genesis.json {{args}}
+
+run-op *args:
+    cargo run -p mote-node-op -- node --chain etc/genesis.json {{args}}
 
 run-analytics *args:
     cargo run -p mote-analytics -- {{args}}
-
-run-all:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    trap 'kill 0' EXIT
-    just run-node &
-    sleep 2
-    just run-analytics &
-    wait
