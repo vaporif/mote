@@ -1,6 +1,5 @@
 use mote_primitives::config::MoteChainConfig;
 
-/// Falls back to defaults if `config.mote` is absent from the genesis JSON.
 pub fn extract_mote_config(genesis: &serde_json::Value) -> eyre::Result<MoteChainConfig> {
     let config = if let Some(mote_section) = genesis.get("config").and_then(|c| c.get("mote")) {
         serde_json::from_value::<MoteChainConfig>(mote_section.clone())?
