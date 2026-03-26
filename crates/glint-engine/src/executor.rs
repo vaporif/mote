@@ -638,8 +638,10 @@ mod tests {
             .with_bundle_update()
             .build();
 
-        let mut block_env = revm::context::BlockEnv::default();
-        block_env.number = U256::from(TEST_BLOCK);
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
 
         let env = EvmEnv {
             block_env,
@@ -684,8 +686,10 @@ mod tests {
             .with_bundle_update()
             .build();
 
-        let mut block_env = revm::context::BlockEnv::default();
-        block_env.number = U256::from(TEST_BLOCK);
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
 
         let env = EvmEnv {
             block_env,
@@ -750,6 +754,7 @@ mod tests {
 
     #[test]
     fn expiration_persists_state_through_result() {
+        use revm::Database as _;
         let entity_key = B256::repeat_byte(0x01);
         let owner = Address::repeat_byte(0x42);
 
@@ -764,8 +769,10 @@ mod tests {
             .with_bundle_update()
             .build();
 
-        let mut block_env = revm::context::BlockEnv::default();
-        block_env.number = U256::from(TEST_BLOCK);
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            ..revm::context::BlockEnv::default()
+        };
 
         let env = EvmEnv {
             block_env,
@@ -786,9 +793,8 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
         let (evm, _result) = executor.finish().unwrap();
 
-        use revm::Database as _;
         let meta_slot = entity_storage_key(&entity_key);
-        let mut db = evm.into_db();
+        let db = evm.into_db();
         let value = db
             .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(meta_slot.0))
             .expect("storage read should succeed");

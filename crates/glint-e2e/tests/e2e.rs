@@ -141,7 +141,10 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     let flight_data: Vec<_> = stream.try_collect().await?;
     let batches = arrow_flight::utils::flight_data_to_batches(&flight_data)?;
 
-    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    let total_rows: usize = batches
+        .iter()
+        .map(arrow::array::RecordBatch::num_rows)
+        .sum();
     assert!(
         total_rows >= 1,
         "expected at least 1 entity row from Flight SQL, got {total_rows}"
