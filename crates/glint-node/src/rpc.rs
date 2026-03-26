@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{B256, U256};
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::core::async_trait;
 use jsonrpsee::proc_macros::rpc;
@@ -6,27 +6,16 @@ use reth_provider::StateProviderFactory;
 
 use glint_engine::slot_counter::ENTITY_COUNT_KEY;
 use glint_primitives::constants::PROCESSOR_ADDRESS;
-use glint_primitives::entity::EntityMetadata;
+use glint_primitives::entity::{EntityInfo, EntityMetadata};
 use glint_primitives::storage::{
     decode_operator_value, entity_content_hash_key, entity_operator_key, entity_storage_key,
 };
-use glint_primitives::transaction::ExtendPolicy;
 
 // TODO: glint_getEntitiesByOwner -- needs reverse index (Level B)
 // TODO: glint_getUsedSlots -- trivial, read one slot (Level B)
 // TODO: glint_getBlockTiming -- needs parent header (Level B)
 // TODO: glint_queryEntities -- needs query engine / sidecar proxy (Level C)
 // TODO: glint_getEntityPayload -- needs event logs / sidecar (Level C)
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EntityInfo {
-    pub owner: Address,
-    pub expires_at_block: u64,
-    pub extend_policy: ExtendPolicy,
-    pub operator: Option<Address>,
-    pub content_hash: B256,
-}
 
 #[rpc(server, namespace = "glint")]
 pub trait GlintApi {

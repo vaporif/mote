@@ -1,19 +1,9 @@
-use alloy_primitives::{Address, B256};
-use glint_primitives::transaction::ExtendPolicy;
+use alloy_primitives::B256;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::core::params::ArrayParams;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EntityInfo {
-    pub owner: Address,
-    pub expires_at_block: u64,
-    pub extend_policy: ExtendPolicy,
-    pub operator: Option<Address>,
-    pub content_hash: B256,
-}
+use glint_primitives::entity::EntityInfo;
 
 #[derive(Debug, Clone)]
 pub struct GlintRpcClient {

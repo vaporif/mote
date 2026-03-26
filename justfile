@@ -48,3 +48,7 @@ run-op *args:
 
 run-analytics *args:
     cargo run -p glint-analytics -- {{args}}
+
+e2e:
+    cargo build --bin eth-glint
+    cargo nextest run -p glint-e2e --run-ignored all

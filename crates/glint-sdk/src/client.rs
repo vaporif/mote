@@ -1,28 +1,66 @@
-use alloy_primitives::B256;
+use alloy_network::Ethereum;
+use alloy_primitives::{B256, U256};
+use alloy_provider::{DynProvider, Provider};
+use alloy_rlp::Encodable;
+use alloy_rpc_types_eth::TransactionReceipt;
 
-use crate::rpc::{EntityInfo, GlintRpcClient};
+use glint_primitives::constants::PROCESSOR_ADDRESS;
+use glint_primitives::entity::EntityInfo;
 
-// TODO: add write methods once alloy-signer is a workspace dep
-#[derive(Debug, Clone)]
+use crate::entity::{CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
+use crate::tx::build_glint_transaction;
+
 pub struct GlintClient {
-    rpc: GlintRpcClient,
+    provider: DynProvider<Ethereum>,
 }
 
 impl GlintClient {
-    pub fn new(url: &str) -> eyre::Result<Self> {
-        let rpc = GlintRpcClient::new(url)?;
-        Ok(Self { rpc })
+    pub fn new(provider: impl Provider<Ethereum> + 'static) -> Self {
+        Self {
+            provider: provider.erased(),
+        }
+    }
+
+    pub const fn provider(&self) -> &DynProvider<Ethereum> {
+        &self.provider
     }
 
     pub async fn get_entity(&self, key: B256) -> eyre::Result<Option<EntityInfo>> {
-        self.rpc.get_entity(key).await
+        let result: Option<EntityInfo> = self
+            .provider
+            .raw_request("glint_getEntity".into(), (key,))
+            .await?;
+        Ok(result)
     }
 
     pub async fn get_entity_count(&self) -> eyre::Result<u64> {
-        self.rpc.get_entity_count().await
+        let count: u64 = self
+            .provider
+            .raw_request("glint_getEntityCount".into(), ())
+            .await?;
+        Ok(count)
     }
 
-    pub const fn rpc(&self) -> &GlintRpcClient {
-        &self.rpc
+    pub async fn send_glint_transaction(
+        &self,
+        creates: &[CreateEntity],
+        updates: &[UpdateEntity],
+        deletes: &[DeleteEntity],
+        extends: &[ExtendEntity],
+    ) -> eyre::Result<TransactionReceipt> {
+        let tx = build_glint_transaction(creates, updates, deletes, extends)?;
+
+        let mut calldata = Vec::new();
+        tx.encode(&mut calldata);
+
+        let tx_request = alloy_rpc_types_eth::TransactionRequest::default()
+            .to(PROCESSOR_ADDRESS)
+            .value(U256::ZERO)
+            .input(alloy_rpc_types_eth::TransactionInput::new(calldata.into()))
+            .gas_limit(1_000_000);
+
+        let pending = self.provider.send_transaction(tx_request).await?;
+        let receipt = pending.get_receipt().await?;
+        Ok(receipt)
     }
 }
