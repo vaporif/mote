@@ -96,9 +96,7 @@ mod tests {
     use alloy_rlp::Encodable;
     use glint_primitives::{
         storage::compute_content_hash_from_raw,
-        transaction::{
-            Create, GlintTransaction, NumericAnnotationWire, StringAnnotationWire, Update,
-        },
+        transaction::{Create, GlintTransaction, NumericAnnotation, StringAnnotation, Update},
     };
 
     #[test]
@@ -108,11 +106,11 @@ mod tests {
                 btl: 100,
                 content_type: "text/plain".into(),
                 payload: b"hello world".to_vec(),
-                string_annotations: vec![StringAnnotationWire {
+                string_annotations: vec![StringAnnotation {
                     key: "app".into(),
                     value: "test".into(),
                 }],
-                numeric_annotations: vec![NumericAnnotationWire {
+                numeric_annotations: vec![NumericAnnotation {
                     key: "priority".into(),
                     value: 1,
                 }],
@@ -168,7 +166,7 @@ mod tests {
                     btl: 200,
                     content_type: "text/plain".into(),
                     payload: b"second entity".to_vec(),
-                    string_annotations: vec![StringAnnotationWire {
+                    string_annotations: vec![StringAnnotation {
                         key: "tag".into(),
                         value: "v2".into(),
                     }],
@@ -213,7 +211,7 @@ mod tests {
                 btl: 200,
                 content_type: "application/json".into(),
                 payload: b"{\"updated\":true}".to_vec(),
-                string_annotations: vec![StringAnnotationWire {
+                string_annotations: vec![StringAnnotation {
                     key: "v".into(),
                     value: "2".into(),
                 }],

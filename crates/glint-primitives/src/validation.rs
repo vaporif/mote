@@ -6,8 +6,7 @@ use crate::annotations::{is_reserved_annotation_key, is_valid_annotation_key};
 use crate::config::GlintChainConfig;
 use crate::error::GlintError;
 use crate::transaction::{
-    ChangeOwner, Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire,
-    Update,
+    ChangeOwner, Create, Extend, GlintTransaction, NumericAnnotation, StringAnnotation, Update,
 };
 
 const fn validate_btl(btl: u64, max_btl: u64) -> Result<(), GlintError> {
@@ -45,8 +44,8 @@ fn validate_annotation_key(key: &str, max_key_size: usize) -> Result<(), GlintEr
 }
 
 fn validate_annotations(
-    string_annotations: &[StringAnnotationWire],
-    numeric_annotations: &[NumericAnnotationWire],
+    string_annotations: &[StringAnnotation],
+    numeric_annotations: &[NumericAnnotation],
     config: &GlintChainConfig,
 ) -> Result<(), GlintError> {
     let total = string_annotations.len() + numeric_annotations.len();
@@ -252,7 +251,7 @@ mod tests {
     #[test]
     fn reserved_annotation_key_rejected() {
         let mut c = valid_create();
-        c.string_annotations = vec![StringAnnotationWire {
+        c.string_annotations = vec![StringAnnotation {
             key: "$owner".into(),
             value: "x".into(),
         }];
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn invalid_annotation_key_rejected() {
         let mut c = valid_create();
-        c.string_annotations = vec![StringAnnotationWire {
+        c.string_annotations = vec![StringAnnotation {
             key: "123bad".into(),
             value: "x".into(),
         }];
@@ -279,7 +278,7 @@ mod tests {
     fn too_many_annotations_rejected() {
         let mut c = valid_create();
         c.string_annotations = (0..65)
-            .map(|i| StringAnnotationWire {
+            .map(|i| StringAnnotation {
                 key: format!("key_{i}"),
                 value: "v".into(),
             })
@@ -293,7 +292,7 @@ mod tests {
     #[test]
     fn annotation_value_too_large_rejected() {
         let mut c = valid_create();
-        c.string_annotations = vec![StringAnnotationWire {
+        c.string_annotations = vec![StringAnnotation {
             key: "big".into(),
             value: "x".repeat(crate::constants::MAX_ANNOTATION_VALUE_SIZE + 1),
         }];
@@ -306,7 +305,7 @@ mod tests {
     #[test]
     fn annotation_key_too_large_rejected() {
         let mut c = valid_create();
-        c.string_annotations = vec![StringAnnotationWire {
+        c.string_annotations = vec![StringAnnotation {
             key: "k".repeat(crate::constants::MAX_ANNOTATION_KEY_SIZE + 1),
             value: "v".into(),
         }];
@@ -320,11 +319,11 @@ mod tests {
     fn duplicate_annotation_key_rejected() {
         let mut c = valid_create();
         c.string_annotations = vec![
-            StringAnnotationWire {
+            StringAnnotation {
                 key: "dup".into(),
                 value: "a".into(),
             },
-            StringAnnotationWire {
+            StringAnnotation {
                 key: "dup".into(),
                 value: "b".into(),
             },
@@ -338,11 +337,11 @@ mod tests {
     #[test]
     fn duplicate_key_across_annotation_types_rejected() {
         let mut c = valid_create();
-        c.string_annotations = vec![StringAnnotationWire {
+        c.string_annotations = vec![StringAnnotation {
             key: "shared".into(),
             value: "a".into(),
         }];
-        c.numeric_annotations = vec![NumericAnnotationWire {
+        c.numeric_annotations = vec![NumericAnnotation {
             key: "shared".into(),
             value: 1,
         }];

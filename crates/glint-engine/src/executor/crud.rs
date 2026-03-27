@@ -591,8 +591,8 @@ fn authorize_mutation(sender: Address, owner: Address, operator: Option<Address>
 }
 
 fn annotation_gas_bytes(
-    string_annotations: &[glint_primitives::transaction::StringAnnotationWire],
-    numeric_annotations: &[glint_primitives::transaction::NumericAnnotationWire],
+    string_annotations: &[glint_primitives::transaction::StringAnnotation],
+    numeric_annotations: &[glint_primitives::transaction::NumericAnnotation],
 ) -> u64 {
     string_annotations
         .iter()
@@ -605,8 +605,8 @@ fn annotation_gas_bytes(
 }
 
 fn unzip_annotations(
-    string_annotations: &[glint_primitives::transaction::StringAnnotationWire],
-    numeric_annotations: &[glint_primitives::transaction::NumericAnnotationWire],
+    string_annotations: &[glint_primitives::transaction::StringAnnotation],
+    numeric_annotations: &[glint_primitives::transaction::NumericAnnotation],
 ) -> LogAnnotations {
     let (string_keys, string_values) = string_annotations
         .iter()

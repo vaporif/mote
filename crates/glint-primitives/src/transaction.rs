@@ -35,8 +35,8 @@ pub struct Create {
     pub btl: u64,
     pub content_type: String,
     pub payload: Vec<u8>,
-    pub string_annotations: Vec<StringAnnotationWire>,
-    pub numeric_annotations: Vec<NumericAnnotationWire>,
+    pub string_annotations: Vec<StringAnnotation>,
+    pub numeric_annotations: Vec<NumericAnnotation>,
     pub extend_policy: ExtendPolicy,
     pub operator: Option<Address>,
 }
@@ -73,19 +73,33 @@ impl Create {
 
     #[must_use]
     pub fn string_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.string_annotations.push(StringAnnotationWire {
-            key: key.into(),
-            value: value.into(),
-        });
+        self.string_annotations
+            .push(StringAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = StringAnnotation>,
+    ) -> Self {
+        self.string_annotations.extend(annotations);
         self
     }
 
     #[must_use]
     pub fn numeric_annotation(mut self, key: impl Into<String>, value: u64) -> Self {
-        self.numeric_annotations.push(NumericAnnotationWire {
-            key: key.into(),
-            value,
-        });
+        self.numeric_annotations
+            .push(NumericAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = NumericAnnotation>,
+    ) -> Self {
+        self.numeric_annotations.extend(annotations);
         self
     }
 }
@@ -136,8 +150,8 @@ impl Decodable for Create {
         let btl = u64::decode(buf)?;
         let content_type = String::decode(buf)?;
         let payload = Vec::<u8>::decode(buf)?;
-        let string_annotations = Vec::<StringAnnotationWire>::decode(buf)?;
-        let numeric_annotations = Vec::<NumericAnnotationWire>::decode(buf)?;
+        let string_annotations = Vec::<StringAnnotation>::decode(buf)?;
+        let numeric_annotations = Vec::<NumericAnnotation>::decode(buf)?;
 
         let consumed = remaining_before - buf.len();
         let (extend_policy, operator) = if consumed < header.payload_length {
@@ -174,15 +188,33 @@ impl Decodable for Create {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct StringAnnotationWire {
+pub struct StringAnnotation {
     pub key: String,
     pub value: String,
 }
 
+impl StringAnnotation {
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct NumericAnnotationWire {
+pub struct NumericAnnotation {
     pub key: String,
     pub value: u64,
+}
+
+impl NumericAnnotation {
+    pub fn new(key: impl Into<String>, value: u64) -> Self {
+        Self {
+            key: key.into(),
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,8 +223,8 @@ pub struct Update {
     pub btl: u64,
     pub content_type: String,
     pub payload: Vec<u8>,
-    pub string_annotations: Vec<StringAnnotationWire>,
-    pub numeric_annotations: Vec<NumericAnnotationWire>,
+    pub string_annotations: Vec<StringAnnotation>,
+    pub numeric_annotations: Vec<NumericAnnotation>,
     pub extend_policy: Option<ExtendPolicy>,
     pub operator: Option<Option<Address>>,
 }
@@ -232,19 +264,33 @@ impl Update {
 
     #[must_use]
     pub fn string_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.string_annotations.push(StringAnnotationWire {
-            key: key.into(),
-            value: value.into(),
-        });
+        self.string_annotations
+            .push(StringAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = StringAnnotation>,
+    ) -> Self {
+        self.string_annotations.extend(annotations);
         self
     }
 
     #[must_use]
     pub fn numeric_annotation(mut self, key: impl Into<String>, value: u64) -> Self {
-        self.numeric_annotations.push(NumericAnnotationWire {
-            key: key.into(),
-            value,
-        });
+        self.numeric_annotations
+            .push(NumericAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = NumericAnnotation>,
+    ) -> Self {
+        self.numeric_annotations.extend(annotations);
         self
     }
 }
@@ -321,8 +367,8 @@ impl Decodable for Update {
         let btl = u64::decode(buf)?;
         let content_type = String::decode(buf)?;
         let payload = Vec::<u8>::decode(buf)?;
-        let string_annotations = Vec::<StringAnnotationWire>::decode(buf)?;
-        let numeric_annotations = Vec::<NumericAnnotationWire>::decode(buf)?;
+        let string_annotations = Vec::<StringAnnotation>::decode(buf)?;
+        let numeric_annotations = Vec::<NumericAnnotation>::decode(buf)?;
 
         let consumed = remaining_before - buf.len();
         let (extend_policy, operator) = if consumed < header.payload_length {
@@ -546,13 +592,13 @@ pub struct GlintTransaction {
     pub change_owners: Vec<ChangeOwner>,
 }
 
-impl From<(String, String)> for StringAnnotationWire {
+impl From<(String, String)> for StringAnnotation {
     fn from((key, value): (String, String)) -> Self {
         Self { key, value }
     }
 }
 
-impl From<(&str, &str)> for StringAnnotationWire {
+impl From<(&str, &str)> for StringAnnotation {
     fn from((key, value): (&str, &str)) -> Self {
         Self {
             key: key.into(),
@@ -561,13 +607,13 @@ impl From<(&str, &str)> for StringAnnotationWire {
     }
 }
 
-impl From<(String, u64)> for NumericAnnotationWire {
+impl From<(String, u64)> for NumericAnnotation {
     fn from((key, value): (String, u64)) -> Self {
         Self { key, value }
     }
 }
 
-impl From<(&str, u64)> for NumericAnnotationWire {
+impl From<(&str, u64)> for NumericAnnotation {
     fn from((key, value): (&str, u64)) -> Self {
         Self {
             key: key.into(),
@@ -678,11 +724,11 @@ mod tests {
             btl: 100,
             content_type: "application/json".into(),
             payload: b"hello".to_vec(),
-            string_annotations: vec![StringAnnotationWire {
+            string_annotations: vec![StringAnnotation {
                 key: "key".into(),
                 value: "val".into(),
             }],
-            numeric_annotations: vec![NumericAnnotationWire {
+            numeric_annotations: vec![NumericAnnotation {
                 key: "count".into(),
                 value: 42,
             }],
@@ -817,11 +863,11 @@ mod tests {
                 btl: 100,
                 content_type: "application/json".into(),
                 payload: b"{\"key\":\"value\"}".to_vec(),
-                string_annotations: vec![StringAnnotationWire {
+                string_annotations: vec![StringAnnotation {
                     key: "app".into(),
                     value: "test".into(),
                 }],
-                numeric_annotations: vec![NumericAnnotationWire {
+                numeric_annotations: vec![NumericAnnotation {
                     key: "priority".into(),
                     value: 1,
                 }],
