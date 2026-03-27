@@ -25,6 +25,7 @@ pub enum EntityEventType {
     Deleted = 2,
     Expired = 3,
     Extended = 4,
+    PermissionsChanged = 5,
 }
 
 impl TryFrom<u8> for EntityEventType {
@@ -37,6 +38,7 @@ impl TryFrom<u8> for EntityEventType {
             2 => Ok(Self::Deleted),
             3 => Ok(Self::Expired),
             4 => Ok(Self::Extended),
+            5 => Ok(Self::PermissionsChanged),
             _ => Err(value),
         }
     }
@@ -59,6 +61,7 @@ mod tests {
         assert_eq!(EntityEventType::Deleted as u8, 2);
         assert_eq!(EntityEventType::Expired as u8, 3);
         assert_eq!(EntityEventType::Extended as u8, 4);
+        assert_eq!(EntityEventType::PermissionsChanged as u8, 5);
     }
 
     #[test]
@@ -70,9 +73,9 @@ mod tests {
 
     #[test]
     fn entity_event_type_roundtrip() {
-        for val in 0u8..=4 {
+        for val in 0u8..=5 {
             assert!(EntityEventType::try_from(val).is_ok());
         }
-        assert!(EntityEventType::try_from(5u8).is_err());
+        assert!(EntityEventType::try_from(6u8).is_err());
     }
 }

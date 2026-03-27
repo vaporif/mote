@@ -122,6 +122,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
 
         let mut calldata = Vec::new();
@@ -179,6 +180,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
 
         let mut calldata = Vec::new();
@@ -221,6 +223,7 @@ mod tests {
             }],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
 
         let mut calldata = Vec::new();

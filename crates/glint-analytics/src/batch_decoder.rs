@@ -118,6 +118,24 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
                     row.tx_hash = tx_hash;
                 }
             }
+            EntityEventType::PermissionsChanged => {
+                let new_owner = addr_from_fsb(owner_col, i);
+                let extend_policy = extend_policy_col.value(i);
+                let operator = if operator_col.is_null(i) {
+                    None
+                } else {
+                    Some(addr_from_fsb(operator_col, i))
+                };
+
+                if let Some(row) = store.get_mut(&entity_key) {
+                    row.owner = new_owner;
+                    row.extend_policy = extend_policy;
+                    row.operator = operator;
+                    row.tx_hash = tx_hash;
+                } else {
+                    warn!(?entity_key, "PermissionsChanged for missing entity");
+                }
+            }
         }
     }
 
@@ -155,7 +173,10 @@ fn apply_revert(
                     warn!(?entity_key, "reverting Extended event for missing entity");
                 }
             }
-            EntityEventType::Updated | EntityEventType::Deleted | EntityEventType::Expired => {
+            EntityEventType::Updated
+            | EntityEventType::Deleted
+            | EntityEventType::Expired
+            | EntityEventType::PermissionsChanged => {
                 return Ok(ApplyResult::NeedsReplay);
             }
         }
@@ -232,6 +253,14 @@ mod tests {
             old_expires_at: u64,
             new_expires_at: u64,
             owner: Address,
+        },
+        PermissionsChanged {
+            entity_key: B256,
+            #[allow(dead_code)]
+            old_owner: Address,
+            new_owner: Address,
+            extend_policy: u8,
+            operator: Address,
         },
     }
 
@@ -449,6 +478,25 @@ mod tests {
                     num_ann_b.append(false).unwrap();
                     extend_policy_b.append_null();
                     operator_b.append_null();
+                }
+                TestEvent::PermissionsChanged {
+                    entity_key,
+                    old_owner: _,
+                    new_owner,
+                    extend_policy,
+                    operator,
+                } => {
+                    event_type_b.append_value(EntityEventType::PermissionsChanged as u8);
+                    entity_key_b.append_value(entity_key.as_slice()).unwrap();
+                    owner_b.append_value(new_owner.as_slice()).unwrap();
+                    expires_b.append_null();
+                    old_expires_b.append_null();
+                    content_type_b.append_null();
+                    payload_b.append_null();
+                    str_ann_b.append(false).unwrap();
+                    num_ann_b.append(false).unwrap();
+                    extend_policy_b.append_value(*extend_policy);
+                    operator_b.append_value(operator.as_slice()).unwrap();
                 }
             }
         }
@@ -668,6 +716,60 @@ mod tests {
         );
         let result = apply_batch(&mut store, &revert_batch).unwrap();
 
+        assert_eq!(result, ApplyResult::NeedsReplay);
+    }
+
+    #[test]
+    fn decode_permissions_changed_updates_owner() {
+        let mut store = EntityStore::new();
+
+        let create_batch =
+            build_test_batch(10, default_tx(), BatchOp::Commit, &[created_event(200)]);
+        apply_batch(&mut store, &create_batch).unwrap();
+
+        let new_owner = Address::repeat_byte(0x42);
+        let pc_batch = build_test_batch(
+            11,
+            default_tx(),
+            BatchOp::Commit,
+            &[TestEvent::PermissionsChanged {
+                entity_key: default_key(),
+                old_owner: default_owner(),
+                new_owner,
+                extend_policy: 1,
+                operator: Address::repeat_byte(0x99),
+            }],
+        );
+        let result = apply_batch(&mut store, &pc_batch).unwrap();
+        assert_eq!(result, ApplyResult::Applied);
+
+        let row = store.get(&default_key()).unwrap();
+        assert_eq!(row.owner, new_owner);
+        assert_eq!(row.extend_policy, 1);
+        assert_eq!(row.operator, Some(Address::repeat_byte(0x99)));
+    }
+
+    #[test]
+    fn revert_permissions_changed_triggers_replay() {
+        let mut store = EntityStore::new();
+
+        let create_batch =
+            build_test_batch(10, default_tx(), BatchOp::Commit, &[created_event(200)]);
+        apply_batch(&mut store, &create_batch).unwrap();
+
+        let revert_batch = build_test_batch(
+            11,
+            default_tx(),
+            BatchOp::Revert,
+            &[TestEvent::PermissionsChanged {
+                entity_key: default_key(),
+                old_owner: default_owner(),
+                new_owner: Address::repeat_byte(0x42),
+                extend_policy: 1,
+                operator: Address::ZERO,
+            }],
+        );
+        let result = apply_batch(&mut store, &revert_batch).unwrap();
         assert_eq!(result, ApplyResult::NeedsReplay);
     }
 }

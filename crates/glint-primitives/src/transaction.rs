@@ -277,12 +277,133 @@ pub struct Extend {
     pub additional_blocks: u64,
 }
 
+const OWNER_TAG_UNCHANGED: u8 = 0;
+const OWNER_TAG_SET: u8 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeOwner {
+    pub entity_key: B256,
+    pub new_owner: Option<Address>,
+    pub extend_policy: Option<ExtendPolicy>,
+    /// `None` = unchanged, `Some(None)` = remove, `Some(Some(addr))` = set.
+    pub operator: Option<Option<Address>>,
+}
+
+impl ChangeOwner {
+    fn payload_length(&self) -> usize {
+        let (owner_tag, owner_addr) = self.new_owner.map_or((OWNER_TAG_UNCHANGED, None), |addr| {
+            (OWNER_TAG_SET, Some(addr))
+        });
+        let (ep_val, op_tag, op_addr) = self.encoding_parts_ep_op();
+        self.entity_key.length()
+            + owner_tag.length()
+            + owner_addr.map_or(0, |a| a.length())
+            + ep_val.length()
+            + op_tag.length()
+            + op_addr.map_or(0, |a| a.length())
+    }
+
+    const fn encoding_parts_ep_op(&self) -> (u8, u8, Option<Address>) {
+        let ep_val: u8 = match self.extend_policy {
+            None => EXTEND_POLICY_NO_CHANGE,
+            Some(ExtendPolicy::OwnerOnly) => ExtendPolicy::OwnerOnly as u8,
+            Some(ExtendPolicy::AnyoneCanExtend) => ExtendPolicy::AnyoneCanExtend as u8,
+        };
+        let (op_tag, op_addr): (u8, Option<Address>) = match self.operator {
+            None => (OPERATOR_TAG_UNCHANGED, None),
+            Some(None) => (OPERATOR_TAG_REMOVE, None),
+            Some(Some(addr)) => (OPERATOR_TAG_SET, Some(addr)),
+        };
+        (ep_val, op_tag, op_addr)
+    }
+}
+
+impl Encodable for ChangeOwner {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let (owner_tag, owner_addr) = self.new_owner.map_or((OWNER_TAG_UNCHANGED, None), |addr| {
+            (OWNER_TAG_SET, Some(addr))
+        });
+        let (ep_val, op_tag, op_addr) = self.encoding_parts_ep_op();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.payload_length(),
+        }
+        .encode(out);
+        self.entity_key.encode(out);
+        owner_tag.encode(out);
+        if let Some(addr) = owner_addr {
+            addr.encode(out);
+        }
+        ep_val.encode(out);
+        op_tag.encode(out);
+        if let Some(addr) = op_addr {
+            addr.encode(out);
+        }
+    }
+
+    fn length(&self) -> usize {
+        let list_len = self.payload_length();
+        alloy_rlp::length_of_length(list_len) + list_len
+    }
+}
+
+impl Decodable for ChangeOwner {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let header = alloy_rlp::Header::decode(buf)?;
+        if !header.list {
+            return Err(alloy_rlp::Error::UnexpectedString);
+        }
+        let remaining_before = buf.len();
+
+        let entity_key = B256::decode(buf)?;
+
+        let owner_tag = u8::decode(buf)?;
+        let new_owner = match owner_tag {
+            OWNER_TAG_UNCHANGED => None,
+            OWNER_TAG_SET => Some(Address::decode(buf)?),
+            _ => return Err(alloy_rlp::Error::Custom("invalid owner tag")),
+        };
+
+        let ep_val = u8::decode(buf)?;
+        let extend_policy = match ep_val {
+            EXTEND_POLICY_NO_CHANGE => None,
+            v if v == ExtendPolicy::OwnerOnly as u8 => Some(ExtendPolicy::OwnerOnly),
+            v if v == ExtendPolicy::AnyoneCanExtend as u8 => Some(ExtendPolicy::AnyoneCanExtend),
+            _ => return Err(alloy_rlp::Error::Custom("invalid ExtendPolicy sentinel")),
+        };
+
+        let op_tag = u8::decode(buf)?;
+        let operator = match op_tag {
+            OPERATOR_TAG_UNCHANGED => None,
+            OPERATOR_TAG_REMOVE => Some(None),
+            OPERATOR_TAG_SET => Some(Some(Address::decode(buf)?)),
+            _ => return Err(alloy_rlp::Error::Custom("invalid operator tag")),
+        };
+
+        let total_consumed = remaining_before - buf.len();
+        if total_consumed != header.payload_length {
+            return Err(alloy_rlp::Error::ListLengthMismatch {
+                expected: header.payload_length,
+                got: total_consumed,
+            });
+        }
+
+        Ok(Self {
+            entity_key,
+            new_owner,
+            extend_policy,
+            operator,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct GlintTransaction {
     pub creates: Vec<Create>,
     pub updates: Vec<Update>,
     pub deletes: Vec<B256>,
     pub extends: Vec<Extend>,
+    pub change_owners: Vec<ChangeOwner>,
 }
 
 impl From<(String, String)> for StringAnnotationWire {
@@ -317,7 +438,11 @@ impl From<(&str, u64)> for NumericAnnotationWire {
 
 impl GlintTransaction {
     pub const fn total_operations(&self) -> usize {
-        self.creates.len() + self.updates.len() + self.deletes.len() + self.extends.len()
+        self.creates.len()
+            + self.updates.len()
+            + self.deletes.len()
+            + self.extends.len()
+            + self.change_owners.len()
     }
 }
 
@@ -456,6 +581,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
         let mut buf = Vec::new();
         tx.encode(&mut buf);
@@ -496,6 +622,7 @@ mod tests {
                 entity_key: B256::repeat_byte(0x03),
                 additional_blocks: 50,
             }],
+            change_owners: vec![],
         };
         let mut buf = Vec::new();
         tx.encode(&mut buf);
@@ -510,6 +637,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
         let mut buf = Vec::new();
         tx.encode(&mut buf);
@@ -523,5 +651,67 @@ mod tests {
         let json = serde_json::to_string(&policy).unwrap();
         let decoded: ExtendPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(policy, decoded);
+    }
+
+    #[test]
+    fn change_owner_rlp_roundtrip_owner_only() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: Some(Address::repeat_byte(0x42)),
+            extend_policy: None,
+            operator: None,
+        };
+        let mut buf = Vec::new();
+        co.encode(&mut buf);
+        let decoded = ChangeOwner::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(co, decoded);
+    }
+
+    #[test]
+    fn change_owner_rlp_roundtrip_all_fields() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: Some(Address::repeat_byte(0x42)),
+            extend_policy: Some(ExtendPolicy::AnyoneCanExtend),
+            operator: Some(Some(Address::repeat_byte(0xAB))),
+        };
+        let mut buf = Vec::new();
+        co.encode(&mut buf);
+        let decoded = ChangeOwner::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(co, decoded);
+    }
+
+    #[test]
+    fn change_owner_rlp_roundtrip_remove_operator() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: None,
+            extend_policy: Some(ExtendPolicy::OwnerOnly),
+            operator: Some(None),
+        };
+        let mut buf = Vec::new();
+        co.encode(&mut buf);
+        let decoded = ChangeOwner::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(co, decoded);
+    }
+
+    #[test]
+    fn glint_transaction_with_change_owners_roundtrip() {
+        let tx = GlintTransaction {
+            creates: vec![],
+            updates: vec![],
+            deletes: vec![],
+            extends: vec![],
+            change_owners: vec![ChangeOwner {
+                entity_key: B256::repeat_byte(0x01),
+                new_owner: Some(Address::repeat_byte(0x42)),
+                extend_policy: None,
+                operator: None,
+            }],
+        };
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+        let decoded = GlintTransaction::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(tx, decoded);
     }
 }

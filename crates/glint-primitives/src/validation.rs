@@ -6,7 +6,8 @@ use crate::annotations::{is_reserved_annotation_key, is_valid_annotation_key};
 use crate::config::GlintChainConfig;
 use crate::error::GlintError;
 use crate::transaction::{
-    Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire, Update,
+    ChangeOwner, Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire,
+    Update,
 };
 
 const fn validate_btl(btl: u64, max_btl: u64) -> Result<(), GlintError> {
@@ -111,6 +112,21 @@ pub const fn validate_extend(e: &Extend, max_btl: u64) -> Result<(), GlintError>
     Ok(())
 }
 
+pub fn validate_change_owner(co: &ChangeOwner) -> Result<(), GlintError> {
+    if co.new_owner.is_none() && co.extend_policy.is_none() && co.operator.is_none() {
+        return Err(GlintError::EmptyChangeOwner);
+    }
+    if co.new_owner == Some(Address::ZERO) {
+        return Err(GlintError::InvalidOwnerAddress);
+    }
+    if let Some(Some(addr)) = co.operator
+        && addr == Address::ZERO
+    {
+        return Err(GlintError::InvalidOperatorAddress);
+    }
+    Ok(())
+}
+
 pub fn validate_transaction(
     tx: &GlintTransaction,
     config: &GlintChainConfig,
@@ -131,9 +147,13 @@ pub fn validate_transaction(
     for e in &tx.extends {
         validate_extend(e, config.max_btl)?;
     }
+    for co in &tx.change_owners {
+        validate_change_owner(co)?;
+    }
 
-    let mut seen_keys =
-        HashSet::with_capacity(tx.deletes.len() + tx.updates.len() + tx.extends.len());
+    let mut seen_keys = HashSet::with_capacity(
+        tx.deletes.len() + tx.updates.len() + tx.extends.len() + tx.change_owners.len(),
+    );
     for key in &tx.deletes {
         if !seen_keys.insert(key) {
             return Err(GlintError::DuplicateEntityKey(*key));
@@ -147,6 +167,11 @@ pub fn validate_transaction(
     for e in &tx.extends {
         if !seen_keys.insert(&e.entity_key) {
             return Err(GlintError::DuplicateEntityKey(e.entity_key));
+        }
+    }
+    for co in &tx.change_owners {
+        if !seen_keys.insert(&co.entity_key) {
+            return Err(GlintError::DuplicateEntityKey(co.entity_key));
         }
     }
 
@@ -337,6 +362,7 @@ mod tests {
                 entity_key: B256::repeat_byte(0x01),
                 additional_blocks: 0,
             }],
+            change_owners: vec![],
         };
         assert!(matches!(
             validate_transaction(&tx, &cfg()),
@@ -351,6 +377,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
         assert!(matches!(
             validate_transaction(&tx, &cfg()),
@@ -365,6 +392,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
         assert_eq!(
             validate_transaction(&tx, &cfg()),
@@ -379,6 +407,7 @@ mod tests {
             updates: vec![],
             deletes: vec![],
             extends: vec![],
+            change_owners: vec![],
         };
         assert!(validate_transaction(&tx, &cfg()).is_ok());
     }
@@ -456,6 +485,81 @@ mod tests {
             updates: vec![],
             deletes: vec![key, key],
             extends: vec![],
+            change_owners: vec![],
+        };
+        assert!(matches!(
+            validate_transaction(&tx, &cfg()),
+            Err(GlintError::DuplicateEntityKey(_))
+        ));
+    }
+
+    #[test]
+    fn change_owner_empty_rejected() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: None,
+            extend_policy: None,
+            operator: None,
+        };
+        assert_eq!(
+            validate_change_owner(&co),
+            Err(GlintError::EmptyChangeOwner)
+        );
+    }
+
+    #[test]
+    fn change_owner_zero_new_owner_rejected() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: Some(Address::ZERO),
+            extend_policy: None,
+            operator: None,
+        };
+        assert_eq!(
+            validate_change_owner(&co),
+            Err(GlintError::InvalidOwnerAddress)
+        );
+    }
+
+    #[test]
+    fn change_owner_zero_operator_rejected() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: None,
+            extend_policy: None,
+            operator: Some(Some(Address::ZERO)),
+        };
+        assert_eq!(
+            validate_change_owner(&co),
+            Err(GlintError::InvalidOperatorAddress)
+        );
+    }
+
+    #[test]
+    fn change_owner_valid_passes() {
+        let co = ChangeOwner {
+            entity_key: B256::repeat_byte(0x01),
+            new_owner: Some(Address::repeat_byte(0x42)),
+            extend_policy: None,
+            operator: None,
+        };
+        assert!(validate_change_owner(&co).is_ok());
+    }
+
+    #[test]
+    fn change_owner_duplicate_key_rejected() {
+        let key = B256::repeat_byte(0x01);
+        let tx = GlintTransaction {
+            creates: vec![],
+            updates: vec![],
+            deletes: vec![key],
+            extends: vec![],
+            change_owners: vec![ChangeOwner {
+                entity_key: key,
+                new_owner: Some(Address::repeat_byte(0x42)),
+                extend_policy: None,
+                operator: None,
+            }],
         };
         assert!(matches!(
             validate_transaction(&tx, &cfg()),
@@ -480,6 +584,7 @@ mod tests {
             }],
             deletes: vec![key],
             extends: vec![],
+            change_owners: vec![],
         };
         assert!(matches!(
             validate_transaction(&tx, &cfg()),

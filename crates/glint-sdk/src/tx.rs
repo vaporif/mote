@@ -1,8 +1,9 @@
 use glint_primitives::transaction::{
-    Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire, Update,
+    ChangeOwner, Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire,
+    Update,
 };
 
-use crate::entity::{CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
+use crate::entity::{ChangeOwnerEntity, CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
 
 fn to_string_wire(anns: &[(String, String)]) -> Vec<StringAnnotationWire> {
     anns.iter()
@@ -60,17 +61,30 @@ impl From<&ExtendEntity> for Extend {
     }
 }
 
+impl From<&ChangeOwnerEntity> for ChangeOwner {
+    fn from(e: &ChangeOwnerEntity) -> Self {
+        Self {
+            entity_key: e.entity_key,
+            new_owner: e.new_owner,
+            extend_policy: e.extend_policy,
+            operator: e.operator,
+        }
+    }
+}
+
 pub fn build_glint_transaction(
     creates: &[CreateEntity],
     updates: &[UpdateEntity],
     deletes: &[DeleteEntity],
     extends: &[ExtendEntity],
+    change_owners: &[ChangeOwnerEntity],
 ) -> eyre::Result<GlintTransaction> {
     let tx = GlintTransaction {
         creates: creates.iter().map(Create::from).collect(),
         updates: updates.iter().map(Update::from).collect(),
         deletes: deletes.iter().map(|d| d.entity_key).collect(),
         extends: extends.iter().map(Extend::from).collect(),
+        change_owners: change_owners.iter().map(ChangeOwner::from).collect(),
     };
     glint_primitives::validation::validate_transaction(
         &tx,
@@ -101,7 +115,7 @@ mod tests {
             .string_annotation("app", "test")
             .numeric_annotation("priority", 1);
 
-        let tx = build_glint_transaction(&[builder], &[], &[], &[]).unwrap();
+        let tx = build_glint_transaction(&[builder], &[], &[], &[], &[]).unwrap();
         let decoded = roundtrip(&tx);
         assert_eq!(tx, decoded);
         assert_eq!(
@@ -123,7 +137,22 @@ mod tests {
         let delete = DeleteEntity::new(B256::repeat_byte(0x02));
         let extend = ExtendEntity::new(B256::repeat_byte(0x03), 42);
 
-        let tx = build_glint_transaction(&[create], &[update], &[delete], &[extend]).unwrap();
+        let tx = build_glint_transaction(&[create], &[update], &[delete], &[extend], &[]).unwrap();
         assert_eq!(tx, roundtrip(&tx));
+    }
+
+    #[test]
+    fn change_owner_roundtrips() {
+        let co = ChangeOwnerEntity::new(B256::repeat_byte(0x01))
+            .new_owner(Address::repeat_byte(0x42))
+            .extend_policy(ExtendPolicy::AnyoneCanExtend)
+            .operator(Some(Address::repeat_byte(0xAB)));
+        let tx = build_glint_transaction(&[], &[], &[], &[], &[co]).unwrap();
+        assert_eq!(tx, roundtrip(&tx));
+        assert_eq!(tx.change_owners.len(), 1);
+        assert_eq!(
+            tx.change_owners[0].new_owner,
+            Some(Address::repeat_byte(0x42))
+        );
     }
 }
