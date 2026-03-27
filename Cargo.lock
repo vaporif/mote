@@ -843,13 +843,10 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
  "itertools 0.14.0",
- "opentelemetry",
- "opentelemetry-http",
  "reqwest 0.12.28",
  "serde_json",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "url",
 ]
 
@@ -4449,21 +4446,15 @@ version = "0.1.0"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
- "alloy-provider",
  "alloy-signer-local",
- "alloy-transport-http",
  "arrow",
- "arrow-flight",
  "eyre",
- "futures",
  "glint-primitives",
  "glint-sdk",
- "prost",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
  "tokio",
- "tonic",
 ]
 
 [[package]]
@@ -4524,6 +4515,7 @@ dependencies = [
 name = "glint-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "clap",
  "eyre",
@@ -4585,6 +4577,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-sol-types",
  "eyre",
+ "jsonrpsee",
  "regex",
  "serde",
  "serde_json",
@@ -4601,11 +4594,15 @@ dependencies = [
  "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types-eth",
+ "arrow",
+ "arrow-flight",
  "eyre",
+ "futures",
  "glint-primitives",
  "jsonrpsee",
- "serde",
+ "prost",
  "tokio",
+ "tonic",
 ]
 
 [[package]]

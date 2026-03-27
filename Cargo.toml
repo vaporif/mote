@@ -33,7 +33,11 @@ keywords = ["ethereum", "reth", "ephemeral", "storage"]
 categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
+glint-engine = { path = "crates/glint-engine" }
+glint-exex = { path = "crates/glint-exex" }
+glint-node = { path = "crates/glint-node" }
 glint-primitives = { path = "crates/glint-primitives" }
+glint-sdk = { path = "crates/glint-sdk" }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
 alloy-rlp = { version = "0.3", features = ["derive"] }
@@ -90,6 +94,7 @@ serde_json = "1"
 datafusion = "53"
 roaring = "0.10"
 arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
+prost = "0.14"
 tonic = "0.14"
 axum = "0.8"
 parking_lot = "0.12"

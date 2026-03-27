@@ -15,9 +15,9 @@ name = "eth-glint"
 path = "src/main.rs"
 
 [dependencies]
-glint-engine = { path = "../../crates/glint-engine" }
-glint-exex = { path = "../../crates/glint-exex" }
-glint-node = { path = "../../crates/glint-node" }
+glint-engine.workspace = true
+glint-exex.workspace = true
+glint-node.workspace = true
 glint-primitives.workspace = true
 
 reth-ethereum.workspace = true

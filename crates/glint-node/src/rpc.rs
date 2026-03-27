@@ -1,31 +1,21 @@
+use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, U256};
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::core::async_trait;
-use jsonrpsee::proc_macros::rpc;
-use reth_provider::StateProviderFactory;
+use reth_provider::{HeaderProvider, StateProviderFactory};
 use tracing::{debug, instrument};
 
-use glint_engine::slot_counter::ENTITY_COUNT_KEY;
+use glint_engine::slot_counter::{ENTITY_COUNT_KEY, USED_SLOTS_KEY};
 use glint_primitives::constants::PROCESSOR_ADDRESS;
 use glint_primitives::entity::{EntityInfo, EntityMetadata};
+pub use glint_primitives::rpc::{BlockTiming, GlintApiServer};
 use glint_primitives::storage::{
     decode_operator_value, entity_content_hash_key, entity_operator_key, entity_storage_key,
 };
 
-// TODO: glint_getEntitiesByOwner -- needs reverse index (Level B)
-// TODO: glint_getUsedSlots -- trivial, read one slot (Level B)
-// TODO: glint_getBlockTiming -- needs parent header (Level B)
-// TODO: glint_queryEntities -- needs query engine / sidecar proxy (Level C)
-// TODO: glint_getEntityPayload -- needs event logs / sidecar (Level C)
-
-#[rpc(server, namespace = "glint")]
-pub trait GlintApi {
-    #[method(name = "getEntity")]
-    async fn get_entity(&self, entity_key: B256) -> RpcResult<Option<EntityInfo>>;
-
-    #[method(name = "getEntityCount")]
-    async fn get_entity_count(&self) -> RpcResult<u64>;
-}
+// TODO: glint_getEntitiesByOwner -- needs reverse index or sidecar (use Flight SQL)
+// TODO: glint_queryEntities -- use Flight SQL on the analytics sidecar
+// TODO: glint_getEntityPayload -- needs event logs / sidecar
 
 #[derive(Debug, Clone)]
 pub struct GlintRpc<Provider> {
@@ -41,7 +31,7 @@ impl<Provider> GlintRpc<Provider> {
 #[async_trait]
 impl<Provider> GlintApiServer for GlintRpc<Provider>
 where
-    Provider: StateProviderFactory + 'static,
+    Provider: StateProviderFactory + HeaderProvider + 'static,
 {
     #[instrument(skip(self), fields(%entity_key), name = "glint_rpc::get_entity")]
     async fn get_entity(&self, entity_key: B256) -> RpcResult<Option<EntityInfo>> {
@@ -91,23 +81,54 @@ where
 
     #[instrument(skip(self), name = "glint_rpc::get_entity_count")]
     async fn get_entity_count(&self) -> RpcResult<u64> {
-        let state = self
-            .provider
-            .latest()
-            .map_err(|e| internal_err(format!("failed to get latest state: {e}")))?;
-
-        let count_value = state
-            .storage(PROCESSOR_ADDRESS, ENTITY_COUNT_KEY)
-            .map_err(|e| internal_err(format!("failed to read entity count slot: {e}")))?;
-
-        let count: u64 = count_value
-            .unwrap_or(U256::ZERO)
-            .try_into()
-            .map_err(|_| internal_err("entity count overflows u64"))?;
-
-        debug!(count, "returning entity count");
-        Ok(count)
+        read_u64_slot(&self.provider, ENTITY_COUNT_KEY, "entity count")
     }
+
+    #[instrument(skip(self), name = "glint_rpc::get_used_slots")]
+    async fn get_used_slots(&self) -> RpcResult<u64> {
+        read_u64_slot(&self.provider, USED_SLOTS_KEY, "used slots")
+    }
+
+    #[instrument(skip(self), name = "glint_rpc::get_block_timing")]
+    async fn get_block_timing(&self) -> RpcResult<BlockTiming> {
+        let block_number = self
+            .provider
+            .best_block_number()
+            .map_err(|e| internal_err(format!("failed to get best block number: {e}")))?;
+
+        let header = self
+            .provider
+            .header_by_number(block_number)
+            .map_err(|e| internal_err(format!("failed to read header: {e}")))?
+            .ok_or_else(|| internal_err(format!("header not found for block {block_number}")))?;
+
+        let timing = BlockTiming {
+            block_number,
+            timestamp: header.timestamp(),
+        };
+
+        debug!(
+            block_number,
+            timestamp = timing.timestamp,
+            "returning block timing"
+        );
+        Ok(timing)
+    }
+}
+
+fn read_u64_slot(provider: &impl StateProviderFactory, key: B256, label: &str) -> RpcResult<u64> {
+    let state = provider
+        .latest()
+        .map_err(|e| internal_err(format!("failed to get latest state: {e}")))?;
+
+    let value = state
+        .storage(PROCESSOR_ADDRESS, key)
+        .map_err(|e| internal_err(format!("failed to read {label} slot: {e}")))?;
+
+    value
+        .unwrap_or(U256::ZERO)
+        .try_into()
+        .map_err(|_| internal_err(format!("{label} overflows u64")))
 }
 
 fn internal_err(msg: impl std::fmt::Display) -> jsonrpsee::types::ErrorObject<'static> {

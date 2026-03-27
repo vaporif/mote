@@ -15,9 +15,9 @@ name = "op-glint"
 path = "src/main.rs"
 
 [dependencies]
-glint-engine = { path = "../../crates/glint-engine", features = ["op"] }
-glint-exex = { path = "../../crates/glint-exex" }
-glint-node = { path = "../../crates/glint-node" }
+glint-engine = { workspace = true, features = ["op"] }
+glint-exex.workspace = true
+glint-node.workspace = true
 glint-primitives.workspace = true
 
 reth-optimism-node.workspace = true

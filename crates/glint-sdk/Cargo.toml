@@ -13,9 +13,9 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-glint-primitives.workspace = true
+glint-primitives = { workspace = true, features = ["rpc"] }
 
-alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
+alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-provider.workspace = true
 alloy-network.workspace = true
@@ -24,4 +24,9 @@ alloy-rpc-types-eth.workspace = true
 jsonrpsee = { workspace = true, features = ["http-client"] }
 tokio = { workspace = true, features = ["full"] }
 eyre.workspace = true
-serde.workspace = true
+
+arrow-flight.workspace = true
+arrow.workspace = true
+tonic.workspace = true
+prost.workspace = true
+futures.workspace = true

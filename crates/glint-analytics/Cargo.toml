@@ -29,7 +29,7 @@ color-eyre.workspace = true
 bytes.workspace = true
 roaring.workspace = true
 futures.workspace = true
-prost = "0.14"
+prost.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

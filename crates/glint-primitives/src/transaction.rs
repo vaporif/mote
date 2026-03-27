@@ -35,10 +35,73 @@ pub struct Create {
     pub btl: u64,
     pub content_type: String,
     pub payload: Vec<u8>,
-    pub string_annotations: Vec<StringAnnotationWire>,
-    pub numeric_annotations: Vec<NumericAnnotationWire>,
+    pub string_annotations: Vec<StringAnnotation>,
+    pub numeric_annotations: Vec<NumericAnnotation>,
     pub extend_policy: ExtendPolicy,
     pub operator: Option<Address>,
+}
+
+impl Create {
+    #[must_use]
+    pub fn new(content_type: impl Into<String>, payload: &[u8], btl: u64) -> Self {
+        Self {
+            btl,
+            content_type: content_type.into(),
+            payload: payload.to_vec(),
+            string_annotations: Vec::new(),
+            numeric_annotations: Vec::new(),
+            extend_policy: ExtendPolicy::OwnerOnly,
+            operator: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn operator(mut self, addr: Address) -> Self {
+        self.operator = Some(addr);
+        self
+    }
+
+    #[must_use]
+    pub const fn anyone_can_extend(mut self, yes: bool) -> Self {
+        self.extend_policy = if yes {
+            ExtendPolicy::AnyoneCanExtend
+        } else {
+            ExtendPolicy::OwnerOnly
+        };
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.string_annotations
+            .push(StringAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = StringAnnotation>,
+    ) -> Self {
+        self.string_annotations.extend(annotations);
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotation(mut self, key: impl Into<String>, value: u64) -> Self {
+        self.numeric_annotations
+            .push(NumericAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = NumericAnnotation>,
+    ) -> Self {
+        self.numeric_annotations.extend(annotations);
+        self
+    }
 }
 
 // RLP: [btl, content_type, payload, string_anns, numeric_anns, extend_policy, operator]
@@ -87,8 +150,8 @@ impl Decodable for Create {
         let btl = u64::decode(buf)?;
         let content_type = String::decode(buf)?;
         let payload = Vec::<u8>::decode(buf)?;
-        let string_annotations = Vec::<StringAnnotationWire>::decode(buf)?;
-        let numeric_annotations = Vec::<NumericAnnotationWire>::decode(buf)?;
+        let string_annotations = Vec::<StringAnnotation>::decode(buf)?;
+        let numeric_annotations = Vec::<NumericAnnotation>::decode(buf)?;
 
         let consumed = remaining_before - buf.len();
         let (extend_policy, operator) = if consumed < header.payload_length {
@@ -125,15 +188,33 @@ impl Decodable for Create {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct StringAnnotationWire {
+pub struct StringAnnotation {
     pub key: String,
     pub value: String,
 }
 
+impl StringAnnotation {
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
-pub struct NumericAnnotationWire {
+pub struct NumericAnnotation {
     pub key: String,
     pub value: u64,
+}
+
+impl NumericAnnotation {
+    pub fn new(key: impl Into<String>, value: u64) -> Self {
+        Self {
+            key: key.into(),
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,10 +223,76 @@ pub struct Update {
     pub btl: u64,
     pub content_type: String,
     pub payload: Vec<u8>,
-    pub string_annotations: Vec<StringAnnotationWire>,
-    pub numeric_annotations: Vec<NumericAnnotationWire>,
+    pub string_annotations: Vec<StringAnnotation>,
+    pub numeric_annotations: Vec<NumericAnnotation>,
     pub extend_policy: Option<ExtendPolicy>,
     pub operator: Option<Option<Address>>,
+}
+
+impl Update {
+    #[must_use]
+    pub fn new(
+        entity_key: B256,
+        content_type: impl Into<String>,
+        payload: &[u8],
+        btl: u64,
+    ) -> Self {
+        Self {
+            entity_key,
+            btl,
+            content_type: content_type.into(),
+            payload: payload.to_vec(),
+            string_annotations: Vec::new(),
+            numeric_annotations: Vec::new(),
+            extend_policy: None,
+            operator: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn extend_policy(mut self, policy: ExtendPolicy) -> Self {
+        self.extend_policy = Some(policy);
+        self
+    }
+
+    /// `Some(addr)` to set, `None` to remove.
+    #[must_use]
+    pub const fn operator(mut self, addr: Option<Address>) -> Self {
+        self.operator = Some(addr);
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotation(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.string_annotations
+            .push(StringAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn string_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = StringAnnotation>,
+    ) -> Self {
+        self.string_annotations.extend(annotations);
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotation(mut self, key: impl Into<String>, value: u64) -> Self {
+        self.numeric_annotations
+            .push(NumericAnnotation::new(key, value));
+        self
+    }
+
+    #[must_use]
+    pub fn numeric_annotations(
+        mut self,
+        annotations: impl IntoIterator<Item = NumericAnnotation>,
+    ) -> Self {
+        self.numeric_annotations.extend(annotations);
+        self
+    }
 }
 
 const EXTEND_POLICY_NO_CHANGE: u8 = 0xFF;
@@ -220,8 +367,8 @@ impl Decodable for Update {
         let btl = u64::decode(buf)?;
         let content_type = String::decode(buf)?;
         let payload = Vec::<u8>::decode(buf)?;
-        let string_annotations = Vec::<StringAnnotationWire>::decode(buf)?;
-        let numeric_annotations = Vec::<NumericAnnotationWire>::decode(buf)?;
+        let string_annotations = Vec::<StringAnnotation>::decode(buf)?;
+        let numeric_annotations = Vec::<NumericAnnotation>::decode(buf)?;
 
         let consumed = remaining_before - buf.len();
         let (extend_policy, operator) = if consumed < header.payload_length {
@@ -277,6 +424,16 @@ pub struct Extend {
     pub additional_blocks: u64,
 }
 
+impl Extend {
+    #[must_use]
+    pub const fn new(entity_key: B256, additional_blocks: u64) -> Self {
+        Self {
+            entity_key,
+            additional_blocks,
+        }
+    }
+}
+
 const OWNER_TAG_UNCHANGED: u8 = 0;
 const OWNER_TAG_SET: u8 = 1;
 
@@ -290,6 +447,35 @@ pub struct ChangeOwner {
 }
 
 impl ChangeOwner {
+    #[must_use]
+    pub const fn new(entity_key: B256) -> Self {
+        Self {
+            entity_key,
+            new_owner: None,
+            extend_policy: None,
+            operator: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_owner(mut self, addr: Address) -> Self {
+        self.new_owner = Some(addr);
+        self
+    }
+
+    #[must_use]
+    pub const fn extend_policy(mut self, policy: ExtendPolicy) -> Self {
+        self.extend_policy = Some(policy);
+        self
+    }
+
+    /// `Some(addr)` to set, `None` to remove.
+    #[must_use]
+    pub const fn operator(mut self, addr: Option<Address>) -> Self {
+        self.operator = Some(addr);
+        self
+    }
+
     fn payload_length(&self) -> usize {
         let (owner_tag, owner_addr) = self.new_owner.map_or((OWNER_TAG_UNCHANGED, None), |addr| {
             (OWNER_TAG_SET, Some(addr))
@@ -406,13 +592,13 @@ pub struct GlintTransaction {
     pub change_owners: Vec<ChangeOwner>,
 }
 
-impl From<(String, String)> for StringAnnotationWire {
+impl From<(String, String)> for StringAnnotation {
     fn from((key, value): (String, String)) -> Self {
         Self { key, value }
     }
 }
 
-impl From<(&str, &str)> for StringAnnotationWire {
+impl From<(&str, &str)> for StringAnnotation {
     fn from((key, value): (&str, &str)) -> Self {
         Self {
             key: key.into(),
@@ -421,13 +607,13 @@ impl From<(&str, &str)> for StringAnnotationWire {
     }
 }
 
-impl From<(String, u64)> for NumericAnnotationWire {
+impl From<(String, u64)> for NumericAnnotation {
     fn from((key, value): (String, u64)) -> Self {
         Self { key, value }
     }
 }
 
-impl From<(&str, u64)> for NumericAnnotationWire {
+impl From<(&str, u64)> for NumericAnnotation {
     fn from((key, value): (&str, u64)) -> Self {
         Self {
             key: key.into(),
@@ -437,12 +623,93 @@ impl From<(&str, u64)> for NumericAnnotationWire {
 }
 
 impl GlintTransaction {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            creates: Vec::new(),
+            updates: Vec::new(),
+            deletes: Vec::new(),
+            extends: Vec::new(),
+            change_owners: Vec::new(),
+        }
+    }
+
     pub const fn total_operations(&self) -> usize {
         self.creates.len()
             + self.updates.len()
             + self.deletes.len()
             + self.extends.len()
             + self.change_owners.len()
+    }
+
+    #[must_use]
+    pub fn create(mut self, entity: Create) -> Self {
+        self.creates.push(entity);
+        self
+    }
+
+    #[must_use]
+    pub fn creates(mut self, entities: impl IntoIterator<Item = Create>) -> Self {
+        self.creates.extend(entities);
+        self
+    }
+
+    #[must_use]
+    pub fn update(mut self, entity: Update) -> Self {
+        self.updates.push(entity);
+        self
+    }
+
+    #[must_use]
+    pub fn updates(mut self, entities: impl IntoIterator<Item = Update>) -> Self {
+        self.updates.extend(entities);
+        self
+    }
+
+    #[must_use]
+    pub fn delete(mut self, key: B256) -> Self {
+        self.deletes.push(key);
+        self
+    }
+
+    #[must_use]
+    pub fn deletes(mut self, keys: impl IntoIterator<Item = B256>) -> Self {
+        self.deletes.extend(keys);
+        self
+    }
+
+    #[must_use]
+    pub fn extend(mut self, entity: Extend) -> Self {
+        self.extends.push(entity);
+        self
+    }
+
+    #[must_use]
+    pub fn extends(mut self, entities: impl IntoIterator<Item = Extend>) -> Self {
+        self.extends.extend(entities);
+        self
+    }
+
+    #[must_use]
+    pub fn change_owner(mut self, entity: ChangeOwner) -> Self {
+        self.change_owners.push(entity);
+        self
+    }
+
+    #[must_use]
+    pub fn change_owners(mut self, entities: impl IntoIterator<Item = ChangeOwner>) -> Self {
+        self.change_owners.extend(entities);
+        self
+    }
+
+    pub fn validate(&self) -> Result<(), crate::error::GlintError> {
+        crate::validation::validate_transaction(self, &crate::config::GlintChainConfig::default())
+    }
+}
+
+impl Default for GlintTransaction {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -457,11 +724,11 @@ mod tests {
             btl: 100,
             content_type: "application/json".into(),
             payload: b"hello".to_vec(),
-            string_annotations: vec![StringAnnotationWire {
+            string_annotations: vec![StringAnnotation {
                 key: "key".into(),
                 value: "val".into(),
             }],
-            numeric_annotations: vec![NumericAnnotationWire {
+            numeric_annotations: vec![NumericAnnotation {
                 key: "count".into(),
                 value: 42,
             }],
@@ -596,11 +863,11 @@ mod tests {
                 btl: 100,
                 content_type: "application/json".into(),
                 payload: b"{\"key\":\"value\"}".to_vec(),
-                string_annotations: vec![StringAnnotationWire {
+                string_annotations: vec![StringAnnotation {
                     key: "app".into(),
                     value: "test".into(),
                 }],
-                numeric_annotations: vec![NumericAnnotationWire {
+                numeric_annotations: vec![NumericAnnotation {
                     key: "priority".into(),
                     value: 1,
                 }],

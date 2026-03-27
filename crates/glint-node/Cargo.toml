@@ -15,9 +15,10 @@ name = "glint_node"
 path = "src/lib.rs"
 
 [dependencies]
-glint-primitives.workspace = true
-glint-engine = { path = "../glint-engine" }
+glint-primitives = { workspace = true, features = ["rpc"] }
+glint-engine.workspace = true
 
+alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
 reth-provider.workspace = true
@@ -29,7 +30,7 @@ tracing.workspace = true
 eyre.workspace = true
 
 [dev-dependencies]
-glint-engine = { path = "../glint-engine" }
+glint-engine = { workspace = true }
 alloy-primitives = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
