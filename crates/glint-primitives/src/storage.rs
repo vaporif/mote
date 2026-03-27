@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{keccak256, Address, B256, U256};
 
 const STORAGE_PREFIX: &[u8] = b"glintEntityMetaData";
 const OPERATOR_PREFIX: &[u8] = b"glintOperator";
@@ -11,7 +11,6 @@ pub fn entity_storage_key(entity_key: &B256) -> B256 {
     keccak256(&preimage)
 }
 
-/// `entity_storage_key + 1`
 pub fn entity_content_hash_key(entity_key: &B256) -> B256 {
     let meta_key = entity_storage_key(entity_key);
     let num = U256::from_be_bytes(meta_key.0)

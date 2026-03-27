@@ -1,14 +1,14 @@
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     sync::{Arc, LazyLock},
 };
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use arrow::{
     array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-        UInt64Builder,
         builder::{MapBuilder, MapFieldNames},
+        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder,
+        UInt8Builder,
     },
     datatypes::{DataType, Field, Fields, Schema, SchemaRef},
     record_batch::RecordBatch,
@@ -76,7 +76,7 @@ pub struct EntityStore {
     entities: HashMap<B256, EntityRow>,
     slots: SlotAllocator,
     entity_to_slot: HashMap<B256, u32>,
-    slot_to_entity: HashMap<u32, B256>,
+    slot_to_entity: BTreeMap<u32, B256>,
     all_live_slots: RoaringBitmap,
     string_ann_index: HashMap<(String, String), RoaringBitmap>,
     numeric_ann_index: HashMap<(String, u64), RoaringBitmap>,
@@ -207,20 +207,20 @@ impl EntityStore {
 
     // TODO: COW/incremental approach
     pub fn snapshot(&self) -> eyre::Result<Snapshot> {
-        let mut sorted_entries: Vec<(u32, B256)> = self
+        // BTreeMap iterates in key order, so entries are already sorted by slot.
+        let entries: Vec<(u32, B256)> = self
             .slot_to_entity
             .iter()
             .map(|(&slot, &key)| (slot, key))
             .collect();
-        sorted_entries.sort_unstable_by_key(|(slot, _)| *slot);
 
-        let slot_to_row: HashMap<u32, usize> = sorted_entries
+        let slot_to_row: HashMap<u32, usize> = entries
             .iter()
             .enumerate()
             .map(|(row_idx, (slot, _))| (*slot, row_idx))
             .collect();
 
-        let n = sorted_entries.len();
+        let n = entries.len();
 
         let mut entity_key_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
         let mut owner_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
@@ -244,7 +244,7 @@ impl EntityStore {
         let mut extend_policy_b = UInt8Builder::with_capacity(n);
         let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
 
-        for (_, key) in &sorted_entries {
+        for (_, key) in &entries {
             let row = &self.entities[key];
             entity_key_b.append_value(row.entity_key.as_slice())?;
             owner_b.append_value(row.owner.as_slice())?;
@@ -382,7 +382,7 @@ pub fn entity_schema() -> SchemaRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
 
     fn sample_row(byte: u8) -> EntityRow {
         EntityRow {
@@ -452,12 +452,10 @@ mod tests {
         assert!(batch.schema().field_with_name("content_type").is_ok());
         assert!(batch.schema().field_with_name("payload").is_ok());
         assert!(batch.schema().field_with_name("string_annotations").is_ok());
-        assert!(
-            batch
-                .schema()
-                .field_with_name("numeric_annotations")
-                .is_ok()
-        );
+        assert!(batch
+            .schema()
+            .field_with_name("numeric_annotations")
+            .is_ok());
         assert!(batch.schema().field_with_name("created_at_block").is_ok());
         assert!(batch.schema().field_with_name("tx_hash").is_ok());
         assert!(batch.schema().field_with_name("extend_policy").is_ok());
@@ -547,19 +545,15 @@ mod tests {
 
         let slot = store.entity_to_slot[&B256::repeat_byte(0x01)];
 
-        assert!(
-            !store
-                .string_ann_index
-                .contains_key(&("k1".to_owned(), "v1".to_owned()))
-        );
+        assert!(!store
+            .string_ann_index
+            .contains_key(&("k1".to_owned(), "v1".to_owned())));
         assert!(!store.numeric_ann_index.contains_key(&("n1".to_owned(), 42)));
-        assert!(
-            store
-                .numeric_ann_range
-                .get("n1")
-                .and_then(|bt| bt.get(&42))
-                .is_none()
-        );
+        assert!(store
+            .numeric_ann_range
+            .get("n1")
+            .and_then(|bt| bt.get(&42))
+            .is_none());
 
         let str_bm = &store.string_ann_index[&("k1".to_owned(), "v2".to_owned())];
         assert!(str_bm.contains(slot));

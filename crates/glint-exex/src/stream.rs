@@ -334,6 +334,8 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
+    // Drain any in-flight batches from the main loop that arrived before the
+    // snapshot was taken; they're now stale and the snapshot supersedes them.
     while batch_rx.try_recv().is_ok() {}
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);

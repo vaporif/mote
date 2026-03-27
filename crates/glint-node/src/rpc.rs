@@ -50,10 +50,13 @@ where
             .latest()
             .map_err(|e| internal_err(format!("failed to get latest state: {e}")))?;
 
-        let meta_slot = entity_storage_key(&entity_key);
-        let meta_value = state
-            .storage(PROCESSOR_ADDRESS, meta_slot)
-            .map_err(|e| internal_err(format!("failed to read metadata slot: {e}")))?;
+        let read = |slot| {
+            state
+                .storage(PROCESSOR_ADDRESS, slot)
+                .map_err(|e| internal_err(format!("storage read failed: {e}")))
+        };
+
+        let meta_value = read(entity_storage_key(&entity_key))?;
 
         let Some(meta_value) = meta_value else {
             debug!("entity not found (no storage value)");
@@ -69,19 +72,12 @@ where
         debug!(owner = ?meta.owner, expires_at_block = meta.expires_at_block, "found entity metadata");
 
         let operator = if meta.has_operator {
-            let op_slot = entity_operator_key(&entity_key);
-            state
-                .storage(PROCESSOR_ADDRESS, op_slot)
-                .map_err(|e| internal_err(format!("failed to read operator slot: {e}")))?
-                .map(decode_operator_value)
+            read(entity_operator_key(&entity_key))?.map(decode_operator_value)
         } else {
             None
         };
 
-        let content_hash_slot = entity_content_hash_key(&entity_key);
-        let content_hash = state
-            .storage(PROCESSOR_ADDRESS, content_hash_slot)
-            .map_err(|e| internal_err(format!("failed to read content hash slot: {e}")))?
+        let content_hash = read(entity_content_hash_key(&entity_key))?
             .map_or(B256::ZERO, |v| B256::from(v.to_be_bytes::<32>()));
 
         Ok(Some(EntityInfo {
