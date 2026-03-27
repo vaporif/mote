@@ -278,7 +278,11 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
                AND num_ann(numeric_annotations, 'rank') = 2",
         )
         .await?;
-    assert_eq!(row_count(&batches), 1, "expected 1 entity matching group-a + rank=2");
+    assert_eq!(
+        row_count(&batches),
+        1,
+        "expected 1 entity matching group-a + rank=2"
+    );
 
     let ek_col: &arrow::array::FixedSizeBinaryArray = col(&batches[0], "entity_key");
     assert_eq!(ek_col.value(0), entity_keys[1].as_slice());
@@ -290,7 +294,11 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
             "SELECT entity_key FROM entities WHERE owner = x'{owner_hex}'"
         ))
         .await?;
-    assert_eq!(row_count(&batches), 3, "expected 3 entities owned by dev wallet");
+    assert_eq!(
+        row_count(&batches),
+        3,
+        "expected 3 entities owned by dev wallet"
+    );
 
     // IN list filter — group-b OR non-existent category
     let batches = client
@@ -299,7 +307,11 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
              WHERE str_ann(string_annotations, 'category') IN ('group-b', 'group-c')",
         )
         .await?;
-    assert_eq!(row_count(&batches), 1, "expected 1 entity in group-b/group-c");
+    assert_eq!(
+        row_count(&batches),
+        1,
+        "expected 1 entity in group-b/group-c"
+    );
 
     Ok(())
 }
