@@ -121,7 +121,7 @@ impl GraceState {
 
 const WRITER_CHANNEL_SIZE: usize = 16;
 const MAX_CLIENT_MSG_LEN: usize = 64;
-pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
+pub const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
 
 pub async fn socket_writer_task(
     socket_path: PathBuf,
