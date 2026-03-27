@@ -7,6 +7,8 @@ Ephemeral on-chain storage layer, built on reth.
 
 Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, carry queryable annotations, and disappear when their time is up.
 
+Runs as both a standalone Ethereum node (`eth-glint`) and an OP Stack L3 (`op-glint`)
+
 **The full flow - node startup, entity creation, ExEx streaming, and Flight SQL queries - is covered by e2e tests**.
 
 ## Why
