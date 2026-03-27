@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
     decode_numeric_map, decode_string_map,
 };
 
@@ -175,12 +175,12 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
 mod tests {
     use std::sync::Arc;
 
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
     use arrow::{
         array::{
+            ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
+            UInt32Builder, UInt64Builder,
             builder::{MapBuilder, MapFieldNames},
-            ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt32Builder,
-            UInt64Builder, UInt8Builder,
         },
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
