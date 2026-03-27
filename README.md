@@ -7,11 +7,60 @@ Ephemeral on-chain storage layer, built on reth.
 
 Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, carry queryable annotations, and disappear when their time is up.
 
+**The full flow - node startup, entity creation, ExEx streaming, and Flight SQL queries - is covered by e2e tests**.
+
 ## Why
 
 Blockchains store data permanently. If you want to publish a limit order that's valid for the next 10 blocks, you pay to store it forever even though nobody needs it after that. There's no native TTL in Ethereum.
 
 Think CoW Swap orders valid for minutes, oracle price feeds stale after a few blocks, compute marketplace offers that expire when filled, ephemeral task boards for AI agents. Anywhere people publish short-lived structured records and others need to query them by metadata.
+
+## Getting started
+
+Requires [Nix](https://nixos.org/) with flakes enabled, or Rust nightly + the tools listed in `flake.nix`.
+
+```bash
+# enter dev shell (installs rust toolchain, cargo-nextest, taplo, typos, etc.)
+nix develop
+# or: direnv allow
+
+# build everything
+just build
+
+# run all checks (clippy + tests + fmt + lint)
+just check
+```
+
+### Run locally
+
+Terminal 1 - start the node in dev mode (auto-mines blocks every second):
+
+```bash
+just run-eth --dev --dev.block-time 1000ms --http
+```
+
+Terminal 2 - start the analytics sidecar (connects to the node's ExEx socket):
+
+```bash
+just run-analytics
+```
+
+The node listens on `localhost:8545` (JSON-RPC). Analytics exposes Flight SQL on `localhost:50051` and health on `localhost:8080`.
+
+### Query entities
+
+Any Flight SQL client works. With `arrow-flight` CLI or DBeaver, connect to `localhost:50051`:
+
+```sql
+SELECT entity_key, content_type, expires_at_block FROM entities;
+
+-- annotation lookups (bitmap-indexed)
+SELECT * FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH';
+SELECT * FROM entities WHERE num_ann(numeric_annotations, 'price') > 1000;
+SELECT * FROM entities WHERE owner = x'aa...' AND num_ann(numeric_annotations, 'price') >= 500;
+```
+`str_ann` / `num_ann` are UDF I'm still evaluating if thould be removed as their removal is a more complex work that will require v2 but it is possible to have client facing normal sql with no strings attached.
+
 
 ## Relationship to Arkiv
 
