@@ -159,7 +159,7 @@ Everything lives in memory. Glint entities expire, so the live set is bounded by
 
 Entity data is stored as Arrow RecordBatches - columnar, cache-friendly. DataFusion runs analytical queries (aggregations, GROUP BY, window functions) with vectorized execution directly on this data. Nothing gets serialized between formats - Arrow from ExEx through to query results.
 
-Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orders where price > 3500") hit every row. Arkiv addressed this with SQLite bitmap indexes — effective for point lookups, but row-oriented, so columnar analytics aren't available.
+Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orders where price > 3500") hit every row. Arkiv used SQLite bitmap indexes for this - works well for point lookups, but SQLite is row-oriented so you lose columnar analytics.
 
 Secondary indexes sit alongside the Arrow data - hash indexes on annotation key/value pairs and owner, a B-tree for numeric range queries, all backed by roaring bitmaps. A custom DataFusion `TableProvider` checks incoming filters against these indexes. If a filter matches an indexed field, it resolves via bitmap lookup in microseconds. If not, DataFusion does a full columnar scan, which is still fast for analytics. One engine, one copy of the data.
 
