@@ -6,6 +6,7 @@ use alloy_rpc_types_eth::TransactionReceipt;
 
 use glint_primitives::constants::PROCESSOR_ADDRESS;
 use glint_primitives::entity::EntityInfo;
+use glint_primitives::rpc::BlockTiming;
 
 use crate::entity::{ChangeOwnerEntity, CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
 use crate::tx::build_glint_transaction;
@@ -39,6 +40,22 @@ impl GlintClient {
             .raw_request("glint_getEntityCount".into(), ())
             .await?;
         Ok(count)
+    }
+
+    pub async fn get_used_slots(&self) -> eyre::Result<u64> {
+        let slots: u64 = self
+            .provider
+            .raw_request("glint_getUsedSlots".into(), ())
+            .await?;
+        Ok(slots)
+    }
+
+    pub async fn get_block_timing(&self) -> eyre::Result<BlockTiming> {
+        let timing: BlockTiming = self
+            .provider
+            .raw_request("glint_getBlockTiming".into(), ())
+            .await?;
+        Ok(timing)
     }
 
     pub async fn send_glint_transaction(

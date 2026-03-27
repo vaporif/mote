@@ -12,11 +12,16 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+rpc = ["dep:jsonrpsee"]
+
 [dependencies]
 alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
 alloy-rlp = { workspace = true }
 alloy-sol-types = { workspace = true }
 eyre = { workspace = true }
+jsonrpsee = { workspace = true, features = ["server", "macros", "client"], optional = true }
 regex = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

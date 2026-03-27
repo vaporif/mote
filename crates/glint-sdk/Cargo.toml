@@ -12,8 +12,12 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+flight_sql = ["dep:arrow-flight", "dep:arrow", "dep:tonic", "dep:prost", "dep:futures"]
+
 [dependencies]
-glint-primitives.workspace = true
+glint-primitives = { workspace = true, features = ["rpc"] }
 
 alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
 alloy-rlp.workspace = true
@@ -25,3 +29,9 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 tokio = { workspace = true, features = ["full"] }
 eyre.workspace = true
 serde.workspace = true
+
+arrow-flight = { workspace = true, optional = true }
+arrow = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }

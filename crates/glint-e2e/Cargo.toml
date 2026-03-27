@@ -29,6 +29,6 @@ arrow.workspace = true
 arrow-flight.workspace = true
 tonic.workspace = true
 futures.workspace = true
-prost = "0.14"
+prost.workspace = true
 
 tokio = { workspace = true, features = ["full"] }

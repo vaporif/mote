@@ -4524,6 +4524,7 @@ dependencies = [
 name = "glint-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-primitives",
  "clap",
  "eyre",
@@ -4585,6 +4586,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-sol-types",
  "eyre",
+ "jsonrpsee",
  "regex",
  "serde",
  "serde_json",
@@ -4601,11 +4603,16 @@ dependencies = [
  "alloy-provider",
  "alloy-rlp",
  "alloy-rpc-types-eth",
+ "arrow",
+ "arrow-flight",
  "eyre",
+ "futures",
  "glint-primitives",
  "jsonrpsee",
+ "prost",
  "serde",
  "tokio",
+ "tonic",
 ]
 
 [[package]]
