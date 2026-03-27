@@ -30,7 +30,7 @@ pub async fn run(
     let (shutdown_tx, _) = watch::channel(false);
     let (ready_tx, ready_rx) = watch::channel(false);
 
-    let initial_snapshot = Arc::new(store.snapshot());
+    let initial_snapshot = Arc::new(store.snapshot()?);
     let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
     let mut health_handle = tokio::spawn({
@@ -88,7 +88,7 @@ pub async fn run(
 
         store.clear();
         let _ = ready_tx.send(false);
-        let _ = snapshot_tx.send(Arc::new(store.snapshot()));
+        let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
@@ -130,7 +130,7 @@ async fn run_connection(
                 info!("watermark received, entering live mode");
                 is_live = true;
                 let _ = ready_tx.send(true);
-                let _ = snapshot_tx.send(Arc::new(store.snapshot()));
+                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
                 continue;
             }
             ApplyResult::Applied => {
@@ -158,7 +158,7 @@ async fn run_connection(
                     }
                 }
             }
-            let _ = snapshot_tx.send(Arc::new(store.snapshot()));
+            let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
         }
     }
 

@@ -640,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn query_entities_table() {
         let store = sample_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
         let ctx = create_session_context(rx);
@@ -653,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn str_ann_udf() {
         let store = sample_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
         let ctx = create_session_context(rx);
@@ -668,7 +668,7 @@ mod tests {
     #[tokio::test]
     async fn num_ann_udf() {
         let store = sample_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
         let ctx = create_session_context(rx);
@@ -683,7 +683,7 @@ mod tests {
     #[tokio::test]
     async fn empty_store_returns_zero_rows() {
         let store = EntityStore::new();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
         let ctx = create_session_context(rx);
@@ -1018,7 +1018,7 @@ mod tests {
             extend_policy: 0,
             operator: Some(Address::ZERO),
         });
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let rx = tx.subscribe();
         let table = IndexedTableProvider::new(rx);
@@ -1080,7 +1080,7 @@ mod tests {
     #[tokio::test]
     async fn integration_str_ann_filter() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         let df = ctx
@@ -1095,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn integration_num_ann_range_filter() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         let df = ctx
@@ -1110,7 +1110,7 @@ mod tests {
     #[tokio::test]
     async fn integration_combined_filters() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         let df = ctx
@@ -1125,7 +1125,7 @@ mod tests {
     #[tokio::test]
     async fn integration_owner_filter() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         let addr = Address::repeat_byte(0xAA);
@@ -1161,7 +1161,7 @@ mod tests {
         };
         store.insert(updated);
 
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
 
@@ -1187,7 +1187,7 @@ mod tests {
         let mut store = multi_entity_store();
         store.remove(&B256::repeat_byte(0x01));
 
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
 
@@ -1207,7 +1207,7 @@ mod tests {
     #[tokio::test]
     async fn integration_snapshot_isolation() {
         let mut store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
 
@@ -1227,7 +1227,7 @@ mod tests {
             .unwrap();
         assert_eq!(cnt_col.value(0), 3);
 
-        let _ = tx.send(Arc::new(store.snapshot()));
+        let _ = tx.send(Arc::new(store.snapshot().expect("snapshot should succeed")));
 
         let df = ctx
             .sql("SELECT COUNT(*) AS cnt FROM entities")
@@ -1245,7 +1245,7 @@ mod tests {
     #[tokio::test]
     async fn integration_filter_matches_zero_rows() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         // Non-existent owner
@@ -1265,7 +1265,7 @@ mod tests {
     #[tokio::test]
     async fn integration_filter_matches_all_rows() {
         let store = multi_entity_store();
-        let snapshot = Arc::new(store.snapshot());
+        let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
         let ctx = create_session_context(tx.subscribe());
         // All entities have price >= 1000

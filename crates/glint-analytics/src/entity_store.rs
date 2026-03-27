@@ -1,14 +1,14 @@
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     sync::{Arc, LazyLock},
 };
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use arrow::{
     array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-        UInt64Builder,
         builder::{MapBuilder, MapFieldNames},
+        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder,
+        UInt8Builder,
     },
     datatypes::{DataType, Field, Fields, Schema, SchemaRef},
     record_batch::RecordBatch,
@@ -206,7 +206,7 @@ impl EntityStore {
     }
 
     // TODO: COW/incremental approach
-    pub fn snapshot(&self) -> Snapshot {
+    pub fn snapshot(&self) -> eyre::Result<Snapshot> {
         let mut sorted_entries: Vec<(u32, B256)> = self
             .slot_to_entity
             .iter()
@@ -246,12 +246,8 @@ impl EntityStore {
 
         for (_, key) in &sorted_entries {
             let row = &self.entities[key];
-            entity_key_b
-                .append_value(row.entity_key.as_slice())
-                .expect("B256 is always 32 bytes");
-            owner_b
-                .append_value(row.owner.as_slice())
-                .expect("Address is always 20 bytes");
+            entity_key_b.append_value(row.entity_key.as_slice())?;
+            owner_b.append_value(row.owner.as_slice())?;
             expires_b.append_value(row.expires_at_block);
             content_type_b.append_value(&row.content_type);
             payload_b.append_value(&row.payload);
@@ -260,27 +256,19 @@ impl EntityStore {
                 string_ann_b.keys().append_value(k);
                 string_ann_b.values().append_value(v);
             }
-            string_ann_b
-                .append(true)
-                .expect("keys and values must stay in sync");
+            string_ann_b.append(true)?;
 
             for (k, v) in &row.numeric_annotations {
                 numeric_ann_b.keys().append_value(k);
                 numeric_ann_b.values().append_value(*v);
             }
-            numeric_ann_b
-                .append(true)
-                .expect("keys and values must stay in sync");
+            numeric_ann_b.append(true)?;
 
             created_b.append_value(row.created_at_block);
-            tx_hash_b
-                .append_value(row.tx_hash.as_slice())
-                .expect("B256 is always 32 bytes");
+            tx_hash_b.append_value(row.tx_hash.as_slice())?;
             extend_policy_b.append_value(row.extend_policy);
             match row.operator {
-                Some(op) => operator_b
-                    .append_value(op.as_slice())
-                    .expect("Address is always 20 bytes"),
+                Some(op) => operator_b.append_value(op.as_slice())?,
                 None => operator_b.append_null(),
             }
         }
@@ -299,10 +287,7 @@ impl EntityStore {
             Arc::new(operator_b.finish()),
         ];
 
-        let batch = Arc::new(
-            RecordBatch::try_new(entity_schema(), columns)
-                .expect("columns must match entity schema"),
-        );
+        let batch = Arc::new(RecordBatch::try_new(entity_schema(), columns)?);
 
         let indexes = Arc::new(IndexSnapshot {
             string_ann_index: self.string_ann_index.clone(),
@@ -313,7 +298,7 @@ impl EntityStore {
             slot_to_row,
         });
 
-        Snapshot { batch, indexes }
+        Ok(Snapshot { batch, indexes })
     }
 }
 
@@ -397,7 +382,7 @@ pub fn entity_schema() -> SchemaRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
 
     fn sample_row(byte: u8) -> EntityRow {
         EntityRow {
@@ -457,7 +442,7 @@ mod tests {
     fn snapshot_batch_schema() {
         let mut store = EntityStore::new();
         store.insert(sample_row(0x01));
-        let snap = store.snapshot();
+        let snap = store.snapshot().expect("snapshot should succeed");
         let batch = &*snap.batch;
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 11);
@@ -467,12 +452,10 @@ mod tests {
         assert!(batch.schema().field_with_name("content_type").is_ok());
         assert!(batch.schema().field_with_name("payload").is_ok());
         assert!(batch.schema().field_with_name("string_annotations").is_ok());
-        assert!(
-            batch
-                .schema()
-                .field_with_name("numeric_annotations")
-                .is_ok()
-        );
+        assert!(batch
+            .schema()
+            .field_with_name("numeric_annotations")
+            .is_ok());
         assert!(batch.schema().field_with_name("created_at_block").is_ok());
         assert!(batch.schema().field_with_name("tx_hash").is_ok());
         assert!(batch.schema().field_with_name("extend_policy").is_ok());
@@ -482,7 +465,7 @@ mod tests {
     #[test]
     fn snapshot_batch_empty_store() {
         let store = EntityStore::new();
-        let snap = store.snapshot();
+        let snap = store.snapshot().expect("snapshot should succeed");
         assert_eq!(snap.batch.num_rows(), 0);
         assert_eq!(snap.batch.num_columns(), 11);
     }
@@ -562,19 +545,15 @@ mod tests {
 
         let slot = store.entity_to_slot[&B256::repeat_byte(0x01)];
 
-        assert!(
-            !store
-                .string_ann_index
-                .contains_key(&("k1".to_owned(), "v1".to_owned()))
-        );
+        assert!(!store
+            .string_ann_index
+            .contains_key(&("k1".to_owned(), "v1".to_owned())));
         assert!(!store.numeric_ann_index.contains_key(&("n1".to_owned(), 42)));
-        assert!(
-            store
-                .numeric_ann_range
-                .get("n1")
-                .and_then(|bt| bt.get(&42))
-                .is_none()
-        );
+        assert!(store
+            .numeric_ann_range
+            .get("n1")
+            .and_then(|bt| bt.get(&42))
+            .is_none());
 
         let str_bm = &store.string_ann_index[&("k1".to_owned(), "v2".to_owned())];
         assert!(str_bm.contains(slot));
@@ -638,7 +617,7 @@ mod tests {
         store.insert(sample_row(0x01));
         store.insert(sample_row(0x02));
 
-        let snap = store.snapshot();
+        let snap = store.snapshot().expect("snapshot should succeed");
 
         assert_eq!(snap.batch.num_rows(), 2);
 
@@ -658,7 +637,7 @@ mod tests {
         store.insert(sample_row(0x03));
         store.remove(&B256::repeat_byte(0x02));
 
-        let snap = store.snapshot();
+        let snap = store.snapshot().expect("snapshot should succeed");
         assert_eq!(snap.batch.num_rows(), 2);
 
         assert_eq!(snap.indexes.slot_to_row.len(), 2);
