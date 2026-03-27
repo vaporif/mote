@@ -29,7 +29,8 @@ Beyond the base change, Glint also fixes a few things:
 | Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | DataFusion (columnar, in-memory) with secondary indexes, separate process, Flight SQL | Process isolation, columnar scans for analytics, indexed lookups for annotation filters. See [query engine](#query-engine). |
 | Compression | Brotli per-tx | None | OP batcher already compresses. Per-tx Brotli has a decompression bomb in the txpool path (`io.ReadAll` with no size limit). |
 | MAX_BTL | Not enforced | Enforced at txpool + execution | Without it, entities live forever. The "ephemeral" thing falls apart. |
-| Extend | Permissionless, no cap | Permissionless, capped at MAX_BTL | GolemBase lets anyone extend any entity to infinity |
+| Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL | GolemBase lets anyone extend any entity to infinity. Glint lets the creator choose. |
+| Operator delegation | None | Optional operator per entity | Operator can update content and delete, but can't change permissions. So your backend can manage your entities without owning them. |
 | ChangeOwner | Supported | Removed | Delete + recreate is simpler, doesn't break external key references |
 
 ## Architecture
@@ -100,9 +101,9 @@ graph TB
 
 ### Query engine
 
-Everything lives in memory. Glint entities expire, so the live set is bounded by creation rate times MAX_BTL. For realistic workloads - intent protocols, oracle feeds, compute marketplaces - that's tens of thousands to low hundreds of thousands of active entities, not millions. Orders expire in minutes, price feeds in seconds, compute offers in hours. At 100K entities with 10 annotations each and ~500 byte payloads, you're looking at ~100MB. Even aggressive usage stays under a gigabyte.
+Everything lives in memory. Glint entities expire, so the live set is bounded by creation rate times MAX_BTL. For realistic workloads - intent protocols, oracle feeds, compute marketplaces - that's tens of thousands to low hundreds of thousands of active entities, not millions. Orders expire in minutes, price feeds even faster. At 100K entities with 10 annotations each and ~500 byte payloads, you're looking at ~100MB. Even aggressive usage stays under a gigabyte.
 
-Entity data is stored as Arrow RecordBatches - columnar, cache-friendly. DataFusion runs analytical queries (aggregations, GROUP BY, window functions) with vectorized execution directly on this data, zero-copy from ExEx all the way through.
+Entity data is stored as Arrow RecordBatches - columnar, cache-friendly. DataFusion runs analytical queries (aggregations, GROUP BY, window functions) with vectorized execution directly on this data. Nothing gets serialized between formats - Arrow from ExEx through to query results.
 
 Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orders where price > 3500") hit every row. GolemBase solved this with SQLite bitmap indexes but gave up columnar analytics in the process.
 
@@ -127,15 +128,15 @@ The plan is to add secondary indexes alongside the Arrow data - hash indexes on 
 
 ### Entity lifecycle
 
-1. **Create** - Send a transaction to the processor address with RLP-encoded `GlintTransaction` operations. The entity gets a deterministic key (`keccak256(tx_hash || payload_len || payload || op_index)`), 64 bytes written to trie, and a lifecycle event log emitted. The full payload lives only in the event log, not in the trie.
+1. **Create** (anyone) - Send a transaction to the processor address with RLP-encoded `GlintTransaction` operations. The sender becomes the owner. The entity gets a deterministic key (`keccak256(tx_hash || payload_len || payload || op_index)`), 64 bytes written to trie, and a lifecycle event log emitted. The full payload lives only in the event log, not in the trie. You can optionally set an `operator` and an `extend_policy` at creation time.
 
    A 32-byte content hash (`keccak256(payload || content_type || rlp(annotations))`) goes on-chain so clients can verify query results against the trie. A malicious sequencer can't serve altered data without the hash mismatch showing up in a Merkle proof.
 
-2. **Update** (owner only) - Replace payload and annotations, reset the BTL. Same key, new content.
+2. **Update** (owner or operator) - Replace payload and annotations, reset the BTL. Same key, new content. The operator can update content and BTL but cannot change permissions (extend_policy or operator) - only the owner can do that.
 
-3. **Extend** (anyone) - Add blocks to remaining lifetime, capped at MAX_BTL. Permissionless - if you depend on someone's data, you can keep it alive.
+3. **Extend** (depends on policy) - Add blocks to remaining lifetime, capped at MAX_BTL. If `extend_policy` is `AnyoneCanExtend`, anyone can do this - so if you depend on someone's data, you can keep it alive. If `OwnerOnly`, only the owner or operator can extend.
 
-4. **Delete** (owner only) - Immediate removal.
+4. **Delete** (owner or operator) - Immediate removal.
 
 5. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index (`HashMap<BlockNumber, Vec<EntityKey>>`) and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
 
