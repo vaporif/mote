@@ -43,7 +43,7 @@ pub async fn run(
         }
     });
 
-    let ctx = Arc::new(table_provider::create_session_context(snapshot_rx));
+    let ctx = Arc::new(table_provider::create_session_context(snapshot_rx)?);
     let mut flight_handle = tokio::spawn({
         let ctx = Arc::clone(&ctx);
         let shutdown_rx = shutdown_tx.subscribe();

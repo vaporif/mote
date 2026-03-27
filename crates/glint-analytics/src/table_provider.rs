@@ -389,8 +389,14 @@ impl TableProvider for IndexedTableProvider {
                     let indices = arrow::array::UInt32Array::from(
                         row_indices
                             .iter()
-                            .map(|&i| u32::try_from(i).expect("row index fits in u32"))
-                            .collect::<Vec<u32>>(),
+                            .map(|&i| {
+                                u32::try_from(i).map_err(|_| {
+                                    datafusion::common::DataFusionError::Execution(format!(
+                                        "row index {i} exceeds u32::MAX"
+                                    ))
+                                })
+                            })
+                            .collect::<DfResult<Vec<u32>>>()?,
                     );
                     let columns: Vec<ArrayRef> = snapshot
                         .batch
@@ -419,18 +425,19 @@ impl TableProvider for IndexedTableProvider {
     }
 }
 
-pub fn create_session_context(snapshot_rx: watch::Receiver<Arc<Snapshot>>) -> SessionContext {
+pub fn create_session_context(
+    snapshot_rx: watch::Receiver<Arc<Snapshot>>,
+) -> DfResult<SessionContext> {
     // TODO: configure FairSpillPool memory limit to prevent OOM from large intermediate results
     let ctx = SessionContext::new();
 
     let table = IndexedTableProvider::new(snapshot_rx);
-    ctx.register_table("entities", Arc::new(table))
-        .expect("failed to register entities table");
+    ctx.register_table("entities", Arc::new(table))?;
 
     ctx.register_udf(ScalarUDF::from(StrAnnUdf::new()));
     ctx.register_udf(ScalarUDF::from(NumAnnUdf::new()));
 
-    ctx
+    Ok(ctx)
 }
 
 /// `str_ann(string_annotations, 'key')` -- look up a string annotation by key, NULL if absent.
@@ -652,7 +659,7 @@ mod tests {
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
-        let ctx = create_session_context(rx);
+        let ctx = create_session_context(rx).unwrap();
         let df = ctx.sql("SELECT content_type FROM entities").await.unwrap();
         let results = df.collect().await.unwrap();
         assert_eq!(results.len(), 1);
@@ -665,7 +672,7 @@ mod tests {
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
-        let ctx = create_session_context(rx);
+        let ctx = create_session_context(rx).unwrap();
         let df = ctx
             .sql("SELECT * FROM entities WHERE str_ann(string_annotations, 'category') = 'nft'")
             .await
@@ -680,7 +687,7 @@ mod tests {
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
-        let ctx = create_session_context(rx);
+        let ctx = create_session_context(rx).unwrap();
         let df = ctx
             .sql("SELECT * FROM entities WHERE num_ann(numeric_annotations, 'price') = 1000")
             .await
@@ -695,7 +702,7 @@ mod tests {
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = tokio::sync::watch::channel(snapshot);
         let rx = tx.subscribe();
-        let ctx = create_session_context(rx);
+        let ctx = create_session_context(rx).unwrap();
         let df = ctx
             .sql("SELECT COUNT(*) AS cnt FROM entities")
             .await
@@ -1091,7 +1098,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         let df = ctx
             .sql("SELECT content_type FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH'")
             .await
@@ -1106,7 +1113,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         let df = ctx
             .sql("SELECT content_type FROM entities WHERE num_ann(numeric_annotations, 'price') > 1000")
             .await
@@ -1121,7 +1128,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         let df = ctx
             .sql("SELECT content_type FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH' AND num_ann(numeric_annotations, 'price') >= 3000")
             .await
@@ -1136,7 +1143,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         let addr = Address::repeat_byte(0xAA);
         let owner_hex = addr.to_string();
         let owner_hex = &owner_hex[2..];
@@ -1172,7 +1179,7 @@ mod tests {
 
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
 
         let df = ctx
             .sql("SELECT content_type FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH'")
@@ -1198,7 +1205,7 @@ mod tests {
 
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
 
         let df = ctx
             .sql("SELECT COUNT(*) AS cnt FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH'")
@@ -1218,7 +1225,7 @@ mod tests {
         let mut store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
 
         store.remove(&B256::repeat_byte(0x01));
         store.remove(&B256::repeat_byte(0x02));
@@ -1256,7 +1263,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         // Non-existent owner
         let addr = Address::repeat_byte(0xFF);
         let owner_hex = &addr.to_string()[2..];
@@ -1276,7 +1283,7 @@ mod tests {
         let store = multi_entity_store();
         let snapshot = Arc::new(store.snapshot().expect("snapshot should succeed"));
         let (tx, _rx) = watch::channel(snapshot);
-        let ctx = create_session_context(tx.subscribe());
+        let ctx = create_session_context(tx.subscribe()).unwrap();
         // All entities have price >= 1000
         let df = ctx
             .sql("SELECT COUNT(*) AS cnt FROM entities WHERE num_ann(numeric_annotations, 'price') >= 1000")
