@@ -63,8 +63,8 @@ graph TB
     end
 
     subgraph analytics["glint-analytics (separate process)"]
-        store["In-memory Arrow tables<br/>+ secondary indexes"]
-        df["DataFusion<br/>(columnar query engine)"]
+        store["Arrow RecordBatch<br/>+ roaring bitmap indexes"]
+        df["DataFusion + custom<br/>TableProvider (filter pushdown)"]
         flight["Flight SQL server"]
         rpc["JSON-RPC endpoint"]
         store --> df
