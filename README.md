@@ -1,6 +1,6 @@
 # Glint
 
-[![CI](https://github.com/vaporif/quiver/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vaporif/quiver/actions/workflows/ci.yml)
+[![CI](https://github.com/vaporif/glint/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vaporif/glint/actions/workflows/ci.yml)
 [![E2E](https://github.com/vaporif/glint/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/vaporif/glint/actions/workflows/e2e.yml)
 
 Ephemeral on-chain storage layer, built on reth.
