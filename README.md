@@ -39,6 +39,7 @@ Terminal 1 - start the node in dev mode (auto-mines blocks every second):
 
 ```bash
 just run-eth --dev --dev.block-time 1000ms --http
+# or for OP Stack: just run-op --dev --dev.block-time 1000ms --http
 ```
 
 Terminal 2 - start the analytics sidecar (connects to the node's ExEx socket):
