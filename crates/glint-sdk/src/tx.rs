@@ -4,28 +4,32 @@ use glint_primitives::transaction::{
 
 use crate::entity::{CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
 
+fn to_string_wire(anns: &[(String, String)]) -> Vec<StringAnnotationWire> {
+    anns.iter()
+        .map(|(k, v)| StringAnnotationWire {
+            key: k.clone(),
+            value: v.clone(),
+        })
+        .collect()
+}
+
+fn to_numeric_wire(anns: &[(String, u64)]) -> Vec<NumericAnnotationWire> {
+    anns.iter()
+        .map(|(k, v)| NumericAnnotationWire {
+            key: k.clone(),
+            value: *v,
+        })
+        .collect()
+}
+
 impl From<&CreateEntity> for Create {
     fn from(e: &CreateEntity) -> Self {
         Self {
             btl: e.btl,
             content_type: e.content_type.clone(),
             payload: e.payload.clone(),
-            string_annotations: e
-                .string_annotations
-                .iter()
-                .map(|(k, v)| StringAnnotationWire {
-                    key: k.clone(),
-                    value: v.clone(),
-                })
-                .collect(),
-            numeric_annotations: e
-                .numeric_annotations
-                .iter()
-                .map(|(k, v)| NumericAnnotationWire {
-                    key: k.clone(),
-                    value: *v,
-                })
-                .collect(),
+            string_annotations: to_string_wire(&e.string_annotations),
+            numeric_annotations: to_numeric_wire(&e.numeric_annotations),
             extend_policy: e.extend_policy,
             operator: e.operator,
         }
@@ -39,22 +43,8 @@ impl From<&UpdateEntity> for Update {
             btl: e.btl,
             content_type: e.content_type.clone(),
             payload: e.payload.clone(),
-            string_annotations: e
-                .string_annotations
-                .iter()
-                .map(|(k, v)| StringAnnotationWire {
-                    key: k.clone(),
-                    value: v.clone(),
-                })
-                .collect(),
-            numeric_annotations: e
-                .numeric_annotations
-                .iter()
-                .map(|(k, v)| NumericAnnotationWire {
-                    key: k.clone(),
-                    value: *v,
-                })
-                .collect(),
+            string_annotations: to_string_wire(&e.string_annotations),
+            numeric_annotations: to_numeric_wire(&e.numeric_annotations),
             extend_policy: e.extend_policy,
             operator: e.operator,
         }

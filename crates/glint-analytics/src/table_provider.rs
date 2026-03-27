@@ -127,17 +127,23 @@ fn extract_string_literal(expr: &Expr) -> Option<String> {
     }
 }
 
-#[allow(clippy::option_option)] // outer = recognized literal, inner = valid non-negative
-const fn extract_u64_literal(expr: &Expr) -> Option<Option<u64>> {
+enum NumericLiteral {
+    Value(u64),
+    Negative,
+}
+
+const fn extract_u64_literal(expr: &Expr) -> Option<NumericLiteral> {
     match expr {
         Expr::Literal(datafusion::common::ScalarValue::Int64(Some(v)), _) => {
             if *v >= 0 {
-                Some(Some((*v).unsigned_abs()))
+                Some(NumericLiteral::Value((*v).unsigned_abs()))
             } else {
-                Some(None)
+                Some(NumericLiteral::Negative)
             }
         }
-        Expr::Literal(datafusion::common::ScalarValue::UInt64(Some(v)), _) => Some(Some(*v)),
+        Expr::Literal(datafusion::common::ScalarValue::UInt64(Some(v)), _) => {
+            Some(NumericLiteral::Value(*v))
+        }
         _ => None,
     }
 }
@@ -171,11 +177,11 @@ fn match_udf_binary_expr(
             }
         }
         "num_ann" => {
-            let Some(maybe_val) = extract_u64_literal(right) else {
+            let Some(lit) = extract_u64_literal(right) else {
                 return FilterMatch::Unresolved;
             };
-            maybe_val.map_or_else(
-                || match op {
+            match lit {
+                NumericLiteral::Negative => match op {
                     Operator::Eq
                     | Operator::Gt
                     | Operator::GtEq
@@ -184,8 +190,8 @@ fn match_udf_binary_expr(
                     Operator::NotEq => FilterMatch::Resolved(indexes.all_live_slots.clone()),
                     _ => FilterMatch::Unresolved,
                 },
-                |val| match_numeric_ann(&ann_key, op, val, indexes),
-            )
+                NumericLiteral::Value(val) => match_numeric_ann(&ann_key, op, val, indexes),
+            }
         }
         _ => FilterMatch::Unresolved,
     }
@@ -286,7 +292,10 @@ fn match_in_list(in_list: &InList, indexes: &IndexSnapshot) -> FilterMatch {
     if let Some(("num_ann", ann_key)) = extract_udf_call(&in_list.expr) {
         return resolve_in_list(
             &in_list.list,
-            |e| extract_u64_literal(e).flatten(),
+            |e| match extract_u64_literal(e) {
+                Some(NumericLiteral::Value(v)) => Some(v),
+                _ => None,
+            },
             |val| indexes.numeric_ann_index.get(&(ann_key.clone(), *val)),
             &indexes.all_live_slots,
             in_list.negated,

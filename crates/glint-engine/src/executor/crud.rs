@@ -217,7 +217,7 @@ where
                     * GAS_PER_DATA_BYTE;
 
             if has_operator {
-                acc.gas_used += 20_000;
+                acc.gas_used += super::GAS_OPERATOR_WRITE;
             }
 
             let slots = if has_operator {
@@ -243,7 +243,7 @@ where
             let old_meta = self.read_entity_metadata(&update.entity_key)?;
 
             let operator = if old_meta.has_operator {
-                acc.gas_used += 2_100;
+                acc.gas_used += super::GAS_SLOAD;
                 read_operator_slot(self.inner.evm_mut(), &update.entity_key)?
             } else {
                 None
@@ -313,7 +313,7 @@ where
                         let op_slot = entity_operator_key(&update.entity_key);
                         acc.state_changes
                             .insert(op_slot, encode_operator_value(addr));
-                        acc.gas_used += 20_000;
+                        acc.gas_used += super::GAS_OPERATOR_WRITE;
 
                         if !old_meta.has_operator {
                             acc.slot_counter_delta += 1;
@@ -371,7 +371,7 @@ where
             let meta = self.read_entity_metadata(entity_key)?;
 
             let operator = if meta.has_operator {
-                acc.gas_used += 2_100;
+                acc.gas_used += super::GAS_SLOAD;
                 read_operator_slot(self.inner.evm_mut(), entity_key)?
             } else {
                 None
@@ -427,7 +427,7 @@ where
                 && sender != old_meta.owner
             {
                 if old_meta.has_operator {
-                    acc.gas_used += 2_100;
+                    acc.gas_used += super::GAS_SLOAD;
                     let operator =
                         read_operator_slot(self.inner.evm_mut(), &extend.entity_key)?;
                     if operator.is_none_or(|op| op != sender) {

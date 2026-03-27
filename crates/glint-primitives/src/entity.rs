@@ -4,6 +4,13 @@ use crate::transaction::ExtendPolicy;
 
 pub type EntityKey = B256;
 
+// Metadata layout: `owner (20) || flags (1) || reserved (3) || expires_at_block (8)` = 32 bytes
+const OWNER_END: usize = 20;
+const FLAGS_OFFSET: usize = 20;
+const EXPIRATION_START: usize = 24;
+const FLAG_ANYONE_CAN_EXTEND: u8 = 0b01;
+const FLAG_HAS_OPERATOR: u8 = 0b10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntityMetadata {
     pub owner: Address,
@@ -13,34 +20,32 @@ pub struct EntityMetadata {
 }
 
 impl EntityMetadata {
-    /// `owner (20) || flags (1) || reserved (3) || expires_at_block (8)`
     pub fn encode(&self) -> [u8; 32] {
         let mut buf = [0u8; 32];
-        buf[0..20].copy_from_slice(self.owner.as_slice());
+        buf[..OWNER_END].copy_from_slice(self.owner.as_slice());
         let mut flags: u8 = 0;
         if self.extend_policy == ExtendPolicy::AnyoneCanExtend {
-            flags |= 0b01;
+            flags |= FLAG_ANYONE_CAN_EXTEND;
         }
         if self.has_operator {
-            flags |= 0b10;
+            flags |= FLAG_HAS_OPERATOR;
         }
-        buf[20] = flags;
-        buf[24..32].copy_from_slice(&self.expires_at_block.to_be_bytes());
+        buf[FLAGS_OFFSET] = flags;
+        buf[EXPIRATION_START..].copy_from_slice(&self.expires_at_block.to_be_bytes());
         buf
     }
 
     pub fn decode(bytes: &[u8; 32]) -> Self {
-        let owner = Address::from_slice(&bytes[0..20]);
-        let flags = bytes[20];
-        let extend_policy = if flags & 0b01 != 0 {
+        let owner = Address::from_slice(&bytes[..OWNER_END]);
+        let flags = bytes[FLAGS_OFFSET];
+        let extend_policy = if flags & FLAG_ANYONE_CAN_EXTEND != 0 {
             ExtendPolicy::AnyoneCanExtend
         } else {
             ExtendPolicy::OwnerOnly
         };
-        let has_operator = flags & 0b10 != 0;
-        let mut expire_bytes = [0u8; 8];
-        expire_bytes.copy_from_slice(&bytes[24..32]);
-        let expires_at_block = u64::from_be_bytes(expire_bytes);
+        let has_operator = flags & FLAG_HAS_OPERATOR != 0;
+        let expires_at_block =
+            u64::from_be_bytes(bytes[EXPIRATION_START..].try_into().expect("8 bytes"));
         Self {
             owner,
             expires_at_block,

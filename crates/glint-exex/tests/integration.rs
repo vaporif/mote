@@ -80,7 +80,7 @@ fn is_watermark(batch: &RecordBatch) -> bool {
 }
 
 fn consume_handshake(stream: &std::os::unix::net::UnixStream) {
-    let mut buf = [0u8; 17];
+    let mut buf = [0u8; glint_exex::stream::HANDSHAKE_RESPONSE_SIZE];
     (&*stream).read_exact(&mut buf).expect("handshake read");
     assert_eq!(buf[0], 1, "protocol version echo should be 1");
 }

@@ -190,7 +190,6 @@ mod tests {
     use super::*;
     use crate::entity_store::EntityStore;
 
-    #[allow(dead_code)]
     enum TestEvent {
         Created {
             entity_key: B256,
@@ -223,6 +222,7 @@ mod tests {
             entity_key: B256,
             owner: Address,
         },
+        #[allow(dead_code)] // matched in patterns but no test constructs an Expired event yet
         Expired {
             entity_key: B256,
             owner: Address,

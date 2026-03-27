@@ -148,17 +148,22 @@ pub struct Update {
     pub operator: Option<Option<Address>>,
 }
 
+const EXTEND_POLICY_NO_CHANGE: u8 = 0xFF;
+const OPERATOR_TAG_UNCHANGED: u8 = 0;
+const OPERATOR_TAG_REMOVE: u8 = 1;
+const OPERATOR_TAG_SET: u8 = 2;
+
 impl Update {
     const fn encoding_parts(&self) -> (u8, u8, Option<Address>) {
         let ep_val: u8 = match self.extend_policy {
-            None => 0xFF,
-            Some(ExtendPolicy::OwnerOnly) => 0,
-            Some(ExtendPolicy::AnyoneCanExtend) => 1,
+            None => EXTEND_POLICY_NO_CHANGE,
+            Some(ExtendPolicy::OwnerOnly) => ExtendPolicy::OwnerOnly as u8,
+            Some(ExtendPolicy::AnyoneCanExtend) => ExtendPolicy::AnyoneCanExtend as u8,
         };
         let (op_tag, op_addr): (u8, Option<Address>) = match self.operator {
-            None => (0, None),
-            Some(None) => (1, None),
-            Some(Some(addr)) => (2, Some(addr)),
+            None => (OPERATOR_TAG_UNCHANGED, None),
+            Some(None) => (OPERATOR_TAG_REMOVE, None),
+            Some(Some(addr)) => (OPERATOR_TAG_SET, Some(addr)),
         };
         (ep_val, op_tag, op_addr)
     }
@@ -222,17 +227,19 @@ impl Decodable for Update {
         let (extend_policy, operator) = if consumed < header.payload_length {
             let ep_val = u8::decode(buf)?;
             let ep = match ep_val {
-                0xFF => None,
-                0 => Some(ExtendPolicy::OwnerOnly),
-                1 => Some(ExtendPolicy::AnyoneCanExtend),
+                EXTEND_POLICY_NO_CHANGE => None,
+                v if v == ExtendPolicy::OwnerOnly as u8 => Some(ExtendPolicy::OwnerOnly),
+                v if v == ExtendPolicy::AnyoneCanExtend as u8 => {
+                    Some(ExtendPolicy::AnyoneCanExtend)
+                }
                 _ => return Err(alloy_rlp::Error::Custom("invalid ExtendPolicy sentinel")),
             };
 
             let op_tag = u8::decode(buf)?;
             let op = match op_tag {
-                0 => None,
-                1 => Some(None),
-                2 => {
+                OPERATOR_TAG_UNCHANGED => None,
+                OPERATOR_TAG_REMOVE => Some(None),
+                OPERATOR_TAG_SET => {
                     let addr = Address::decode(buf)?;
                     Some(Some(addr))
                 }

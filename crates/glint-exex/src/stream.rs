@@ -121,7 +121,7 @@ impl GraceState {
 
 const WRITER_CHANNEL_SIZE: usize = 16;
 const MAX_CLIENT_MSG_LEN: usize = 64;
-const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
+pub const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
 
 pub async fn socket_writer_task(
     socket_path: PathBuf,
@@ -334,6 +334,8 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
+    // Drain any in-flight batches from the main loop that arrived before the
+    // snapshot was taken; they're now stale and the snapshot supersedes them.
     while batch_rx.try_recv().is_ok() {}
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
