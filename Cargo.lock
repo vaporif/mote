@@ -4435,6 +4435,7 @@ dependencies = [
  "futures",
  "glint-primitives",
  "prost",
+ "roaring 0.10.12",
  "tokio",
  "tonic",
  "tower",
@@ -8160,7 +8161,7 @@ dependencies = [
  "reth-stages-types",
  "reth-storage-errors",
  "reth-trie-common",
- "roaring",
+ "roaring 0.11.3",
  "serde",
 ]
 
@@ -11094,6 +11095,16 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "roaring"
+version = "0.10.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19e8d2cfa184d94d0726d650a9f4a1be7f9b76ac9fdb954219878dc00c1c1e7b"
+dependencies = [
+ "bytemuck",
+ "byteorder",
 ]
 
 [[package]]

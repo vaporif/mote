@@ -27,6 +27,7 @@ tracing-subscriber.workspace = true
 eyre.workspace = true
 color-eyre.workspace = true
 bytes.workspace = true
+roaring.workspace = true
 futures.workspace = true
 prost = "0.14"
 

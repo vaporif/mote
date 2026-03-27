@@ -7,7 +7,7 @@ pub mod table_provider;
 
 use std::{path::Path, sync::Arc, time::Duration};
 
-use arrow::record_batch::RecordBatch;
+use entity_store::Snapshot;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
@@ -30,8 +30,8 @@ pub async fn run(
     let (shutdown_tx, _) = watch::channel(false);
     let (ready_tx, ready_rx) = watch::channel(false);
 
-    let empty_batch = Arc::new(store.to_record_batch());
-    let (snapshot_tx, snapshot_rx) = watch::channel(empty_batch);
+    let initial_snapshot = Arc::new(store.snapshot()?);
+    let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
     let mut health_handle = tokio::spawn({
         let ready_rx = ready_rx.clone();
@@ -88,7 +88,7 @@ pub async fn run(
 
         store.clear();
         let _ = ready_tx.send(false);
-        let _ = snapshot_tx.send(Arc::new(store.to_record_batch()));
+        let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
@@ -96,7 +96,7 @@ pub async fn run(
 async fn run_connection(
     socket_path: &Path,
     store: &mut EntityStore,
-    snapshot_tx: &watch::Sender<Arc<RecordBatch>>,
+    snapshot_tx: &watch::Sender<Arc<Snapshot>>,
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
 ) -> eyre::Result<ConnectionOutcome> {
@@ -130,7 +130,7 @@ async fn run_connection(
                 info!("watermark received, entering live mode");
                 is_live = true;
                 let _ = ready_tx.send(true);
-                let _ = snapshot_tx.send(Arc::new(store.to_record_batch()));
+                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
                 continue;
             }
             ApplyResult::Applied => {
@@ -158,7 +158,7 @@ async fn run_connection(
                     }
                 }
             }
-            let _ = snapshot_tx.send(Arc::new(store.to_record_batch()));
+            let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
         }
     }
 
