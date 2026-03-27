@@ -67,25 +67,25 @@ SELECT * FROM entities WHERE owner = x'aa...' AND num_ann(numeric_annotations, '
 
 ## Relationship to Arkiv
 
-Glint builds directly on the work of [Arkiv](https://github.com/Arkiv-Network/arkiv-op-geth) (formerly GolemBase). The Arkiv team designed the core model — magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations. That design is sound, and Glint wouldn't exist without it.
+Glint wouldn't exist without [Arkiv](https://github.com/Arkiv-Network/arkiv-op-geth) (formerly GolemBase). The Arkiv team designed the core model - magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations.
 
-Glint is a reth-native implementation of these same ideas. With Optimism moving from op-geth to reth, a reth plugin is the natural next step for this architecture. Glint explores that path — what the Arkiv model looks like when built on reth's `BlockExecutor` and `ExEx` primitives.
+Why rewrite it? Optimism is moving from op-geth to reth. Glint takes the same ideas and implements them as a reth plugin using `BlockExecutor` and `ExEx`, no geth fork needed.
 
-Along the way, some design tradeoffs were revisited:
+I also revisited a few design tradeoffs along the way:
 
-| | Arkiv | Glint | Rationale |
+| | Arkiv | Glint | Why |
 |---|---|---|---|
-| Base | op-geth fork | reth plugin (BlockExecutor + ExEx) | Aligns with Optimism's reth migration. |
-| On-chain cost | ~96 bytes/entity (3 slots) | 64 bytes/entity (2 slots) | Moves expiration index off-chain into memory. |
-| Content integrity | — | 32-byte content hash | Enables clients to verify query results against the trie. |
+| Base | op-geth fork | reth plugin (BlockExecutor + ExEx) | Follows Optimism's reth migration. |
+| On-chain cost | ~96 bytes/entity (3 slots) | 64 bytes/entity (2 slots) | Expiration index moved off-chain into memory. |
+| Content integrity | - | 32-byte content hash | Lets clients verify query results against the trie. |
 | Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | DataFusion (columnar, in-memory) with roaring bitmap indexes, separate process, Flight SQL | Process isolation, columnar scans for analytics. See [query engine](#query-engine). |
 | Compression | Brotli per-tx | None | OP batcher already compresses the batch. |
 | MAX_BTL | Uncapped | Enforced at txpool + execution | Bounds recovery time and index size. |
-| Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL | Lets the entity creator choose who can extend. |
-| Operator delegation | — | Optional operator per entity | Allows backend key management without transferring ownership. |
-| ChangeOwner | Supported | Not yet | Delete + recreate is simpler for now. May revisit. |
+| Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL | Creator chooses who can extend. |
+| Operator delegation | - | Optional operator per entity | Backend can manage entities without owning them. |
+| ChangeOwner | Supported | Not yet | Delete + recreate covers most cases for now. |
 
-Arkiv also has features Glint doesn't yet — JSON-RPC query endpoints, glob matching on annotations, at-block historical queries. These are on the roadmap.
+Arkiv also has things Glint doesn't yet - JSON-RPC query endpoints, glob matching on annotations, at-block historical queries. On the roadmap.
 
 ## Architecture
 
