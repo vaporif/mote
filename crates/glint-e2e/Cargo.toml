@@ -20,7 +20,6 @@ glint-sdk = { workspace = true, features = ["flight_sql"] }
 glint-primitives.workspace = true
 
 alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
-alloy-provider.workspace = true
 alloy-network.workspace = true
 alloy-signer-local.workspace = true
 

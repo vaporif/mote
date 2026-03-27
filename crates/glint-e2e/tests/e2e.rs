@@ -1,12 +1,17 @@
 use alloy_network::EthereumWallet;
-use alloy_provider::ProviderBuilder;
 use alloy_signer_local::PrivateKeySigner;
 
 use glint_e2e::analytics_handle::AnalyticsHandle;
 use glint_e2e::eth_node_handle::EthNodeHandle;
 use glint_primitives::entity::derive_entity_key;
-use glint_sdk::flight_sql::GlintFlightClient;
-use glint_sdk::{CreateEntity, GlintClient};
+use glint_sdk::{CreateEntity, Glint};
+
+const DEV_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+fn dev_wallet() -> EthereumWallet {
+    let signer: PrivateKeySigner = DEV_KEY.parse().unwrap();
+    EthereumWallet::from(signer)
+}
 
 #[tokio::test]
 #[ignore = "requires built eth-glint binary; run with `just e2e`"]
@@ -15,7 +20,9 @@ async fn test_create_entity() -> eyre::Result<()> {
         .await
         .expect("spawn_blocking panicked")?;
 
-    let client = make_glint_client(&node);
+    let wallet = dev_wallet();
+    let expected_owner = wallet.default_signer().address();
+    let client = Glint::with_wallet(node.rpc_url(), wallet)?;
 
     let payload = b"hello glint";
     let btl: u64 = 100;
@@ -38,7 +45,7 @@ async fn test_create_entity() -> eyre::Result<()> {
         .await?
         .expect("entity should exist after create tx");
 
-    assert_eq!(entity.owner, dev_address());
+    assert_eq!(entity.owner, expected_owner);
     assert_eq!(entity.expires_at_block, block_number + btl);
 
     let count = client.get_entity_count().await?;
@@ -69,7 +76,11 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
         .await
         .expect("spawn_blocking panicked")?;
 
-    let client = make_glint_client(&node);
+    let mut client = Glint::builder(node.rpc_url())
+        .wallet(dev_wallet())
+        .flight_url(&analytics.flight_url())
+        .build()
+        .await?;
 
     let create =
         CreateEntity::new("text/plain", b"flight-sql-test", 100).string_annotation("app", "e2e");
@@ -81,9 +92,7 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
 
     wait_for_analytics_ready(&analytics).await?;
 
-    let mut flight = GlintFlightClient::connect(analytics.flight_url()).await?;
-
-    let batches = flight
+    let batches = client
         .query("SELECT entity_key, content_type FROM entities")
         .await?;
 
@@ -94,21 +103,6 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     );
 
     Ok(())
-}
-
-const DEV_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-fn dev_address() -> alloy_primitives::Address {
-    DEV_KEY.parse::<PrivateKeySigner>().unwrap().address()
-}
-
-fn make_glint_client(node: &EthNodeHandle) -> GlintClient {
-    let signer: PrivateKeySigner = DEV_KEY.parse().unwrap();
-    let wallet = EthereumWallet::from(signer);
-    let provider = ProviderBuilder::new()
-        .wallet(wallet)
-        .connect_http(node.rpc_url().parse().unwrap());
-    GlintClient::new(provider)
 }
 
 async fn wait_for_analytics_ready(analytics: &AnalyticsHandle) -> eyre::Result<()> {
