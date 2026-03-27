@@ -51,6 +51,7 @@ impl LiveEntityTracker {
                 self.entities.remove(entity_key);
                 *entity_key
             }
+            EntityEvent::PermissionsChanged { entity_key, .. } => *entity_key,
         };
         self.all_seen.insert(key);
     }

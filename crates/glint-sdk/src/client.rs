@@ -7,7 +7,7 @@ use alloy_rpc_types_eth::TransactionReceipt;
 use glint_primitives::constants::PROCESSOR_ADDRESS;
 use glint_primitives::entity::EntityInfo;
 
-use crate::entity::{CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
+use crate::entity::{ChangeOwnerEntity, CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
 use crate::tx::build_glint_transaction;
 
 pub struct GlintClient {
@@ -47,8 +47,9 @@ impl GlintClient {
         updates: &[UpdateEntity],
         deletes: &[DeleteEntity],
         extends: &[ExtendEntity],
+        change_owners: &[ChangeOwnerEntity],
     ) -> eyre::Result<TransactionReceipt> {
-        let tx = build_glint_transaction(creates, updates, deletes, extends)?;
+        let tx = build_glint_transaction(creates, updates, deletes, extends, change_owners)?;
 
         let mut calldata = Vec::new();
         tx.encode(&mut calldata);

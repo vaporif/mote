@@ -133,6 +133,42 @@ impl DeleteEntity {
     }
 }
 
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct ChangeOwnerEntity {
+    pub entity_key: B256,
+    pub new_owner: Option<Address>,
+    pub extend_policy: Option<ExtendPolicy>,
+    pub operator: Option<Option<Address>>,
+}
+
+impl ChangeOwnerEntity {
+    pub const fn new(entity_key: B256) -> Self {
+        Self {
+            entity_key,
+            new_owner: None,
+            extend_policy: None,
+            operator: None,
+        }
+    }
+
+    pub const fn new_owner(mut self, addr: Address) -> Self {
+        self.new_owner = Some(addr);
+        self
+    }
+
+    pub const fn extend_policy(mut self, policy: ExtendPolicy) -> Self {
+        self.extend_policy = Some(policy);
+        self
+    }
+
+    /// `Some(addr)` to set, `None` to remove.
+    pub const fn operator(mut self, addr: Option<Address>) -> Self {
+        self.operator = Some(addr);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -271,6 +271,26 @@ pub fn build_record_batch(
                 b.extend_policy.append_null();
                 b.operator.append_null();
             }
+            EntityEvent::PermissionsChanged {
+                entity_key,
+                old_owner: _,
+                new_owner,
+                extend_policy,
+                operator,
+            } => {
+                b.event_type
+                    .append_value(EntityEventType::PermissionsChanged as u8);
+                b.entity_key.append_value(entity_key.as_slice())?;
+                b.owner.append_value(new_owner.as_slice())?;
+                b.expires_at.append_null();
+                b.old_expires_at.append_null();
+                b.content_type.append_null();
+                b.payload.append_null();
+                b.string_ann.append(false)?;
+                b.numeric_ann.append(false)?;
+                b.extend_policy.append_value(*extend_policy);
+                b.operator.append_value(operator.as_slice())?;
+            }
         }
     }
 
@@ -491,6 +511,33 @@ mod tests {
         assert!(batch.column_by_name("content_type").unwrap().is_null(0));
         assert!(batch.column_by_name("extend_policy").unwrap().is_null(0));
         assert!(batch.column_by_name("operator").unwrap().is_null(0));
+    }
+
+    fn sample_permissions_changed() -> EntityEvent {
+        EntityEvent::PermissionsChanged {
+            entity_key: B256::repeat_byte(0x06),
+            old_owner: Address::repeat_byte(0x01),
+            new_owner: Address::repeat_byte(0x02),
+            extend_policy: 1,
+            operator: Address::repeat_byte(0x03),
+        }
+    }
+
+    #[test]
+    fn permissions_changed_populates_fields() {
+        let events = vec![EventRow {
+            event: sample_permissions_changed(),
+            tx_index: 0,
+            tx_hash: B256::ZERO,
+            log_index: 0,
+        }];
+        let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert!(!batch.column_by_name("owner").unwrap().is_null(0));
+        assert!(!batch.column_by_name("extend_policy").unwrap().is_null(0));
+        assert!(!batch.column_by_name("operator").unwrap().is_null(0));
+        assert!(batch.column_by_name("expires_at_block").unwrap().is_null(0));
+        assert!(batch.column_by_name("payload").unwrap().is_null(0));
     }
 
     #[test]

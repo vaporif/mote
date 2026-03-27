@@ -31,7 +31,7 @@ async fn test_create_entity() -> eyre::Result<()> {
     let create = CreateEntity::new("text/plain", payload, btl).string_annotation("app", "e2e-test");
 
     let receipt = client
-        .send_glint_transaction(&[create], &[], &[], &[])
+        .send_glint_transaction(&[create], &[], &[], &[], &[])
         .await?;
     assert!(receipt.status(), "glint tx should succeed");
 
@@ -87,7 +87,7 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
         CreateEntity::new("text/plain", b"flight-sql-test", 100).string_annotation("app", "e2e");
 
     let receipt = glint
-        .send_glint_transaction(&[create], &[], &[], &[])
+        .send_glint_transaction(&[create], &[], &[], &[], &[])
         .await?;
     assert!(receipt.status(), "glint tx should succeed");
 

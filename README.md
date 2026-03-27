@@ -83,7 +83,7 @@ I also revisited a few design tradeoffs along the way:
 | MAX_BTL | Uncapped | Enforced at txpool + execution | Bounds recovery time and index size. |
 | Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL | Creator chooses who can extend. |
 | Operator delegation | - | Optional operator per entity | Backend can manage entities without owning them. |
-| ChangeOwner | Supported | Not yet | Delete + recreate covers most cases for now. |
+| ChangeOwner | Supported | Supported | Transfer ownership, change extend policy, set/remove operator in one atomic op. |
 
 Arkiv also has things Glint doesn't yet - JSON-RPC query endpoints, glob matching on annotations, at-block historical queries. On the roadmap.
 
@@ -192,9 +192,11 @@ Supported indexed operations: equality and inequality on `owner`, `str_ann()`, a
 
 3. **Extend** (depends on policy) - Add blocks to remaining lifetime, capped at MAX_BTL. If `extend_policy` is `AnyoneCanExtend`, anyone can do this - so if you depend on someone's data, you can keep it alive. If `OwnerOnly`, only the owner or operator can extend.
 
-4. **Delete** (owner or operator) - Immediate removal.
+4. **ChangeOwner** (owner only) - Transfer ownership, change the extend policy, and/or set or remove the operator, all in one atomic operation. At least one field must change. Operators cannot call this - only the entity owner.
 
-5. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index (`HashMap<BlockNumber, Vec<EntityKey>>`) and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
+5. **Delete** (owner or operator) - Immediate removal.
+
+6. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index (`HashMap<BlockNumber, Vec<EntityKey>>`) and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
 
 ### Recovery
 

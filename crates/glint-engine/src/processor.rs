@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, B256, U256};
 use glint_primitives::{
-    entity::{EntityKey, EntityMetadata, derive_entity_key},
+    entity::{derive_entity_key, EntityKey, EntityMetadata},
     error::GlintError,
     storage::{
         compute_content_hash_from_raw, decode_operator_value, encode_operator_value,
@@ -263,6 +263,45 @@ pub fn execute_extend(
     state.write_slot(meta_slot, U256::from_be_bytes(new_metadata.encode()));
 
     Ok((old_meta, new_expires))
+}
+
+pub fn execute_change_owner(
+    state: &mut impl EntityState,
+    sender: Address,
+    change_owner: &glint_primitives::transaction::ChangeOwner,
+) -> Result<EntityMetadata, GlintError> {
+    let old_meta = read_metadata(state, &change_owner.entity_key)?;
+
+    if old_meta.owner != sender {
+        return Err(GlintError::NotOwner);
+    }
+
+    let new_owner = change_owner.new_owner.unwrap_or(old_meta.owner);
+    let new_extend_policy = change_owner.extend_policy.unwrap_or(old_meta.extend_policy);
+
+    let new_has_operator = match change_owner.operator {
+        Some(None) => false,
+        Some(Some(_)) => true,
+        None => old_meta.has_operator,
+    };
+
+    let new_metadata = EntityMetadata {
+        owner: new_owner,
+        expires_at_block: old_meta.expires_at_block,
+        extend_policy: new_extend_policy,
+        has_operator: new_has_operator,
+    };
+
+    let meta_slot = entity_storage_key(&change_owner.entity_key);
+    state.write_slot(meta_slot, U256::from_be_bytes(new_metadata.encode()));
+
+    match change_owner.operator {
+        Some(None) => delete_operator(state, &change_owner.entity_key),
+        Some(Some(addr)) => write_operator(state, &change_owner.entity_key, addr),
+        None => {}
+    }
+
+    Ok(old_meta)
 }
 
 #[cfg(test)]
@@ -895,5 +934,240 @@ mod tests {
 
         let result = execute_extend(&mut state, owner, &extend, current_block, MAX_BTL);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_change_owner_transfers_ownership() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let new_owner = Address::repeat_byte(0x99);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            false,
+            None,
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: Some(new_owner),
+            extend_policy: None,
+            operator: None,
+        };
+
+        let old_meta = execute_change_owner(&mut state, owner, &co).unwrap();
+        assert_eq!(old_meta.owner, owner);
+
+        let meta = read_metadata(&state, &entity_key).unwrap();
+        assert_eq!(meta.owner, new_owner);
+        assert_eq!(meta.expires_at_block, 1100);
+        assert_eq!(meta.extend_policy, ExtendPolicy::OwnerOnly);
+    }
+
+    #[test]
+    fn execute_change_owner_by_stranger_fails() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let stranger = Address::repeat_byte(0xEE);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            false,
+            None,
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: Some(Address::repeat_byte(0x99)),
+            extend_policy: None,
+            operator: None,
+        };
+
+        assert_eq!(
+            execute_change_owner(&mut state, stranger, &co),
+            Err(GlintError::NotOwner)
+        );
+    }
+
+    #[test]
+    fn execute_change_owner_by_operator_fails() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let operator_addr = Address::repeat_byte(0xAA);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            true,
+            Some(operator_addr),
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: Some(Address::repeat_byte(0x99)),
+            extend_policy: None,
+            operator: None,
+        };
+
+        assert_eq!(
+            execute_change_owner(&mut state, operator_addr, &co),
+            Err(GlintError::NotOwner)
+        );
+    }
+
+    #[test]
+    fn execute_change_owner_sets_operator() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let new_operator = Address::repeat_byte(0xBB);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            false,
+            None,
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: None,
+            extend_policy: None,
+            operator: Some(Some(new_operator)),
+        };
+
+        execute_change_owner(&mut state, owner, &co).unwrap();
+
+        let meta = read_metadata(&state, &entity_key).unwrap();
+        assert!(meta.has_operator);
+        assert_eq!(read_operator(&state, &entity_key), Some(new_operator));
+    }
+
+    #[test]
+    fn execute_change_owner_removes_operator() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let operator_addr = Address::repeat_byte(0xAA);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            true,
+            Some(operator_addr),
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: None,
+            extend_policy: None,
+            operator: Some(None),
+        };
+
+        execute_change_owner(&mut state, owner, &co).unwrap();
+
+        let meta = read_metadata(&state, &entity_key).unwrap();
+        assert!(!meta.has_operator);
+        assert_eq!(read_operator(&state, &entity_key), None);
+    }
+
+    #[test]
+    fn execute_change_owner_updates_extend_policy() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            false,
+            None,
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: None,
+            extend_policy: Some(ExtendPolicy::AnyoneCanExtend),
+            operator: None,
+        };
+
+        execute_change_owner(&mut state, owner, &co).unwrap();
+
+        let meta = read_metadata(&state, &entity_key).unwrap();
+        assert_eq!(meta.extend_policy, ExtendPolicy::AnyoneCanExtend);
+    }
+
+    #[test]
+    fn execute_change_owner_all_fields_at_once() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner = Address::repeat_byte(0x42);
+        let new_owner = Address::repeat_byte(0x99);
+        let new_operator = Address::repeat_byte(0xBB);
+
+        seed_entity(
+            &mut state,
+            &entity_key,
+            owner,
+            1100,
+            ExtendPolicy::OwnerOnly,
+            false,
+            None,
+        );
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: Some(new_owner),
+            extend_policy: Some(ExtendPolicy::AnyoneCanExtend),
+            operator: Some(Some(new_operator)),
+        };
+
+        execute_change_owner(&mut state, owner, &co).unwrap();
+
+        let meta = read_metadata(&state, &entity_key).unwrap();
+        assert_eq!(meta.owner, new_owner);
+        assert_eq!(meta.extend_policy, ExtendPolicy::AnyoneCanExtend);
+        assert!(meta.has_operator);
+        assert_eq!(read_operator(&state, &entity_key), Some(new_operator));
+        assert_eq!(meta.expires_at_block, 1100);
+    }
+
+    #[test]
+    fn execute_change_owner_nonexistent_fails() {
+        let mut state = MockState::default();
+        let entity_key = B256::repeat_byte(0x01);
+        let sender = Address::repeat_byte(0x42);
+
+        let co = glint_primitives::transaction::ChangeOwner {
+            entity_key,
+            new_owner: Some(Address::repeat_byte(0x99)),
+            extend_policy: None,
+            operator: None,
+        };
+
+        assert!(execute_change_owner(&mut state, sender, &co).is_err());
     }
 }

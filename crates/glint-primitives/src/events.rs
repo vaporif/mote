@@ -55,6 +55,14 @@ sol! {
         uint64 new_expires_at,
         address owner
     );
+
+    event EntityPermissionsChanged(
+        bytes32 indexed entity_key,
+        address indexed old_owner,
+        address new_owner,
+        uint8 extend_policy,
+        address operator
+    );
 }
 
 impl EntityCreated {
@@ -161,6 +169,29 @@ impl EntityExtended {
             old_expires_at,
             new_expires_at,
             owner,
+        };
+        Log {
+            address,
+            data: event.encode_log_data(),
+        }
+    }
+}
+
+impl EntityPermissionsChanged {
+    pub fn new_log(
+        address: Address,
+        entity_key: B256,
+        old_owner: Address,
+        new_owner: Address,
+        extend_policy: u8,
+        operator: Address,
+    ) -> Log {
+        let event = Self {
+            entity_key,
+            old_owner,
+            new_owner,
+            extend_policy,
+            operator,
         };
         Log {
             address,
@@ -309,5 +340,28 @@ mod tests {
 
         let decoded = EntityExpired::decode_log_data(&log.data).unwrap();
         assert_eq!(decoded.owner, owner);
+    }
+
+    #[test]
+    fn entity_permissions_changed_roundtrips() {
+        let entity_key = B256::repeat_byte(0x07);
+        let old_owner = Address::repeat_byte(0x01);
+        let new_owner = Address::repeat_byte(0x02);
+        let operator = Address::repeat_byte(0x03);
+        let log = EntityPermissionsChanged::new_log(
+            Address::repeat_byte(0xFF),
+            entity_key,
+            old_owner,
+            new_owner,
+            1,
+            operator,
+        );
+        assert_eq!(log.data.topics().len(), 3);
+
+        let decoded = EntityPermissionsChanged::decode_log_data(&log.data).unwrap();
+        assert_eq!(decoded.old_owner, old_owner);
+        assert_eq!(decoded.new_owner, new_owner);
+        assert_eq!(decoded.extend_policy, 1);
+        assert_eq!(decoded.operator, operator);
     }
 }

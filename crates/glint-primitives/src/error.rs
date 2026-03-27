@@ -64,4 +64,10 @@ pub enum GlintError {
 
     #[error("duplicate entity key in transaction: {0}")]
     DuplicateEntityKey(B256),
+
+    #[error("change_owner must specify at least one change")]
+    EmptyChangeOwner,
+
+    #[error("new owner address cannot be zero")]
+    InvalidOwnerAddress,
 }

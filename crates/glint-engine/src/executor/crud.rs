@@ -2,7 +2,10 @@ use alloy_primitives::{Address, B256, Log, U256};
 use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
     entity::{EntityMetadata, derive_entity_key},
-    events::{EntityCreated, EntityDeleted, EntityExtended, EntityUpdated, LogAnnotations},
+    events::{
+        EntityCreated, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdated,
+        LogAnnotations,
+    },
     storage::{
         compute_content_hash_from_raw, decode_operator_value, encode_operator_value,
         entity_content_hash_key, entity_operator_key, entity_storage_key,
@@ -67,6 +70,7 @@ where
             updates = decoded.tx.updates.len(),
             deletes = decoded.tx.deletes.len(),
             extends = decoded.tx.extends.len(),
+            change_owners = decoded.tx.change_owners.len(),
             "decoded glint transaction"
         );
 
@@ -86,6 +90,7 @@ where
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;
         self.process_extends(&mut acc, &decoded.tx.extends, current_block, sender)?;
+        self.process_change_owners(&mut acc, &decoded.tx.change_owners, sender)?;
 
         debug!(
             state_changes = acc.state_changes.len(),
@@ -475,6 +480,88 @@ where
                 .gas_used
                 .saturating_add(GLINT_GAS_PER_EXTEND)
                 .saturating_add(extend.additional_blocks.saturating_mul(GAS_PER_BTL_BLOCK));
+        }
+        Ok(())
+    }
+
+    #[instrument(skip_all, fields(%sender, count = change_owners.len()), name = "glint::process_change_owners")]
+    fn process_change_owners(
+        &mut self,
+        acc: &mut CrudAccumulator,
+        change_owners: &[glint_primitives::transaction::ChangeOwner],
+        sender: Address,
+    ) -> Result<(), BlockExecutionError> {
+        for co in change_owners {
+            let old_meta = self.read_entity_metadata(&co.entity_key)?;
+
+            if old_meta.owner != sender {
+                return Err(glint_err("only the owner can change entity permissions"));
+            }
+
+            acc.gas_used += super::GLINT_GAS_PER_CHANGE_OWNER;
+
+            let old_operator = if old_meta.has_operator {
+                acc.gas_used += super::GAS_SLOAD;
+                read_operator_slot(self.inner.evm_mut(), &co.entity_key)?
+                    .unwrap_or(Address::ZERO)
+            } else {
+                Address::ZERO
+            };
+
+            let new_owner = co.new_owner.unwrap_or(old_meta.owner);
+            let new_extend_policy = co.extend_policy.unwrap_or(old_meta.extend_policy);
+
+            let new_has_operator = match co.operator {
+                Some(None) => false,
+                Some(Some(_)) => true,
+                None => old_meta.has_operator,
+            };
+
+            let new_meta = EntityMetadata {
+                owner: new_owner,
+                expires_at_block: old_meta.expires_at_block,
+                extend_policy: new_extend_policy,
+                has_operator: new_has_operator,
+            };
+
+            let meta_slot = entity_storage_key(&co.entity_key);
+            acc.state_changes
+                .insert(meta_slot, U256::from_be_bytes(new_meta.encode()));
+
+            match co.operator {
+                Some(None) => {
+                    if old_meta.has_operator {
+                        let op_slot = entity_operator_key(&co.entity_key);
+                        acc.state_changes.insert(op_slot, U256::ZERO);
+                        acc.slot_counter_delta -= 1;
+                    }
+                }
+                Some(Some(addr)) => {
+                    let op_slot = entity_operator_key(&co.entity_key);
+                    acc.state_changes
+                        .insert(op_slot, encode_operator_value(addr));
+                    acc.gas_used += super::GAS_OPERATOR_WRITE;
+                    if !old_meta.has_operator {
+                        acc.slot_counter_delta += 1;
+                    }
+                }
+                None => {}
+            }
+
+            let operator_for_log = match co.operator {
+                Some(Some(addr)) => addr,
+                Some(None) => Address::ZERO,
+                None => old_operator,
+            };
+
+            acc.logs.push(EntityPermissionsChanged::new_log(
+                PROCESSOR_ADDRESS,
+                co.entity_key,
+                old_meta.owner,
+                new_owner,
+                new_extend_policy as u8,
+                operator_for_log,
+            ));
         }
         Ok(())
     }

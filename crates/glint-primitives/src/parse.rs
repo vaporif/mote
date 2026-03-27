@@ -3,7 +3,10 @@ use alloy_sol_types::SolEvent;
 use tracing::warn;
 
 use crate::constants::PROCESSOR_ADDRESS;
-use crate::events::{EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityUpdated};
+use crate::events::{
+    EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityPermissionsChanged,
+    EntityUpdated,
+};
 
 #[derive(Debug, Clone)]
 pub enum EntityEvent {
@@ -48,6 +51,13 @@ pub enum EntityEvent {
         old_expires_at: u64,
         new_expires_at: u64,
         owner: Address,
+    },
+    PermissionsChanged {
+        entity_key: B256,
+        old_owner: Address,
+        new_owner: Address,
+        extend_policy: u8,
+        operator: Address,
     },
 }
 
@@ -132,6 +142,16 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 owner: d.owner,
             }))
         }
+        s if s == EntityPermissionsChanged::SIGNATURE_HASH => {
+            let d = EntityPermissionsChanged::decode_log(log)?.data;
+            Ok(Some(EntityEvent::PermissionsChanged {
+                entity_key: d.entity_key,
+                old_owner: d.old_owner,
+                new_owner: d.new_owner,
+                extend_policy: d.extend_policy,
+                operator: d.operator,
+            }))
+        }
         _ => {
             warn!(?selector, "unknown event selector, skipping log");
             Ok(None)
@@ -163,7 +183,8 @@ mod tests {
 
     use crate::constants::PROCESSOR_ADDRESS;
     use crate::events::{
-        EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityUpdated, LogAnnotations,
+        EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityPermissionsChanged,
+        EntityUpdated, LogAnnotations,
     };
 
     fn empty_annotations() -> LogAnnotations {
@@ -353,5 +374,32 @@ mod tests {
             Address::ZERO,
         );
         assert!(parse_log(&log).is_err());
+    }
+
+    #[test]
+    fn permissions_changed_roundtrip() {
+        let log = EntityPermissionsChanged::new_log(
+            PROCESSOR_ADDRESS,
+            B256::repeat_byte(0x08),
+            Address::repeat_byte(0x01),
+            Address::repeat_byte(0x02),
+            1,
+            Address::repeat_byte(0x03),
+        );
+        let EntityEvent::PermissionsChanged {
+            entity_key,
+            old_owner,
+            new_owner,
+            extend_policy,
+            operator,
+        } = parse_log(&log).unwrap().unwrap()
+        else {
+            panic!("expected PermissionsChanged");
+        };
+        assert_eq!(entity_key, B256::repeat_byte(0x08));
+        assert_eq!(old_owner, Address::repeat_byte(0x01));
+        assert_eq!(new_owner, Address::repeat_byte(0x02));
+        assert_eq!(extend_policy, 1);
+        assert_eq!(operator, Address::repeat_byte(0x03));
     }
 }

@@ -4,4 +4,4 @@ pub mod rpc;
 pub mod tx;
 
 pub use client::GlintClient;
-pub use entity::{CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
+pub use entity::{ChangeOwnerEntity, CreateEntity, DeleteEntity, ExtendEntity, UpdateEntity};
