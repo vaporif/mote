@@ -109,6 +109,8 @@ Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orde
 
 Secondary indexes sit alongside the Arrow data - hash indexes on annotation key/value pairs and owner, a B-tree for numeric range queries, all backed by roaring bitmaps. A custom DataFusion `TableProvider` checks incoming filters against these indexes. If a filter matches an indexed field, it resolves via bitmap lookup in microseconds. If not, DataFusion does a full columnar scan, which is still fast for analytics. One engine, one copy of the data.
 
+Also if we do need to support longer lasting entities that wont fit inside RAM, there's an option of datafusion table provider https://github.com/datafusion-contrib/datafusion-table-providers. It will use any of supported databases (including sqlite,) as storage, so datafusion while push down data there and will only supply Flight SQL as protocol layer. We will lose OLAP though.
+
 Supported indexed operations: equality and inequality on `owner`, `str_ann()`, and `num_ann()`; range queries (`>`, `>=`, `<`, `<=`) on numeric annotations; `IN` lists on all indexed fields; `AND`/`OR` combinations. Unrecognized filters fall through to DataFusion's post-scan filtering.
 
 <details>
