@@ -1,3 +1,5 @@
+// TODO: add sqlx-like typed query interface (bind params, row mapping) over Flight SQL
+
 use arrow::record_batch::RecordBatch;
 use arrow_flight::FlightDescriptor;
 use arrow_flight::flight_service_client::FlightServiceClient;

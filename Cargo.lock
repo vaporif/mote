@@ -843,13 +843,10 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
  "itertools 0.14.0",
- "opentelemetry",
- "opentelemetry-http",
  "reqwest 0.12.28",
  "serde_json",
  "tower",
  "tracing",
- "tracing-opentelemetry",
  "url",
 ]
 
@@ -4451,19 +4448,14 @@ dependencies = [
  "alloy-primitives",
  "alloy-provider",
  "alloy-signer-local",
- "alloy-transport-http",
  "arrow",
- "arrow-flight",
  "eyre",
- "futures",
  "glint-primitives",
  "glint-sdk",
- "prost",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
  "tokio",
- "tonic",
 ]
 
 [[package]]

@@ -33,7 +33,11 @@ keywords = ["ethereum", "reth", "ephemeral", "storage"]
 categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
+glint-engine = { path = "crates/glint-engine" }
+glint-exex = { path = "crates/glint-exex" }
+glint-node = { path = "crates/glint-node" }
 glint-primitives = { path = "crates/glint-primitives" }
+glint-sdk = { path = "crates/glint-sdk" }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
 alloy-rlp = { version = "0.3", features = ["derive"] }
