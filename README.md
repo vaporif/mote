@@ -11,7 +11,7 @@ Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, ca
 
 Blockchains store data permanently. If you want to publish a limit order that's valid for the next 10 blocks, you pay to store it forever even though nobody needs it after that. There's no native TTL in Ethereum.
 
-Think intent protocols (UniswapX/CoW), ephemeral registries, oracle price feeds with built-in staleness, compute marketplaces, AI agent coordination - anywhere people publish short-lived structured records and others need to query them.
+Think CoW Swap orders valid for minutes, oracle price feeds stale after a few blocks, compute marketplace offers that expire when filled, ephemeral task boards for AI agents. Anywhere people publish short-lived structured records and others need to query them by metadata.
 
 ## Relationship to GolemBase
 
@@ -26,7 +26,7 @@ Beyond the base change, Glint also fixes a few things:
 | Base | op-geth fork | reth plugin (BlockExecutor + ExEx) | Optimism is dropping op-geth. |
 | On-chain cost | ~96 bytes/entity (3 slots) | 64 bytes/entity (2 slots) | Moved the expiration index off-chain. 33% cheaper per entity. |
 | Content integrity | None | 32-byte content hash | Without it, a sequencer can serve fake data and nobody can prove it |
-| Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | SQLite storage + DataFusion protocol layer, separate process, Flight SQL | Indexed queries like GolemBase, but with process isolation, standard SQL, and rich client ecosystem. See [query engine](#query-engine). |
+| Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | DataFusion (columnar, in-memory) with secondary indexes, separate process, Flight SQL | Process isolation, columnar scans for analytics, indexed lookups for annotation filters. See [query engine](#query-engine). |
 | Compression | Brotli per-tx | None | OP batcher already compresses. Per-tx Brotli has a decompression bomb in the txpool path (`io.ReadAll` with no size limit). |
 | MAX_BTL | Not enforced | Enforced at txpool + execution | Without it, entities live forever. The "ephemeral" thing falls apart. |
 | Extend | Permissionless, no cap | Permissionless, capped at MAX_BTL | GolemBase lets anyone extend any entity to infinity |
@@ -62,16 +62,16 @@ graph TB
     end
 
     subgraph analytics["glint-analytics (separate process)"]
-        sqlite["SQLite<br/>(indexed storage)"]
-        df["DataFusion<br/>(query engine)"]
+        store["In-memory Arrow tables<br/>+ secondary indexes"]
+        df["DataFusion<br/>(columnar query engine)"]
         flight["Flight SQL server"]
         rpc["JSON-RPC endpoint"]
-        sqlite --> df
+        store --> df
         df --> flight
         df --> rpc
     end
 
-    arrow -->|Arrow IPC<br/>unix socket| sqlite
+    arrow -->|Arrow IPC<br/>unix socket| store
 
     subgraph clients["Clients"]
         grafana["Grafana"]
@@ -94,38 +94,34 @@ graph TB
 
 `glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations - create, update, delete, extend. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, and pushes them over a unix socket. Pure output - no state of its own.
+`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, and pushes them over a unix socket. No state of its own.
 
-`glint-analytics` runs as a separate binary consuming that stream. It stores all live entities in SQLite with indexed annotation tables, serves SQL queries via DataFusion and Flight SQL, and exposes a JSON-RPC endpoint. If it crashes or falls behind, blocks keep getting produced - the node doesn't know or care.
-
-
-`glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations - create, update, delete, extend. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
-
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, and pushes them over a unix socket. Pure output - no state of its own.
-
-`glint-analytics` runs as a separate binary consuming that stream. In-memory table of all live entities, SQL via Flight SQL, JSON-RPC endpoint. If it crashes or falls behind, blocks keep getting produced - the node doesn't know or care.
+`glint-analytics` is a separate binary that consumes that stream. It holds all live entities in memory as Arrow columnar data with secondary indexes on annotations. Queries go through DataFusion and Flight SQL, plus a JSON-RPC endpoint. If it crashes or falls behind, blocks keep producing - the node doesn't know or care.
 
 ### Query engine
 
-`glint-analytics` uses a two-layer query architecture: SQLite for storage and indexing, DataFusion for query protocol and analytics.
+Everything lives in memory. Glint entities expire, so the live set is bounded by creation rate times MAX_BTL. For realistic workloads - intent protocols, oracle feeds, compute marketplaces - that's tens of thousands to low hundreds of thousands of active entities, not millions. Orders expire in minutes, price feeds in seconds, compute offers in hours. At 100K entities with 10 annotations each and ~500 byte payloads, you're looking at ~100MB. Even aggressive usage stays under a gigabyte.
 
-**Why two layers?** Annotation queries need both indexed lookups ("find entities where `app = 'myapp'`") and analytical queries ("count entities grouped by owner"). SQLite's B-tree indexes make filtered lookups fast. DataFusion's columnar engine handles aggregations, window functions, and complex analytics. DataFusion also gives us Flight SQL — clients like Grafana, DBeaver, and Jupyter connect out of the box.
+Entity data is stored as Arrow RecordBatches - columnar, cache-friendly. DataFusion runs analytical queries (aggregations, GROUP BY, window functions) with vectorized execution directly on this data, zero-copy from ExEx all the way through.
 
-**How it works:** Entity data from the ExEx stream is written to SQLite via `rusqlite` into normalized tables (entities, string_annotations, numeric_annotations) with indexes on annotation key/value columns. A custom DataFusion `TableProvider` translates incoming SQL queries into SQLite queries, executes them, and returns Arrow batches for DataFusion to serve over Flight SQL.
+Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orders where price > 3500") hit every row. GolemBase solved this with SQLite bitmap indexes but gave up columnar analytics in the process.
 
-**Why not SQLite alone (like GolemBase)?** GolemBase runs SQLite in-process with a custom JSON-RPC API and a bitmap index library. No process isolation (if it dies, queries silently go stale), no staleness detection, limited client ecosystem. Separating analytics into its own process with DataFusion as the protocol layer gives us crash isolation, standard SQL, Flight SQL clients, and a clean boundary between storage and query serving.
+The plan is to add secondary indexes alongside the Arrow data - hash indexes on annotation key/value pairs, a B-tree for numeric range queries, backed by roaring bitmaps. A custom DataFusion `TableProvider` checks incoming filters against these indexes. If a filter matches an indexed field, it resolves via lookup in microseconds. If not, DataFusion does a full columnar scan, which is still fast for analytics. One engine, one copy of the data.
 
-> **Note:** This architecture is planned. The current implementation uses in-memory Arrow tables with custom UDFs, which works for small datasets but doesn't scale — no indexes, full table scans, memory-bound.
+> The current implementation uses in-memory Arrow tables with custom UDFs and no indexes. It works but full-scans every query. The indexed `TableProvider` is the planned fix.
 
-Other query engines considered for glint-analytics:
+<details>
+<summary>Other query engines considered</summary>
 
-- DuckDB - C++ with Rust FFI. Mature and fast, but adds a C++ dependency to the build and ~30MB to the binary. Arrow zero-copy works well, but DataFusion gets the same thing without leaving Rust.
-- SpacetimeDB - standalone server, can't use it as a library. The abstraction layer adds milliseconds of latency where DataFusion does microseconds. BSL licensed.
-- ClickHouse via chdb-rust - `chdb-rust` has ~125 downloads/month, experimental API, 300MB shared library. ClickHouse server itself needs its own deployment.
-- SurrealDB - closest off-the-shelf option (has `LIVE SELECT`, written in Rust), but BSL license and full DB engine overhead for ~50MB of live data.
-- Materialize / ReadySet / RisingWave - streaming SQL with incremental view maintenance. All need separate server deployments. Materialize and ReadySet are BSL. RisingWave is Apache 2.0 but designed for distributed cloud-scale, overkill here.
-- Feldera (DBSP) - Rust crate for incremental view maintenance, MIT licensed. SQL layer requires a Java (Apache Calcite) build step though. Not practical.
-- Parquet files from ExEx instead of streaming - duplicates data already in MDBX, reads are always stale (batch flush lag), and file management (rotation, cleanup, reorg tombstones) becomes the ExEx's problem.
+- SQLite - good indexes, but row-oriented. Loses columnar analytics and needs Arrow-to-row conversion on every ingest. Considered as a backend behind DataFusion, but unnecessary when the live entity set fits in memory.
+- DuckDB - C++ with Rust FFI. Fast, but adds a C++ dependency and ~30MB to the binary.
+- SpacetimeDB - standalone server, can't use as a library. BSL licensed.
+- ClickHouse via chdb-rust - ~125 downloads/month, experimental API, 300MB shared library.
+- SurrealDB - BSL license and full DB engine overhead.
+- Materialize / ReadySet / RisingWave - streaming SQL, all need separate servers. Materialize and ReadySet are BSL.
+- Feldera (DBSP) - MIT licensed, but SQL layer needs a Java (Apache Calcite) build step.
+- Parquet files from ExEx - duplicates data already in MDBX, reads are always stale, file management becomes the ExEx's problem.
+</details>
 
 ## How it works
 
