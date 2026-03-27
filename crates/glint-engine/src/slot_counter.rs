@@ -34,4 +34,12 @@ mod tests {
     fn entity_count_key_matches_keccak() {
         assert_eq!(ENTITY_COUNT_KEY, keccak256(b"glintEntityCount"));
     }
+
+    #[test]
+    fn entity_count_key_matches_primitives() {
+        assert_eq!(
+            ENTITY_COUNT_KEY,
+            glint_primitives::storage::entity_count_key()
+        );
+    }
 }

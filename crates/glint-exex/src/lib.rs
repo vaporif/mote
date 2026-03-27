@@ -317,7 +317,7 @@ where
                     warn!(tx_index = tx_idx, ?e, "failed to parse log");
                 }
             }
-            global_log_index += 1;
+            global_log_index = global_log_index.saturating_add(1);
         }
     }
 

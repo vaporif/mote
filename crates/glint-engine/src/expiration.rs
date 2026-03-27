@@ -1,5 +1,5 @@
 use alloy_primitives::B256;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Not persisted - rebuilt from event logs on cold start.
 #[derive(Debug, Default)]
@@ -61,6 +61,14 @@ impl ExpirationIndex {
         for (entity_key, expires_at_block) in logs {
             self.insert(expires_at_block, entity_key);
         }
+    }
+
+    /// Remove all occurrences of the given entity keys from every block in the index.
+    pub fn remove_entities(&mut self, keys: &HashSet<B256>) {
+        self.index.retain(|_block, set| {
+            set.retain(|k| !keys.contains(k));
+            !set.is_empty()
+        });
     }
 
     pub fn iter_entries(&self) -> impl Iterator<Item = (&u64, &BTreeSet<B256>)> {

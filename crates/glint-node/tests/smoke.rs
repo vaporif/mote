@@ -41,7 +41,8 @@ fn cold_start_pipeline_tracker_to_index() {
     });
 
     let mut index = ExpirationIndex::new();
-    index.rebuild_from_logs(tracker.into_inner().into_iter());
+    let (entities, _seen) = tracker.into_inner();
+    index.rebuild_from_logs(entities.into_iter());
     assert_eq!(index.get_expired(1000), None);
     assert_eq!(
         index.get_expired(1500).map(std::collections::BTreeSet::len),

@@ -70,7 +70,8 @@ where
             "decoded glint transaction"
         );
 
-        validate_transaction(&decoded.tx).map_err(|e| glint_err(format!("validation: {e}")))?;
+        validate_transaction(&decoded.tx, &self.config)
+            .map_err(|e| glint_err(format!("validation: {e}")))?;
 
         let mut acc = CrudAccumulator {
             logs: Vec::new(),
@@ -81,7 +82,7 @@ where
             entity_counter_delta: 0,
         };
 
-        Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block, self.config.max_btl)?;
+        Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block)?;
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;
         self.process_extends(&mut acc, &decoded.tx.extends, current_block, sender)?;
@@ -127,14 +128,13 @@ where
         Ok((acc.logs, state))
     }
 
-    #[instrument(skip_all, fields(%sender, %tx_hash, current_block, max_btl), name = "glint::process_creates")]
+    #[instrument(skip_all, fields(%sender, %tx_hash, current_block), name = "glint::process_creates")]
     fn process_creates(
         acc: &mut CrudAccumulator,
         decoded: &DecodedGlintTransaction<'_>,
         sender: alloy_primitives::Address,
         tx_hash: B256,
         current_block: u64,
-        max_btl: u64,
     ) -> Result<(), BlockExecutionError> {
         for (op_index, (create, slices)) in decoded
             .tx
@@ -143,16 +143,14 @@ where
             .zip(&decoded.create_slices)
             .enumerate()
         {
-            if create.btl > max_btl {
-                return Err(glint_err("create BTL exceeds chain max_btl"));
-            }
-
             let entity_key = derive_entity_key(
                 &tx_hash,
                 &create.payload,
                 u32::try_from(op_index).expect("op count bounded by MAX_OPS_PER_TX"),
             );
-            let expires_at = current_block + create.btl;
+            let expires_at = current_block
+                .checked_add(create.btl)
+                .ok_or_else(|| glint_err("block + btl overflow"))?;
             info!(
                 %entity_key,
                 op_index,
@@ -259,10 +257,6 @@ where
                 return Err(glint_err("operator cannot change permissions"));
             }
 
-            if update.btl > self.config.max_btl {
-                return Err(glint_err("update BTL exceeds chain max_btl"));
-            }
-
             let new_extend_policy = if is_owner {
                 update.extend_policy.unwrap_or(old_meta.extend_policy)
             } else {
@@ -279,7 +273,9 @@ where
                 old_meta.has_operator
             };
 
-            let new_expires = current_block + update.btl;
+            let new_expires = current_block
+                .checked_add(update.btl)
+                .ok_or_else(|| glint_err("block + btl overflow"))?;
             let new_meta = EntityMetadata {
                 owner: old_meta.owner,
                 expires_at_block: new_expires,
@@ -440,9 +436,12 @@ where
 
             let new_expires = old_meta
                 .expires_at_block
-                .saturating_add(extend.additional_blocks);
+                .checked_add(extend.additional_blocks)
+                .ok_or_else(|| glint_err("extend expiration overflow"))?;
 
-            let max_expires = current_block + self.config.max_btl;
+            let max_expires = current_block
+                .checked_add(self.config.max_btl)
+                .ok_or_else(|| glint_err("block + max_btl overflow"))?;
             if new_expires > max_expires {
                 return Err(glint_err("extend would exceed MAX_BTL from current block"));
             }
@@ -472,7 +471,10 @@ where
                 old_meta.owner,
             ));
 
-            acc.gas_used += GLINT_GAS_PER_EXTEND + (extend.additional_blocks * GAS_PER_BTL_BLOCK);
+            acc.gas_used = acc
+                .gas_used
+                .saturating_add(GLINT_GAS_PER_EXTEND)
+                .saturating_add(extend.additional_blocks.saturating_mul(GAS_PER_BTL_BLOCK));
         }
         Ok(())
     }

@@ -495,9 +495,13 @@ fn update_slot_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core::f
         .map_err(|e| glint_err(format!("counter read: {e}")))?;
 
     let new_value = if delta > 0 {
-        current.saturating_add(U256::from(delta.cast_unsigned()))
+        current
+            .checked_add(U256::from(delta.cast_unsigned()))
+            .ok_or_else(|| glint_err("slot counter overflow"))?
     } else {
-        current.saturating_sub(U256::from((-delta).cast_unsigned()))
+        current
+            .checked_sub(U256::from((-delta).cast_unsigned()))
+            .ok_or_else(|| glint_err("slot counter underflow"))?
     };
 
     state_changes.insert(counter_slot, new_value);
@@ -522,9 +526,13 @@ fn update_entity_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core:
         .map_err(|e| glint_err(format!("entity counter read: {e}")))?;
 
     let new_value = if delta > 0 {
-        current.saturating_add(U256::from(delta.cast_unsigned()))
+        current
+            .checked_add(U256::from(delta.cast_unsigned()))
+            .ok_or_else(|| glint_err("entity counter overflow"))?
     } else {
-        current.saturating_sub(U256::from((-delta).cast_unsigned()))
+        current
+            .checked_sub(U256::from((-delta).cast_unsigned()))
+            .ok_or_else(|| glint_err("entity counter underflow"))?
     };
 
     state_changes.insert(counter_slot, new_value);
@@ -622,6 +630,28 @@ mod tests {
         account
             .storage
             .insert(U256::from_be_bytes(content_slot.0), U256::from(0xDEADu64));
+
+        // Seed counters so expiration housekeeping can decrement without underflow.
+        let slot_counter_key = crate::slot_counter::USED_SLOTS_KEY;
+        let entity_counter_key = crate::slot_counter::ENTITY_COUNT_KEY;
+        let current_slots = account
+            .storage
+            .get(&U256::from_be_bytes(slot_counter_key.0))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        account.storage.insert(
+            U256::from_be_bytes(slot_counter_key.0),
+            current_slots + U256::from(crate::slot_counter::SLOTS_PER_ENTITY),
+        );
+        let current_entities = account
+            .storage
+            .get(&U256::from_be_bytes(entity_counter_key.0))
+            .copied()
+            .unwrap_or(U256::ZERO);
+        account.storage.insert(
+            U256::from_be_bytes(entity_counter_key.0),
+            current_entities + U256::from(1),
+        );
     }
 
     #[test]

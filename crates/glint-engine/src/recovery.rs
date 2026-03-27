@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use alloy_eips::BlockHashOrNumber;
@@ -7,7 +7,7 @@ use glint_primitives::config::GlintChainConfig;
 use glint_primitives::constants::PROCESSOR_ADDRESS;
 use glint_primitives::parse::{EntityEvent, parse_log};
 use reth_provider::ReceiptProvider;
-use tracing::{debug, info};
+use tracing::{info, warn};
 
 use crate::checkpoint::ExpirationCheckpoint;
 use crate::expiration::ExpirationIndex;
@@ -15,6 +15,7 @@ use crate::expiration::ExpirationIndex;
 #[derive(Debug, Default)]
 pub struct LiveEntityTracker {
     entities: HashMap<B256, u64>,
+    all_seen: HashSet<B256>,
 }
 
 impl LiveEntityTracker {
@@ -24,13 +25,14 @@ impl LiveEntityTracker {
     }
 
     pub fn apply_event(&mut self, event: &EntityEvent) {
-        match event {
+        let key = match event {
             EntityEvent::Created {
                 entity_key,
                 expires_at,
                 ..
             } => {
                 self.entities.insert(*entity_key, *expires_at);
+                *entity_key
             }
             EntityEvent::Updated {
                 entity_key,
@@ -43,11 +45,14 @@ impl LiveEntityTracker {
                 ..
             } => {
                 self.entities.insert(*entity_key, *new_expires_at);
+                *entity_key
             }
             EntityEvent::Deleted { entity_key, .. } | EntityEvent::Expired { entity_key, .. } => {
                 self.entities.remove(entity_key);
+                *entity_key
             }
-        }
+        };
+        self.all_seen.insert(key);
     }
 
     #[must_use]
@@ -56,8 +61,13 @@ impl LiveEntityTracker {
     }
 
     #[must_use]
-    pub fn into_inner(self) -> HashMap<B256, u64> {
-        self.entities
+    pub const fn all_seen_keys(&self) -> &HashSet<B256> {
+        &self.all_seen
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> (HashMap<B256, u64>, HashSet<B256>) {
+        (self.entities, self.all_seen)
     }
 }
 
@@ -92,7 +102,7 @@ where
                 .filter_map(|log| {
                     parse_log(log)
                         .inspect_err(|e| {
-                            debug!(block_num, ?e, "skipping unparsable log during recovery");
+                            warn!(block_num, ?e, "skipping unparsable log during recovery");
                         })
                         .ok()
                         .flatten()
@@ -112,7 +122,8 @@ where
 
     let entity_count = tracker.live_entities().len();
     let mut index = ExpirationIndex::new();
-    index.rebuild_from_logs(tracker.into_inner().into_iter());
+    let (entities, _seen) = tracker.into_inner();
+    index.rebuild_from_logs(entities.into_iter());
 
     info!(entity_count, "expiration index rebuilt");
     Ok(index)
@@ -155,7 +166,7 @@ where
                 .filter_map(|log| {
                     parse_log(log)
                         .inspect_err(|e| {
-                            debug!(block_num, ?e, "skipping unparsable log during recovery");
+                            warn!(block_num, ?e, "skipping unparsable log during recovery");
                         })
                         .ok()
                         .flatten()
@@ -173,7 +184,14 @@ where
         }
     }
 
-    for (entity_key, expires_at) in tracker.into_inner() {
+    let (live_entities, all_seen) = tracker.into_inner();
+
+    // Remove stale entries for entities that were touched during the replay window.
+    // Without this, entities that were deleted/expired or had their expiration changed
+    // would leave phantom entries in the index from the checkpoint.
+    index.remove_entities(&all_seen);
+
+    for (entity_key, expires_at) in live_entities {
         index.insert(expires_at, entity_key);
     }
 

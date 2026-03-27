@@ -3,41 +3,38 @@ use std::collections::HashSet;
 use alloy_primitives::Address;
 
 use crate::annotations::{is_reserved_annotation_key, is_valid_annotation_key};
-use crate::constants::{
-    MAX_ANNOTATION_KEY_SIZE, MAX_ANNOTATION_VALUE_SIZE, MAX_ANNOTATIONS_PER_ENTITY, MAX_BTL,
-    MAX_CONTENT_TYPE_SIZE, MAX_OPS_PER_TX, MAX_PAYLOAD_SIZE,
-};
+use crate::config::GlintChainConfig;
 use crate::error::GlintError;
 use crate::transaction::{
     Create, Extend, GlintTransaction, NumericAnnotationWire, StringAnnotationWire, Update,
 };
 
-const fn validate_btl(btl: u64) -> Result<(), GlintError> {
-    if btl == 0 || btl > MAX_BTL {
+const fn validate_btl(btl: u64, max_btl: u64) -> Result<(), GlintError> {
+    if btl == 0 || btl > max_btl {
         return Err(GlintError::InvalidBtl);
     }
     Ok(())
 }
 
-const fn validate_content_type(ct: &str) -> Result<(), GlintError> {
-    if ct.is_empty() || ct.len() > MAX_CONTENT_TYPE_SIZE {
+const fn validate_content_type(ct: &str, max_size: usize) -> Result<(), GlintError> {
+    if ct.is_empty() || ct.len() > max_size {
         return Err(GlintError::InvalidContentType);
     }
     Ok(())
 }
 
-const fn validate_payload(payload: &[u8]) -> Result<(), GlintError> {
-    if payload.len() > MAX_PAYLOAD_SIZE {
+const fn validate_payload(payload: &[u8], max_size: usize) -> Result<(), GlintError> {
+    if payload.len() > max_size {
         return Err(GlintError::PayloadTooLarge);
     }
     Ok(())
 }
 
-fn validate_annotation_key(key: &str) -> Result<(), GlintError> {
+fn validate_annotation_key(key: &str, max_key_size: usize) -> Result<(), GlintError> {
     if is_reserved_annotation_key(key) {
         return Err(GlintError::ReservedAnnotationKey(key.to_owned()));
     }
-    if key.len() > MAX_ANNOTATION_KEY_SIZE {
+    if key.len() > max_key_size {
         return Err(GlintError::AnnotationKeyTooLarge(key.len()));
     }
     if !is_valid_annotation_key(key) {
@@ -49,25 +46,26 @@ fn validate_annotation_key(key: &str) -> Result<(), GlintError> {
 fn validate_annotations(
     string_annotations: &[StringAnnotationWire],
     numeric_annotations: &[NumericAnnotationWire],
+    config: &GlintChainConfig,
 ) -> Result<(), GlintError> {
     let total = string_annotations.len() + numeric_annotations.len();
-    if total > MAX_ANNOTATIONS_PER_ENTITY {
+    if total > config.max_annotations_per_entity {
         return Err(GlintError::TooManyAnnotations(total));
     }
 
     let mut seen_keys = HashSet::with_capacity(total);
 
     for ann in string_annotations {
-        validate_annotation_key(&ann.key)?;
+        validate_annotation_key(&ann.key, config.max_annotation_key_size)?;
         if !seen_keys.insert(&ann.key) {
             return Err(GlintError::DuplicateAnnotationKey(ann.key.clone()));
         }
-        if ann.value.len() > MAX_ANNOTATION_VALUE_SIZE {
+        if ann.value.len() > config.max_annotation_value_size {
             return Err(GlintError::AnnotationValueTooLarge(ann.value.len()));
         }
     }
     for ann in numeric_annotations {
-        validate_annotation_key(&ann.key)?;
+        validate_annotation_key(&ann.key, config.max_annotation_key_size)?;
         if !seen_keys.insert(&ann.key) {
             return Err(GlintError::DuplicateAnnotationKey(ann.key.clone()));
         }
@@ -82,19 +80,19 @@ fn validate_operator(operator: Option<Address>) -> Result<(), GlintError> {
     Ok(())
 }
 
-pub fn validate_create(c: &Create) -> Result<(), GlintError> {
-    validate_btl(c.btl)?;
-    validate_content_type(&c.content_type)?;
-    validate_payload(&c.payload)?;
-    validate_annotations(&c.string_annotations, &c.numeric_annotations)?;
+pub fn validate_create(c: &Create, config: &GlintChainConfig) -> Result<(), GlintError> {
+    validate_btl(c.btl, config.max_btl)?;
+    validate_content_type(&c.content_type, config.max_content_type_size)?;
+    validate_payload(&c.payload, config.max_payload_size)?;
+    validate_annotations(&c.string_annotations, &c.numeric_annotations, config)?;
     validate_operator(c.operator)
 }
 
-pub fn validate_update(u: &Update) -> Result<(), GlintError> {
-    validate_btl(u.btl)?;
-    validate_content_type(&u.content_type)?;
-    validate_payload(&u.payload)?;
-    validate_annotations(&u.string_annotations, &u.numeric_annotations)?;
+pub fn validate_update(u: &Update, config: &GlintChainConfig) -> Result<(), GlintError> {
+    validate_btl(u.btl, config.max_btl)?;
+    validate_content_type(&u.content_type, config.max_content_type_size)?;
+    validate_payload(&u.payload, config.max_payload_size)?;
+    validate_annotations(&u.string_annotations, &u.numeric_annotations, config)?;
     if let Some(Some(addr)) = u.operator
         && addr == Address::ZERO
     {
@@ -103,32 +101,39 @@ pub fn validate_update(u: &Update) -> Result<(), GlintError> {
     Ok(())
 }
 
-pub const fn validate_extend(e: &Extend) -> Result<(), GlintError> {
+pub const fn validate_extend(e: &Extend, max_btl: u64) -> Result<(), GlintError> {
     if e.additional_blocks == 0 {
         return Err(GlintError::InvalidExtend);
+    }
+    if e.additional_blocks > max_btl {
+        return Err(GlintError::ExceedsMaxBtl);
     }
     Ok(())
 }
 
-pub fn validate_transaction(tx: &GlintTransaction) -> Result<(), GlintError> {
+pub fn validate_transaction(
+    tx: &GlintTransaction,
+    config: &GlintChainConfig,
+) -> Result<(), GlintError> {
     let total = tx.total_operations();
     if total == 0 {
         return Err(GlintError::EmptyTransaction);
     }
-    if total > MAX_OPS_PER_TX {
+    if total > config.max_ops_per_tx {
         return Err(GlintError::TooManyOperations(total));
     }
     for c in &tx.creates {
-        validate_create(c)?;
+        validate_create(c, config)?;
     }
     for u in &tx.updates {
-        validate_update(u)?;
+        validate_update(u, config)?;
     }
     for e in &tx.extends {
-        validate_extend(e)?;
+        validate_extend(e, config.max_btl)?;
     }
 
-    let mut seen_keys = HashSet::with_capacity(tx.deletes.len() + tx.updates.len());
+    let mut seen_keys =
+        HashSet::with_capacity(tx.deletes.len() + tx.updates.len() + tx.extends.len());
     for key in &tx.deletes {
         if !seen_keys.insert(key) {
             return Err(GlintError::DuplicateEntityKey(*key));
@@ -137,6 +142,11 @@ pub fn validate_transaction(tx: &GlintTransaction) -> Result<(), GlintError> {
     for u in &tx.updates {
         if !seen_keys.insert(&u.entity_key) {
             return Err(GlintError::DuplicateEntityKey(u.entity_key));
+        }
+    }
+    for e in &tx.extends {
+        if !seen_keys.insert(&e.entity_key) {
+            return Err(GlintError::DuplicateEntityKey(e.entity_key));
         }
     }
 
@@ -148,6 +158,10 @@ mod tests {
     use super::*;
     use crate::transaction::*;
     use alloy_primitives::B256;
+
+    fn cfg() -> GlintChainConfig {
+        GlintChainConfig::default()
+    }
 
     fn valid_create() -> Create {
         Create {
@@ -163,42 +177,51 @@ mod tests {
 
     #[test]
     fn valid_create_passes() {
-        assert!(validate_create(&valid_create()).is_ok());
+        assert!(validate_create(&valid_create(), &cfg()).is_ok());
     }
 
     #[test]
     fn zero_btl_rejected() {
         let mut c = valid_create();
         c.btl = 0;
-        assert_eq!(validate_create(&c), Err(GlintError::InvalidBtl));
+        assert_eq!(validate_create(&c, &cfg()), Err(GlintError::InvalidBtl));
     }
 
     #[test]
     fn btl_over_max_rejected() {
         let mut c = valid_create();
         c.btl = crate::constants::MAX_BTL + 1;
-        assert_eq!(validate_create(&c), Err(GlintError::InvalidBtl));
+        assert_eq!(validate_create(&c, &cfg()), Err(GlintError::InvalidBtl));
     }
 
     #[test]
     fn empty_content_type_rejected() {
         let mut c = valid_create();
         c.content_type = String::new();
-        assert_eq!(validate_create(&c), Err(GlintError::InvalidContentType));
+        assert_eq!(
+            validate_create(&c, &cfg()),
+            Err(GlintError::InvalidContentType)
+        );
     }
 
     #[test]
     fn content_type_too_long_rejected() {
         let mut c = valid_create();
         c.content_type = "x".repeat(129);
-        assert_eq!(validate_create(&c), Err(GlintError::InvalidContentType));
+        assert_eq!(
+            validate_create(&c, &cfg()),
+            Err(GlintError::InvalidContentType)
+        );
     }
 
     #[test]
     fn payload_too_large_rejected() {
         let mut c = valid_create();
         c.payload = vec![0u8; crate::constants::MAX_PAYLOAD_SIZE + 1];
-        assert_eq!(validate_create(&c), Err(GlintError::PayloadTooLarge));
+        assert_eq!(
+            validate_create(&c, &cfg()),
+            Err(GlintError::PayloadTooLarge)
+        );
     }
 
     #[test]
@@ -209,7 +232,7 @@ mod tests {
             value: "x".into(),
         }];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::ReservedAnnotationKey(_))
         ));
     }
@@ -222,7 +245,7 @@ mod tests {
             value: "x".into(),
         }];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::InvalidAnnotationKey(_))
         ));
     }
@@ -237,7 +260,7 @@ mod tests {
             })
             .collect();
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::TooManyAnnotations(_))
         ));
     }
@@ -250,7 +273,7 @@ mod tests {
             value: "x".repeat(crate::constants::MAX_ANNOTATION_VALUE_SIZE + 1),
         }];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::AnnotationValueTooLarge(_))
         ));
     }
@@ -263,7 +286,7 @@ mod tests {
             value: "v".into(),
         }];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::AnnotationKeyTooLarge(_))
         ));
     }
@@ -282,7 +305,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::DuplicateAnnotationKey(_))
         ));
     }
@@ -299,7 +322,7 @@ mod tests {
             value: 1,
         }];
         assert!(matches!(
-            validate_create(&c),
+            validate_create(&c, &cfg()),
             Err(GlintError::DuplicateAnnotationKey(_))
         ));
     }
@@ -316,7 +339,7 @@ mod tests {
             }],
         };
         assert!(matches!(
-            validate_transaction(&tx),
+            validate_transaction(&tx, &cfg()),
             Err(GlintError::InvalidExtend)
         ));
     }
@@ -330,7 +353,7 @@ mod tests {
             extends: vec![],
         };
         assert!(matches!(
-            validate_transaction(&tx),
+            validate_transaction(&tx, &cfg()),
             Err(GlintError::TooManyOperations(_))
         ));
     }
@@ -343,7 +366,10 @@ mod tests {
             deletes: vec![],
             extends: vec![],
         };
-        assert_eq!(validate_transaction(&tx), Err(GlintError::EmptyTransaction));
+        assert_eq!(
+            validate_transaction(&tx, &cfg()),
+            Err(GlintError::EmptyTransaction)
+        );
     }
 
     #[test]
@@ -354,21 +380,24 @@ mod tests {
             deletes: vec![],
             extends: vec![],
         };
-        assert!(validate_transaction(&tx).is_ok());
+        assert!(validate_transaction(&tx, &cfg()).is_ok());
     }
 
     #[test]
     fn create_zero_operator_rejected() {
         let mut c = valid_create();
         c.operator = Some(Address::ZERO);
-        assert_eq!(validate_create(&c), Err(GlintError::InvalidOperatorAddress));
+        assert_eq!(
+            validate_create(&c, &cfg()),
+            Err(GlintError::InvalidOperatorAddress)
+        );
     }
 
     #[test]
     fn create_valid_operator_passes() {
         let mut c = valid_create();
         c.operator = Some(Address::repeat_byte(0x42));
-        assert!(validate_create(&c).is_ok());
+        assert!(validate_create(&c, &cfg()).is_ok());
     }
 
     #[test]
@@ -383,7 +412,10 @@ mod tests {
             extend_policy: None,
             operator: Some(Some(Address::ZERO)),
         };
-        assert_eq!(validate_update(&u), Err(GlintError::InvalidOperatorAddress));
+        assert_eq!(
+            validate_update(&u, &cfg()),
+            Err(GlintError::InvalidOperatorAddress)
+        );
     }
 
     #[test]
@@ -398,7 +430,7 @@ mod tests {
             extend_policy: None,
             operator: Some(Some(Address::repeat_byte(0x42))),
         };
-        assert!(validate_update(&u).is_ok());
+        assert!(validate_update(&u, &cfg()).is_ok());
     }
 
     #[test]
@@ -413,7 +445,7 @@ mod tests {
             extend_policy: None,
             operator: Some(None),
         };
-        assert!(validate_update(&u).is_ok());
+        assert!(validate_update(&u, &cfg()).is_ok());
     }
 
     #[test]
@@ -426,7 +458,7 @@ mod tests {
             extends: vec![],
         };
         assert!(matches!(
-            validate_transaction(&tx),
+            validate_transaction(&tx, &cfg()),
             Err(GlintError::DuplicateEntityKey(_))
         ));
     }
@@ -450,7 +482,7 @@ mod tests {
             extends: vec![],
         };
         assert!(matches!(
-            validate_transaction(&tx),
+            validate_transaction(&tx, &cfg()),
             Err(GlintError::DuplicateEntityKey(_))
         ));
     }

@@ -72,7 +72,10 @@ pub fn build_glint_transaction(
         deletes: deletes.iter().map(|d| d.entity_key).collect(),
         extends: extends.iter().map(Extend::from).collect(),
     };
-    glint_primitives::validation::validate_transaction(&tx)?;
+    glint_primitives::validation::validate_transaction(
+        &tx,
+        &glint_primitives::config::GlintChainConfig::default(),
+    )?;
     Ok(tx)
 }
 

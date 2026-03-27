@@ -90,7 +90,9 @@ pub fn execute_create(
 
     let metadata = EntityMetadata {
         owner: sender,
-        expires_at_block: current_block + create.btl,
+        expires_at_block: current_block
+            .checked_add(create.btl)
+            .ok_or(GlintError::ExceedsMaxBtl)?,
         extend_policy: create.extend_policy,
         has_operator: create.operator.is_some(),
     };
@@ -155,7 +157,9 @@ pub fn execute_update(
 
     let new_metadata = EntityMetadata {
         owner: old_meta.owner,
-        expires_at_block: current_block + update.btl,
+        expires_at_block: current_block
+            .checked_add(update.btl)
+            .ok_or(GlintError::ExceedsMaxBtl)?,
         extend_policy: new_extend_policy,
         has_operator: new_has_operator,
     };
@@ -238,9 +242,12 @@ pub fn execute_extend(
 
     let new_expires = old_meta
         .expires_at_block
-        .saturating_add(extend.additional_blocks);
+        .checked_add(extend.additional_blocks)
+        .ok_or(GlintError::ExceedsMaxBtl)?;
 
-    let max_expires = current_block + max_btl;
+    let max_expires = current_block
+        .checked_add(max_btl)
+        .ok_or(GlintError::ExceedsMaxBtl)?;
     if new_expires > max_expires {
         return Err(GlintError::ExceedsMaxBtl);
     }

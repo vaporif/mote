@@ -1,6 +1,7 @@
 use alloy_primitives::{Address, B256, U256, keccak256};
 
 const STORAGE_PREFIX: &[u8] = b"glintEntityMetaData";
+const CONTENT_HASH_PREFIX: &[u8] = b"glintEntityContentHash";
 const OPERATOR_PREFIX: &[u8] = b"glintOperator";
 
 /// `keccak256("glintEntityMetaData" || entity_key)`
@@ -11,12 +12,12 @@ pub fn entity_storage_key(entity_key: &B256) -> B256 {
     keccak256(&preimage)
 }
 
+/// `keccak256("glintEntityContentHash" || entity_key)`
 pub fn entity_content_hash_key(entity_key: &B256) -> B256 {
-    let meta_key = entity_storage_key(entity_key);
-    let num = U256::from_be_bytes(meta_key.0)
-        .checked_add(U256::from(1))
-        .expect("keccak256 output + 1 cannot overflow U256");
-    B256::from(num.to_be_bytes())
+    let mut preimage = Vec::with_capacity(CONTENT_HASH_PREFIX.len() + 32);
+    preimage.extend_from_slice(CONTENT_HASH_PREFIX);
+    preimage.extend_from_slice(entity_key.as_slice());
+    keccak256(&preimage)
 }
 
 #[must_use]
@@ -49,7 +50,12 @@ pub fn decode_operator_value(value: U256) -> Address {
     Address::from_slice(&bytes[..ADDRESS_LEN])
 }
 
-/// Hash raw RLP slices — don't re-encode, non-canonical RLP would break determinism.
+/// Hash raw RLP slices directly without re-encoding.
+///
+/// RLP is self-delimiting so bare concatenation would technically be
+/// unambiguous, but we prepend each field's length anyway — it's cheap
+/// and means correctness doesn't silently depend on the raw slices
+/// being perfectly canonical.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
     content_type_rlp: &[u8],
@@ -57,15 +63,23 @@ pub fn compute_content_hash_from_raw(
     numeric_annotations_rlp: &[u8],
 ) -> B256 {
     let mut preimage = Vec::with_capacity(
-        payload_rlp.len()
+        4 * 4
+            + payload_rlp.len()
             + content_type_rlp.len()
             + string_annotations_rlp.len()
             + numeric_annotations_rlp.len(),
     );
-    preimage.extend_from_slice(payload_rlp);
-    preimage.extend_from_slice(content_type_rlp);
-    preimage.extend_from_slice(string_annotations_rlp);
-    preimage.extend_from_slice(numeric_annotations_rlp);
+    // Field lengths are bounded by MAX_PAYLOAD_SIZE (128 KB), well within u32.
+    #[allow(clippy::cast_possible_truncation)]
+    for field in [
+        payload_rlp,
+        content_type_rlp,
+        string_annotations_rlp,
+        numeric_annotations_rlp,
+    ] {
+        preimage.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        preimage.extend_from_slice(field);
+    }
     keccak256(&preimage)
 }
 
@@ -108,10 +122,15 @@ mod tests {
         );
 
         let mut expected_preimage = Vec::new();
-        expected_preimage.extend_from_slice(payload_rlp);
-        expected_preimage.extend_from_slice(content_type_rlp);
-        expected_preimage.extend_from_slice(string_annotations_rlp);
-        expected_preimage.extend_from_slice(numeric_annotations_rlp);
+        for field in [
+            payload_rlp.as_slice(),
+            content_type_rlp.as_slice(),
+            string_annotations_rlp.as_slice(),
+            numeric_annotations_rlp.as_slice(),
+        ] {
+            expected_preimage.extend_from_slice(&(field.len() as u32).to_be_bytes());
+            expected_preimage.extend_from_slice(field);
+        }
         assert_eq!(hash, keccak256(&expected_preimage));
     }
 
@@ -159,13 +178,23 @@ mod tests {
     }
 
     #[test]
-    fn content_hash_slot_offset() {
+    fn content_hash_key_matches_spec_preimage() {
         let entity_key = B256::repeat_byte(0x01);
-        let meta_key = entity_storage_key(&entity_key);
-        let content_key = entity_content_hash_key(&entity_key);
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(b"glintEntityContentHash");
+        preimage.extend_from_slice(entity_key.as_slice());
+        let expected = keccak256(&preimage);
+        assert_eq!(entity_content_hash_key(&entity_key), expected);
+    }
 
-        let meta_num = U256::from_be_bytes(meta_key.0);
-        let content_num = U256::from_be_bytes(content_key.0);
-        assert_eq!(content_num, meta_num + U256::from(1));
+    #[test]
+    fn content_hash_key_differs_from_meta_and_operator() {
+        let entity_key = B256::repeat_byte(0x01);
+        let meta = entity_storage_key(&entity_key);
+        let content = entity_content_hash_key(&entity_key);
+        let op = entity_operator_key(&entity_key);
+        assert_ne!(meta, content);
+        assert_ne!(meta, op);
+        assert_ne!(content, op);
     }
 }
