@@ -1,4 +1,6 @@
-use std::{any::Any, future::Future, ops::Bound, pin::Pin, sync::Arc};
+use std::{any::Any, ops::Bound, sync::Arc};
+
+use async_trait::async_trait;
 
 use alloy_primitives::Address;
 use arrow::{
@@ -20,6 +22,8 @@ use datafusion::{
 };
 use roaring::RoaringBitmap;
 use tokio::sync::watch;
+
+use glint_primitives::exex_schema::columns;
 
 use crate::entity_store::{IndexSnapshot, Snapshot, entity_schema};
 
@@ -56,7 +60,7 @@ fn extract_owner_literal(expr: &Expr) -> Option<Address> {
 }
 
 fn is_owner_col(expr: &Expr) -> bool {
-    matches!(expr, Expr::Column(c) if c.name() == "owner")
+    matches!(expr, Expr::Column(c) if c.name() == columns::OWNER)
 }
 
 fn match_binary_expr(
@@ -316,6 +320,7 @@ impl IndexedTableProvider {
     }
 }
 
+#[async_trait]
 impl TableProvider for IndexedTableProvider {
     fn as_any(&self) -> &dyn Any {
         self
@@ -343,85 +348,71 @@ impl TableProvider for IndexedTableProvider {
             .collect())
     }
 
-    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
-        &'life0 self,
-        state: &'life1 dyn Session,
-        projection: Option<&'life2 Vec<usize>>,
-        filters: &'life3 [Expr],
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
         limit: Option<usize>,
-    ) -> Pin<Box<dyn Future<Output = DfResult<Arc<dyn ExecutionPlan>>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        'life2: 'async_trait,
-        'life3: 'async_trait,
-        Self: 'async_trait,
-    {
+    ) -> DfResult<Arc<dyn ExecutionPlan>> {
         let snapshot: Arc<Snapshot> = Arc::clone(&*self.snapshot_rx.borrow());
         let schema = entity_schema();
-        let filters = filters.to_vec();
+        let indexes = &snapshot.indexes;
 
-        Box::pin(async move {
-            let indexes = &snapshot.indexes;
-
-            // Intersect all resolved filter bitmaps; unresolved filters are skipped
-            // here because DataFusion applies them post-scan (they're marked Unsupported
-            // in supports_filters_pushdown).
-            let mut result_bitmap: Option<RoaringBitmap> = None;
-            for filter in &filters {
-                if let FilterMatch::Resolved(bm) = match_filter(filter, indexes) {
-                    result_bitmap = Some(match result_bitmap {
-                        Some(existing) => existing & &bm,
-                        None => bm,
-                    });
-                }
+        let mut result_bitmap: Option<RoaringBitmap> = None;
+        for filter in filters {
+            if let FilterMatch::Resolved(bm) = match_filter(filter, indexes) {
+                result_bitmap = Some(match result_bitmap {
+                    Some(existing) => existing & &bm,
+                    None => bm,
+                });
             }
+        }
 
-            let batch = if let Some(bm) = result_bitmap {
-                let row_indices: Vec<usize> = bm
-                    .iter()
-                    .filter_map(|slot| indexes.slot_to_row.get(&slot).copied())
-                    .collect();
+        let batch = if let Some(bm) = result_bitmap {
+            let row_indices: Vec<usize> = bm
+                .iter()
+                .filter_map(|slot| indexes.slot_to_row.get(&slot).copied())
+                .collect();
 
-                if row_indices.len() == snapshot.batch.num_rows() {
-                    (*snapshot.batch).clone()
-                } else {
-                    let indices = arrow::array::UInt32Array::from(
-                        row_indices
-                            .iter()
-                            .map(|&i| {
-                                u32::try_from(i).map_err(|_| {
-                                    datafusion::common::DataFusionError::Execution(format!(
-                                        "row index {i} exceeds u32::MAX"
-                                    ))
-                                })
-                            })
-                            .collect::<DfResult<Vec<u32>>>()?,
-                    );
-                    let columns: Vec<ArrayRef> = snapshot
-                        .batch
-                        .columns()
-                        .iter()
-                        .map(|col| arrow::compute::take(col, &indices, None))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| {
-                            datafusion::common::DataFusionError::Execution(format!(
-                                "index take failed: {e}"
-                            ))
-                        })?;
-                    RecordBatch::try_new(schema.clone(), columns).map_err(|e| {
-                        datafusion::common::DataFusionError::Execution(format!(
-                            "filtered batch construction failed: {e}"
-                        ))
-                    })?
-                }
-            } else {
+            if row_indices.len() == snapshot.batch.num_rows() {
                 (*snapshot.batch).clone()
-            };
+            } else {
+                let indices = arrow::array::UInt32Array::from(
+                    row_indices
+                        .iter()
+                        .map(|&i| {
+                            u32::try_from(i).map_err(|_| {
+                                datafusion::common::DataFusionError::Execution(format!(
+                                    "row index {i} exceeds u32::MAX"
+                                ))
+                            })
+                        })
+                        .collect::<DfResult<Vec<u32>>>()?,
+                );
+                let columns: Vec<ArrayRef> = snapshot
+                    .batch
+                    .columns()
+                    .iter()
+                    .map(|col| arrow::compute::take(col, &indices, None))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        datafusion::common::DataFusionError::Execution(format!(
+                            "index take failed: {e}"
+                        ))
+                    })?;
+                RecordBatch::try_new(schema.clone(), columns).map_err(|e| {
+                    datafusion::common::DataFusionError::Execution(format!(
+                        "filtered batch construction failed: {e}"
+                    ))
+                })?
+            }
+        } else {
+            (*snapshot.batch).clone()
+        };
 
-            let mem_table = MemTable::try_new(schema, vec![vec![batch]])?;
-            mem_table.scan(state, projection, &[], limit).await
-        })
+        let mem_table = MemTable::try_new(schema, vec![vec![batch]])?;
+        mem_table.scan(state, projection, &[], limit).await
     }
 }
 
@@ -442,12 +433,18 @@ pub fn create_session_context(
 
 /// `str_ann(string_annotations, 'key')` -- look up a string annotation by key, NULL if absent.
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct StrAnnUdf {
+pub struct StrAnnUdf {
     signature: Signature,
 }
 
+impl Default for StrAnnUdf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StrAnnUdf {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             signature: Signature::exact(
                 vec![
@@ -531,12 +528,18 @@ impl ScalarUDFImpl for StrAnnUdf {
 
 /// `num_ann(numeric_annotations, 'key')` -- look up a numeric annotation by key, NULL if absent.
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct NumAnnUdf {
+pub struct NumAnnUdf {
     signature: Signature,
 }
 
+impl Default for NumAnnUdf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NumAnnUdf {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             signature: Signature::exact(
                 vec![
@@ -1104,7 +1107,10 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = results
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
         assert_eq!(total_rows, 2);
     }
 
@@ -1119,7 +1125,10 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = results
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
         assert_eq!(total_rows, 2);
     }
 
@@ -1134,7 +1143,10 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = results
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
         assert_eq!(total_rows, 1);
     }
 
@@ -1186,7 +1198,10 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = results
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
         assert_eq!(total_rows, 1);
 
         let df = ctx
@@ -1194,7 +1209,10 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        let total_rows: usize = results
+            .iter()
+            .map(arrow::array::RecordBatch::num_rows)
+            .sum();
         assert_eq!(total_rows, 2);
     }
 

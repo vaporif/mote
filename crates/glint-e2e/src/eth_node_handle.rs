@@ -20,6 +20,8 @@ impl EthNodeHandle {
         let genesis = Self::resolve_genesis()?;
         let datadir = tempfile::tempdir()?;
         let port = Self::pick_port()?;
+        let p2p_port = Self::pick_port()?;
+        let auth_port = Self::pick_port()?;
         let rpc_url = format!("http://127.0.0.1:{port}");
 
         let log_file = datadir.path().join("node-output.log");
@@ -37,6 +39,12 @@ impl EthNodeHandle {
             .arg("--http")
             .arg("--http.port")
             .arg(port.to_string())
+            .arg("--port")
+            .arg(p2p_port.to_string())
+            .arg("--discovery.port")
+            .arg(p2p_port.to_string())
+            .arg("--authrpc.port")
+            .arg(auth_port.to_string())
             .arg("--datadir")
             .arg(datadir.path())
             .arg("--log.file.directory")
@@ -56,6 +64,7 @@ impl EthNodeHandle {
             _datadir: datadir,
         };
 
+        eprintln!("node log file: {}", handle.log_file.display());
         handle.wait_ready()?;
         Ok(handle)
     }
@@ -80,16 +89,30 @@ impl EthNodeHandle {
             .collect()
     }
 
+    /// Resolves the eth-glint binary path.
+    ///
+    /// Builds in release mode because reth v1.11.3 has a spurious `debug_assert`
+    /// in `DeferredTrieData::wait_cloned` that panics when called from a dedicated
+    /// rayon pool (fixed upstream in paradigmxyz/reth#22505, not yet in a release).
     fn resolve_binary() -> eyre::Result<PathBuf> {
         if let Ok(bin) = std::env::var("GLINT_BIN") {
             return Ok(PathBuf::from(bin));
         }
         let fallback =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/eth-glint");
-        eyre::ensure!(
-            fallback.exists(),
-            "eth-glint not found at {fallback:?} — run `cargo build --bin eth-glint` or set GLINT_BIN",
-        );
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/eth-glint");
+        if !fallback.exists() {
+            let status = Command::new("cargo")
+                .args([
+                    "build",
+                    "--release",
+                    "-p",
+                    "glint-node-eth",
+                    "--bin",
+                    "eth-glint",
+                ])
+                .status()?;
+            eyre::ensure!(status.success(), "failed to build eth-glint");
+        }
         Ok(fallback)
     }
 
@@ -111,7 +134,8 @@ impl EthNodeHandle {
 
         while std::time::Instant::now() < deadline {
             if let Some(status) = self.child.try_wait()? {
-                eyre::bail!("node exited with {status} before becoming ready");
+                let log = std::fs::read_to_string(&self.log_file).unwrap_or_default();
+                eyre::bail!("node exited with {status} before becoming ready\n{log}");
             }
 
             let body = serde_json::json!({

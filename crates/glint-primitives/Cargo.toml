@@ -14,12 +14,15 @@ workspace = true
 
 [features]
 default = []
+arrow = ["dep:arrow"]
+test-utils = ["arrow"]
 rpc = ["dep:jsonrpsee"]
 
 [dependencies]
 alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
 alloy-rlp = { workspace = true }
 alloy-sol-types = { workspace = true }
+arrow = { workspace = true, optional = true }
 eyre = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server", "macros", "client"], optional = true }
 regex = { workspace = true }

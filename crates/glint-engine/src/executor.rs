@@ -62,6 +62,7 @@ pub trait GlintResultBuilder: Send + Sync + 'static {
     fn build_crud_result(
         result: ResultAndState<Self::HaltReason>,
         tx_type: Self::TxType,
+        sender: alloy_primitives::Address,
     ) -> Self::Result;
 }
 
@@ -262,6 +263,17 @@ where
 
         info!(%sender, %tx_hash, calldata_len = calldata.len(), gas_limit, "intercepted glint tx");
 
+        // We need the sender's current nonce/balance so we can update them below.
+        let sender_info = {
+            use revm::Database as _;
+            self.inner
+                .evm_mut()
+                .db_mut()
+                .basic(sender)
+                .map_err(|e| glint_err(format!("sender account read: {e}")))?
+                .unwrap_or_default()
+        };
+
         let staged = self.execute_glint_crud(calldata, sender, tx_hash)?;
 
         let intrinsic_gas = INTRINSIC_GAS + calldata.len() as u64 * GAS_PER_DATA_BYTE;
@@ -272,6 +284,10 @@ where
                 gas_limit,
                 total_gas, "insufficient gas for glint ops, reverting"
             );
+            // Revert still burns gas and bumps the nonce.
+            let mut state = HashMap::default();
+            let gas_cost = self.compute_gas_cost(gas_limit, tx_ref);
+            insert_sender_account(&mut state, sender, &sender_info, gas_cost);
             let result = ResultAndState {
                 result: ExecutionResult::Revert {
                     gas_used: gas_limit,
@@ -279,13 +295,17 @@ where
                         b"insufficient gas for glint operations",
                     ),
                 },
-                state: HashMap::default(),
+                state,
             };
-            return Ok(RB::build_crud_result(result, tx_type));
+            return Ok(RB::build_crud_result(result, tx_type, sender));
         }
 
         let log_count = staged.logs.len();
-        let (logs, state) = self.commit_crud(staged)?;
+        let (logs, mut state) = self.commit_crud(staged)?;
+
+        // Charge gas and bump nonce — without this a second tx from the same sender can't land.
+        let gas_cost = self.compute_gas_cost(total_gas, tx_ref);
+        insert_sender_account(&mut state, sender, &sender_info, gas_cost);
 
         info!(total_gas, log_count, "glint tx executed successfully");
 
@@ -300,7 +320,7 @@ where
             state,
         };
 
-        Ok(RB::build_crud_result(result, tx_type))
+        Ok(RB::build_crud_result(result, tx_type, sender))
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
@@ -328,8 +348,11 @@ where
                 },
                 state,
             };
-            self.inner
-                .commit_transaction(RB::build_crud_result(result, Default::default()))?;
+            self.inner.commit_transaction(RB::build_crud_result(
+                result,
+                Default::default(),
+                alloy_primitives::Address::ZERO,
+            ))?;
         }
         self.inner.finish()
     }
@@ -360,6 +383,17 @@ where
             TxType = <InnerExec::Transaction as TransactionEnvelope>::TxType,
         >,
 {
+    /// `gas_used * min(max_fee, base_fee + priority_fee)`.
+    fn compute_gas_cost<Tx: Transaction>(&self, gas_used: u64, tx: &Tx) -> U256 {
+        use alloy_evm::revm::context::Block as _;
+        let base_fee: u128 = u128::from(self.inner.evm().block().basefee());
+
+        let max_fee = tx.max_fee_per_gas();
+        let priority = tx.max_priority_fee_per_gas().unwrap_or(0);
+        let effective_gas_price = max_fee.min(base_fee.saturating_add(priority));
+        U256::from(gas_used).saturating_mul(U256::from(effective_gas_price))
+    }
+
     fn read_entity_metadata(
         &mut self,
         entity_key: &B256,
@@ -398,9 +432,11 @@ where
         if let Some(last) = exp_idx.last_drained_block()
             && current_block <= last
         {
-            if current_block < last {
-                exp_idx.clear_range((current_block + 1)..=last);
-            }
+            // Reorg detected: current_block <= last_drained.
+            // Only reset the drain cursor — do NOT clear future expiration entries.
+            // Already-drained blocks have empty entries (removed by drain_block).
+            // Un-drained blocks contain valid future expirations that must be preserved,
+            // otherwise entities become immortal after a reorg.
             exp_idx.reset_last_drained();
         }
 
@@ -572,6 +608,27 @@ fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState
     };
 
     revm::state::EvmState::from_iter([(PROCESSOR_ADDRESS, account)])
+}
+
+/// Bump nonce and subtract gas from the sender so subsequent txs see the right state.
+fn insert_sender_account(
+    state: &mut revm::state::EvmState,
+    sender: alloy_primitives::Address,
+    original_info: &AccountInfo,
+    gas_cost: U256,
+) {
+    let mut info = original_info.clone();
+    info.nonce = info.nonce.saturating_add(1);
+    info.balance = info.balance.saturating_sub(gas_cost);
+
+    let account = Account {
+        info,
+        original_info: Box::new(original_info.clone()),
+        transaction_id: 0,
+        storage: revm::state::EvmStorage::default(),
+        status: AccountStatus::Touched,
+    };
+    state.insert(sender, account);
 }
 
 fn glint_err(msg: impl Into<Box<dyn core::error::Error + Send + Sync>>) -> BlockExecutionError {
@@ -835,6 +892,100 @@ mod tests {
             value,
             U256::ZERO,
             "expired entity metadata slot should be zeroed in persisted state"
+        );
+    }
+
+    #[test]
+    fn glint_tx_increments_sender_nonce_and_deducts_gas() {
+        use alloy_consensus::{
+            EthereumTxEnvelope, EthereumTypedTransaction, TxEip1559, transaction::Recovered,
+        };
+        use glint_primitives::transaction::{Create, GlintTransaction as GlintTx};
+        use revm::Database as _;
+
+        let config = test_evm_config(ExpirationIndex::new());
+        let sender = Address::repeat_byte(0x11);
+        let initial_balance = U256::from(10u64).pow(U256::from(18)); // 1 ETH
+
+        let mut db = CacheDB::new(revm::database::EmptyDB::default());
+        db.cache
+            .accounts
+            .entry(sender)
+            .or_insert_with(|| revm::database::DbAccount {
+                info: AccountInfo {
+                    nonce: 0,
+                    balance: initial_balance,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let base_fee = 1_000_000_000u64; // 1 gwei
+        let mut state = State::builder()
+            .with_database(db)
+            .with_bundle_update()
+            .build();
+
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            basefee: base_fee,
+            ..revm::context::BlockEnv::default()
+        };
+        let env = EvmEnv {
+            block_env,
+            cfg_env: revm::context::CfgEnv::default(),
+        };
+        let evm = EthEvmBuilder::new(&mut state, env).build();
+        let ctx = EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: alloy_primitives::Bytes::new(),
+            tx_count_hint: None,
+        };
+
+        let mut executor = config.create_executor(evm, ctx);
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Build a glint create tx
+        let mut calldata = Vec::new();
+        let glint_tx = GlintTx::new().create(Create::new("text/plain", b"test", 100));
+        alloy_rlp::Encodable::encode(&glint_tx, &mut calldata);
+
+        let max_fee = u128::from(base_fee) * 2;
+        let max_priority = 1_000_000_000u128; // 1 gwei
+        let gas_limit = 1_000_000u64;
+
+        let inner = TxEip1559 {
+            chain_id: 1,
+            nonce: 0,
+            gas_limit,
+            max_fee_per_gas: max_fee,
+            max_priority_fee_per_gas: max_priority,
+            to: alloy_primitives::TxKind::Call(PROCESSOR_ADDRESS),
+            input: calldata.into(),
+            ..Default::default()
+        };
+        let typed = EthereumTypedTransaction::Eip1559(inner);
+        let sig = alloy_primitives::Signature::new(U256::ZERO, U256::ZERO, false);
+        let signed: EthereumTxEnvelope<_> =
+            EthereumTxEnvelope::new_unchecked(typed, sig, B256::repeat_byte(0xAA));
+        let recovered = Recovered::new_unchecked(signed, sender);
+
+        executor.execute_transaction(&recovered).unwrap();
+        let (_evm, _result) = executor.finish().unwrap();
+
+        // Verify sender nonce was incremented and balance decreased
+        let sender_info = state
+            .basic(sender)
+            .expect("db read should succeed")
+            .expect("sender should exist");
+        assert_eq!(sender_info.nonce, 1, "sender nonce must be incremented");
+        assert!(
+            sender_info.balance < initial_balance,
+            "sender balance must decrease (was {initial_balance}, now {})",
+            sender_info.balance,
         );
     }
 

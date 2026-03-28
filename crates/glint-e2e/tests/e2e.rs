@@ -1,8 +1,8 @@
 use alloy_network::EthereumWallet;
 use alloy_signer_local::PrivateKeySigner;
 
-use glint_e2e::analytics_handle::AnalyticsHandle;
 use glint_e2e::eth_node_handle::EthNodeHandle;
+use glint_e2e::sidecar_handle::SidecarHandle;
 use glint_primitives::entity::derive_entity_key;
 use glint_primitives::transaction::{Create, GlintTransaction};
 use glint_sdk::Glint;
@@ -65,20 +65,20 @@ async fn test_create_entity() -> eyre::Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires built eth-glint + glint-analytics binaries; run with `just e2e`"]
+#[ignore = "requires built eth-glint + glint-db-sidecar binaries; run with `just e2e`"]
 async fn test_flight_sql_query() -> eyre::Result<()> {
     let node = tokio::task::spawn_blocking(EthNodeHandle::spawn)
         .await
         .expect("spawn_blocking panicked")?;
 
     let exex_socket = node.exex_socket().to_path_buf();
-    let analytics = tokio::task::spawn_blocking(move || AnalyticsHandle::spawn(&exex_socket))
+    let sidecar = tokio::task::spawn_blocking(move || SidecarHandle::spawn(&exex_socket))
         .await
         .expect("spawn_blocking panicked")?;
 
     let client = Glint::builder(node.rpc_url())
         .wallet(dev_wallet())
-        .flight_url(&analytics.flight_url())
+        .flight_url(&sidecar.flight_url())
         .build()
         .await?;
 
@@ -88,7 +88,7 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     let receipt = client.send(&tx).await?;
     assert!(receipt.status(), "glint tx should succeed");
 
-    wait_for_analytics_ready(&analytics).await?;
+    wait_for_sidecar_ready(&sidecar).await?;
 
     let batches = client
         .query("SELECT entity_key, content_type FROM entities")
@@ -106,8 +106,73 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     Ok(())
 }
 
-async fn wait_for_analytics_ready(analytics: &AnalyticsHandle) -> eyre::Result<()> {
-    let ready_url = format!("{}/ready", analytics.health_url());
+#[tokio::test]
+#[ignore = "requires built eth-glint + glint-db-sidecar binaries; run with `just e2e`"]
+async fn test_historical_query() -> eyre::Result<()> {
+    let node = tokio::task::spawn_blocking(EthNodeHandle::spawn)
+        .await
+        .expect("spawn_blocking panicked")?;
+
+    let exex_socket = node.exex_socket().to_path_buf();
+    let sidecar = tokio::task::spawn_blocking(move || SidecarHandle::spawn(&exex_socket))
+        .await
+        .expect("spawn_blocking panicked")?;
+
+    let client = Glint::builder(node.rpc_url())
+        .wallet(dev_wallet())
+        .flight_url(&sidecar.flight_url())
+        .build()
+        .await?;
+
+    let tx1 = GlintTransaction::new().create(
+        Create::new("text/plain", b"entity-one", 200).string_annotation("app", "hist-test"),
+    );
+    let receipt1 = client.send(&tx1).await?;
+    assert!(receipt1.status());
+    let block1 = receipt1.block_number.expect("should have block number");
+
+    let tx2 = GlintTransaction::new().create(
+        Create::new("text/plain", b"entity-two", 200).string_annotation("app", "hist-test"),
+    );
+    let receipt2 = client.send(&tx2).await?;
+    assert!(receipt2.status());
+    let block2 = receipt2.block_number.expect("should have block number");
+
+    wait_for_sidecar_ready(&sidecar).await?;
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let sql = format!(
+        "SELECT block_number, event_type FROM entity_events WHERE block_number BETWEEN {block1} AND {block2}"
+    );
+    let batches = client.query(&sql).await?;
+    let total: usize = batches
+        .iter()
+        .map(arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert!(
+        total >= 2,
+        "expected at least 2 historical events, got {total}"
+    );
+
+    let sql = format!(
+        "SELECT block_number FROM entity_events WHERE block_number BETWEEN {block1} AND {block1}"
+    );
+    let batches = client.query(&sql).await?;
+    let total: usize = batches
+        .iter()
+        .map(arrow::array::RecordBatch::num_rows)
+        .sum();
+    assert!(
+        total >= 1,
+        "expected at least 1 event in block {block1}, got {total}"
+    );
+
+    Ok(())
+}
+
+async fn wait_for_sidecar_ready(sidecar: &SidecarHandle) -> eyre::Result<()> {
+    let ready_url = format!("{}/ready", sidecar.health_url());
     tokio::task::spawn_blocking(move || {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let client = reqwest::blocking::Client::new();
@@ -122,7 +187,7 @@ async fn wait_for_analytics_ready(analytics: &AnalyticsHandle) -> eyre::Result<(
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        eyre::bail!("analytics /ready not 200 within 60s")
+        eyre::bail!("sidecar /ready not 200 within 60s")
     })
     .await
     .expect("spawn_blocking panicked")

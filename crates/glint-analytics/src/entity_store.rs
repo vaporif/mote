@@ -7,8 +7,7 @@ use alloy_primitives::{Address, B256, Bytes};
 use arrow::{
     array::{
         ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-        UInt64Builder,
-        builder::{MapBuilder, MapFieldNames},
+        UInt64Builder, builder::MapBuilder,
     },
     datatypes::{DataType, Field, Fields, Schema, SchemaRef},
     record_batch::RecordBatch,
@@ -324,13 +323,7 @@ fn remove_from_btree<K: Ord + Clone>(map: &mut BTreeMap<K, RoaringBitmap>, key: 
     }
 }
 
-fn map_field_names() -> MapFieldNames {
-    MapFieldNames {
-        entry: "entries".to_owned(),
-        key: "key".to_owned(),
-        value: "value".to_owned(),
-    }
-}
+use glint_primitives::exex_schema::{columns, map_field_names};
 
 fn build_entity_schema() -> Schema {
     let str_ann_entry = Field::new(
@@ -351,25 +344,25 @@ fn build_entity_schema() -> Schema {
     );
 
     Schema::new(vec![
-        Field::new("entity_key", DataType::FixedSizeBinary(32), false),
-        Field::new("owner", DataType::FixedSizeBinary(20), false),
-        Field::new("expires_at_block", DataType::UInt64, false),
-        Field::new("content_type", DataType::Utf8, false),
-        Field::new("payload", DataType::Binary, false),
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::OWNER, DataType::FixedSizeBinary(20), false),
+        Field::new(columns::EXPIRES_AT_BLOCK, DataType::UInt64, false),
+        Field::new(columns::CONTENT_TYPE, DataType::Utf8, false),
+        Field::new(columns::PAYLOAD, DataType::Binary, false),
         Field::new(
-            "string_annotations",
+            columns::STRING_ANNOTATIONS,
             DataType::Map(Arc::new(str_ann_entry), false),
             true,
         ),
         Field::new(
-            "numeric_annotations",
+            columns::NUMERIC_ANNOTATIONS,
             DataType::Map(Arc::new(num_ann_entry), false),
             true,
         ),
         Field::new("created_at_block", DataType::UInt64, false),
-        Field::new("tx_hash", DataType::FixedSizeBinary(32), false),
-        Field::new("extend_policy", DataType::UInt8, false),
-        Field::new("operator", DataType::FixedSizeBinary(20), true),
+        Field::new(columns::TX_HASH, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::EXTEND_POLICY, DataType::UInt8, false),
+        Field::new(columns::OPERATOR, DataType::FixedSizeBinary(20), true),
     ])
 }
 
@@ -446,22 +439,42 @@ mod tests {
         let batch = &*snap.batch;
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 11);
-        assert!(batch.schema().field_with_name("entity_key").is_ok());
-        assert!(batch.schema().field_with_name("owner").is_ok());
-        assert!(batch.schema().field_with_name("expires_at_block").is_ok());
-        assert!(batch.schema().field_with_name("content_type").is_ok());
-        assert!(batch.schema().field_with_name("payload").is_ok());
-        assert!(batch.schema().field_with_name("string_annotations").is_ok());
+        assert!(batch.schema().field_with_name(columns::ENTITY_KEY).is_ok());
+        assert!(batch.schema().field_with_name(columns::OWNER).is_ok());
         assert!(
             batch
                 .schema()
-                .field_with_name("numeric_annotations")
+                .field_with_name(columns::EXPIRES_AT_BLOCK)
+                .is_ok()
+        );
+        assert!(
+            batch
+                .schema()
+                .field_with_name(columns::CONTENT_TYPE)
+                .is_ok()
+        );
+        assert!(batch.schema().field_with_name(columns::PAYLOAD).is_ok());
+        assert!(
+            batch
+                .schema()
+                .field_with_name(columns::STRING_ANNOTATIONS)
+                .is_ok()
+        );
+        assert!(
+            batch
+                .schema()
+                .field_with_name(columns::NUMERIC_ANNOTATIONS)
                 .is_ok()
         );
         assert!(batch.schema().field_with_name("created_at_block").is_ok());
-        assert!(batch.schema().field_with_name("tx_hash").is_ok());
-        assert!(batch.schema().field_with_name("extend_policy").is_ok());
-        assert!(batch.schema().field_with_name("operator").is_ok());
+        assert!(batch.schema().field_with_name(columns::TX_HASH).is_ok());
+        assert!(
+            batch
+                .schema()
+                .field_with_name(columns::EXTEND_POLICY)
+                .is_ok()
+        );
+        assert!(batch.schema().field_with_name(columns::OPERATOR).is_ok());
     }
 
     #[test]
@@ -627,7 +640,7 @@ mod tests {
 
         assert_eq!(snap.batch.num_rows(), 2);
 
-        for slot in snap.indexes.all_live_slots.iter() {
+        for slot in &snap.indexes.all_live_slots {
             let row_idx = snap.indexes.slot_to_row[&slot];
             assert!(row_idx < snap.batch.num_rows());
         }
@@ -652,7 +665,7 @@ mod tests {
         assert!(snap.indexes.slot_to_row.contains_key(&2));
 
         let mut row_indices: Vec<usize> = snap.indexes.slot_to_row.values().copied().collect();
-        row_indices.sort();
+        row_indices.sort_unstable();
         assert_eq!(row_indices, vec![0, 1]);
     }
 }

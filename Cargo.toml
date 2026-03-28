@@ -38,6 +38,9 @@ glint-exex = { path = "crates/glint-exex" }
 glint-node = { path = "crates/glint-node" }
 glint-primitives = { path = "crates/glint-primitives" }
 glint-sdk = { path = "crates/glint-sdk" }
+glint-analytics = { path = "crates/glint-analytics" }
+glint-historical = { path = "crates/glint-historical" }
+rusqlite = { version = "0.35", features = ["bundled"] }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
 alloy-rlp = { version = "0.3", features = ["derive"] }
@@ -63,6 +66,7 @@ reth-node-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-trie = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 
 # op-reth crates from the optimism monorepo (pinned to reth v1.11.3)
@@ -91,6 +95,7 @@ borsh = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+async-trait = "0.1"
 datafusion = "53"
 roaring = "0.10"
 arrow-flight = { version = "58", features = ["flight-sql-experimental"] }

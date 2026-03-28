@@ -14,8 +14,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::arrow::{build_watermark_batch, entity_events_schema};
+use crate::arrow::build_watermark_batch;
 use crate::ring_buffer::RingBufferStats;
+use glint_primitives::exex_schema::entity_events_schema;
 
 const SUBSCRIBE_MSG_SIZE: usize = 9; // 1 byte msg_type + 8 bytes resume_block
 
@@ -334,8 +335,8 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // Drain any in-flight batches from the main loop that arrived before the
-    // snapshot was taken; they're now stale and the snapshot supersedes them.
+    // TODO: this drain can discard batches for blocks above the snapshot tip that
+    // arrived between the snapshot request and reply. Buffer those instead.
     while batch_rx.try_recv().is_ok() {}
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);

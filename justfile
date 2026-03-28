@@ -46,9 +46,11 @@ run-eth *args:
 run-op *args:
     cargo run -p glint-node-op -- node --chain etc/genesis.json {{args}}
 
-run-analytics *args:
-    cargo run -p glint-analytics -- {{args}}
+run-sidecar *args:
+    cargo run -p glint-db-sidecar -- {{args}}
 
+# release build: reth v1.11.3 has a spurious debug_assert in deferred_trie
+# (fixed upstream in paradigmxyz/reth#22505, not yet in a release tag)
 e2e:
-    cargo build --bin eth-glint --bin glint-analytics
+    cargo build --release --bin eth-glint --bin glint-db-sidecar
     cargo nextest run -p glint-e2e --run-ignored all
