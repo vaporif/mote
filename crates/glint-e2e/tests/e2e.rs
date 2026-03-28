@@ -124,7 +124,6 @@ async fn test_historical_query() -> eyre::Result<()> {
         .build()
         .await?;
 
-    // Create two entities in separate transactions (separate blocks due to 1s block time)
     let tx1 = GlintTransaction::new().create(
         Create::new("text/plain", b"entity-one", 200).string_annotation("app", "hist-test"),
     );
@@ -141,10 +140,8 @@ async fn test_historical_query() -> eyre::Result<()> {
 
     wait_for_sidecar_ready(&sidecar).await?;
 
-    // Wait a bit for the sidecar to process the blocks
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    // Query historical: full range should return both entities
     let sql = format!(
         "SELECT block_number, event_type FROM entity_events WHERE block_number BETWEEN {block1} AND {block2}"
     );
@@ -158,7 +155,6 @@ async fn test_historical_query() -> eyre::Result<()> {
         "expected at least 2 historical events, got {total}"
     );
 
-    // Query historical: only first block
     let sql = format!(
         "SELECT block_number FROM entity_events WHERE block_number BETWEEN {block1} AND {block1}"
     );
