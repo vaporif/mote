@@ -1,7 +1,7 @@
-use alloy_primitives::{Address, B256, Log, U256};
+use alloy_primitives::{Address, Log, B256, U256};
 use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
-    entity::{EntityMetadata, derive_entity_key},
+    entity::{derive_entity_key, EntityMetadata},
     events::{
         EntityCreated, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdated,
         LogAnnotations,
@@ -11,13 +11,13 @@ use glint_primitives::{
         entity_content_hash_key, entity_operator_key, entity_storage_key,
     },
 };
-use reth_evm::{Evm, block::BlockExecutionError};
+use reth_evm::{block::BlockExecutionError, Evm};
 use revm::DatabaseCommit;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument};
 
-use super::decode::{DecodedGlintTransaction, decode_with_raw_slices};
-use super::{GlintBlockExecutor, GlintResultBuilder, glint_err};
+use super::decode::{decode_with_raw_slices, DecodedGlintTransaction};
+use super::{glint_err, GlintBlockExecutor, GlintResultBuilder};
 
 use super::{
     GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, GLINT_GAS_PER_CREATE, GLINT_GAS_PER_DELETE,
@@ -213,14 +213,18 @@ where
                 operator_for_log,
             ));
 
-            acc.gas_used += GLINT_GAS_PER_CREATE
-                + create.payload.len() as u64 * GAS_PER_DATA_BYTE
-                + create.btl * GAS_PER_BTL_BLOCK
-                + annotation_gas_bytes(&create.string_annotations, &create.numeric_annotations)
-                    * GAS_PER_DATA_BYTE;
+            acc.gas_used = acc
+                .gas_used
+                .saturating_add(GLINT_GAS_PER_CREATE)
+                .saturating_add((create.payload.len() as u64).saturating_mul(GAS_PER_DATA_BYTE))
+                .saturating_add(create.btl.saturating_mul(GAS_PER_BTL_BLOCK))
+                .saturating_add(
+                    annotation_gas_bytes(&create.string_annotations, &create.numeric_annotations)
+                        .saturating_mul(GAS_PER_DATA_BYTE),
+                );
 
             if has_operator {
-                acc.gas_used += super::GAS_OPERATOR_WRITE;
+                acc.gas_used = acc.gas_used.saturating_add(super::GAS_OPERATOR_WRITE);
             }
 
             let slots = if has_operator {
@@ -246,7 +250,7 @@ where
             let old_meta = self.read_entity_metadata(&update.entity_key)?;
 
             let operator = if old_meta.has_operator {
-                acc.gas_used += super::GAS_SLOAD;
+                acc.gas_used = acc.gas_used.saturating_add(super::GAS_SLOAD);
                 read_operator_slot(self.inner.evm_mut(), &update.entity_key)?
             } else {
                 None
@@ -314,7 +318,7 @@ where
                         let op_slot = entity_operator_key(&update.entity_key);
                         acc.state_changes
                             .insert(op_slot, encode_operator_value(addr));
-                        acc.gas_used += super::GAS_OPERATOR_WRITE;
+                        acc.gas_used = acc.gas_used.saturating_add(super::GAS_OPERATOR_WRITE);
 
                         if !old_meta.has_operator {
                             acc.slot_counter_delta += 1;
@@ -352,11 +356,15 @@ where
                 operator_for_log,
             ));
 
-            acc.gas_used += GLINT_GAS_PER_UPDATE
-                + update.payload.len() as u64 * GAS_PER_DATA_BYTE
-                + update.btl * GAS_PER_BTL_BLOCK
-                + annotation_gas_bytes(&update.string_annotations, &update.numeric_annotations)
-                    * GAS_PER_DATA_BYTE;
+            acc.gas_used = acc
+                .gas_used
+                .saturating_add(GLINT_GAS_PER_UPDATE)
+                .saturating_add((update.payload.len() as u64).saturating_mul(GAS_PER_DATA_BYTE))
+                .saturating_add(update.btl.saturating_mul(GAS_PER_BTL_BLOCK))
+                .saturating_add(
+                    annotation_gas_bytes(&update.string_annotations, &update.numeric_annotations)
+                        .saturating_mul(GAS_PER_DATA_BYTE),
+                );
         }
         Ok(())
     }
@@ -372,7 +380,7 @@ where
             let meta = self.read_entity_metadata(entity_key)?;
 
             let operator = if meta.has_operator {
-                acc.gas_used += super::GAS_SLOAD;
+                acc.gas_used = acc.gas_used.saturating_add(super::GAS_SLOAD);
                 read_operator_slot(self.inner.evm_mut(), entity_key)?
             } else {
                 None
@@ -402,7 +410,7 @@ where
                 sender,
             ));
 
-            acc.gas_used += GLINT_GAS_PER_DELETE;
+            acc.gas_used = acc.gas_used.saturating_add(GLINT_GAS_PER_DELETE);
 
             acc.slot_counter_delta -=
                 crate::slot_counter::slots_for_entity(meta.has_operator).cast_signed();
@@ -428,7 +436,7 @@ where
                 && sender != old_meta.owner
             {
                 if old_meta.has_operator {
-                    acc.gas_used += super::GAS_SLOAD;
+                    acc.gas_used = acc.gas_used.saturating_add(super::GAS_SLOAD);
                     let operator =
                         read_operator_slot(self.inner.evm_mut(), &extend.entity_key)?;
                     if operator.is_none_or(|op| op != sender) {
@@ -498,10 +506,10 @@ where
                 return Err(glint_err("only the owner can change entity permissions"));
             }
 
-            acc.gas_used += super::GLINT_GAS_PER_CHANGE_OWNER;
+            acc.gas_used = acc.gas_used.saturating_add(super::GLINT_GAS_PER_CHANGE_OWNER);
 
             let old_operator = if old_meta.has_operator {
-                acc.gas_used += super::GAS_SLOAD;
+                acc.gas_used = acc.gas_used.saturating_add(super::GAS_SLOAD);
                 read_operator_slot(self.inner.evm_mut(), &co.entity_key)?
                     .unwrap_or(Address::ZERO)
             } else {
@@ -540,7 +548,7 @@ where
                     let op_slot = entity_operator_key(&co.entity_key);
                     acc.state_changes
                         .insert(op_slot, encode_operator_value(addr));
-                    acc.gas_used += super::GAS_OPERATOR_WRITE;
+                    acc.gas_used = acc.gas_used.saturating_add(super::GAS_OPERATOR_WRITE);
                     if !old_meta.has_operator {
                         acc.slot_counter_delta += 1;
                     }
@@ -621,5 +629,48 @@ fn unzip_annotations(
         string_values,
         numeric_keys,
         numeric_values,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gas_accumulation_saturates_instead_of_overflowing() {
+        let mut acc = CrudAccumulator {
+            logs: Vec::new(),
+            gas_used: u64::MAX - 100,
+            exp_changes: Vec::new(),
+            state_changes: HashMap::new(),
+            slot_counter_delta: 0,
+            entity_counter_delta: 0,
+        };
+
+        // Simulate adding gas that would overflow with plain +=
+        acc.gas_used = acc
+            .gas_used
+            .saturating_add(GLINT_GAS_PER_CREATE)
+            .saturating_add((1000u64).saturating_mul(GAS_PER_DATA_BYTE))
+            .saturating_add(302_400u64.saturating_mul(GAS_PER_BTL_BLOCK));
+
+        assert_eq!(acc.gas_used, u64::MAX, "gas should saturate at u64::MAX");
+    }
+
+    #[test]
+    fn annotation_gas_bytes_computes_correctly() {
+        use glint_primitives::transaction::{NumericAnnotation, StringAnnotation};
+
+        let str_anns = vec![StringAnnotation {
+            key: "key1".into(),
+            value: "val1".into(),
+        }];
+        let num_anns = vec![NumericAnnotation {
+            key: "nk".into(),
+            value: 42,
+        }];
+
+        // "key1" (4) + "val1" (4) + "nk" (2) + 8 = 18
+        assert_eq!(annotation_gas_bytes(&str_anns, &num_anns), 18);
     }
 }

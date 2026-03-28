@@ -86,10 +86,12 @@ impl EthNodeHandle {
         }
         let fallback =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/eth-glint");
-        eyre::ensure!(
-            fallback.exists(),
-            "eth-glint not found at {fallback:?} — run `cargo build --bin eth-glint` or set GLINT_BIN",
-        );
+        if !fallback.exists() {
+            let status = Command::new("cargo")
+                .args(["build", "--bin", "eth-glint"])
+                .status()?;
+            eyre::ensure!(status.success(), "failed to build eth-glint");
+        }
         Ok(fallback)
     }
 

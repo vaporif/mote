@@ -62,6 +62,7 @@ pub trait GlintResultBuilder: Send + Sync + 'static {
     fn build_crud_result(
         result: ResultAndState<Self::HaltReason>,
         tx_type: Self::TxType,
+        sender: alloy_primitives::Address,
     ) -> Self::Result;
 }
 
@@ -281,7 +282,7 @@ where
                 },
                 state: HashMap::default(),
             };
-            return Ok(RB::build_crud_result(result, tx_type));
+            return Ok(RB::build_crud_result(result, tx_type, sender));
         }
 
         let log_count = staged.logs.len();
@@ -300,7 +301,7 @@ where
             state,
         };
 
-        Ok(RB::build_crud_result(result, tx_type))
+        Ok(RB::build_crud_result(result, tx_type, sender))
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> Result<u64, BlockExecutionError> {
@@ -329,7 +330,7 @@ where
                 state,
             };
             self.inner
-                .commit_transaction(RB::build_crud_result(result, Default::default()))?;
+                .commit_transaction(RB::build_crud_result(result, Default::default(), alloy_primitives::Address::ZERO))?;
         }
         self.inner.finish()
     }
@@ -398,9 +399,11 @@ where
         if let Some(last) = exp_idx.last_drained_block()
             && current_block <= last
         {
-            if current_block < last {
-                exp_idx.clear_range((current_block + 1)..=last);
-            }
+            // Reorg detected: current_block <= last_drained.
+            // Only reset the drain cursor — do NOT clear future expiration entries.
+            // Already-drained blocks have empty entries (removed by drain_block).
+            // Un-drained blocks contain valid future expirations that must be preserved,
+            // otherwise entities become immortal after a reorg.
             exp_idx.reset_last_drained();
         }
 

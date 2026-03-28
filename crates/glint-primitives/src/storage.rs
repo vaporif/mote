@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{keccak256, Address, B256, U256};
 
 const STORAGE_PREFIX: &[u8] = b"glintEntityMetaData";
 const CONTENT_HASH_PREFIX: &[u8] = b"glintEntityContentHash";
@@ -50,12 +50,16 @@ pub fn decode_operator_value(value: U256) -> Address {
     Address::from_slice(&bytes[..ADDRESS_LEN])
 }
 
-/// Hash raw RLP slices directly without re-encoding.
+/// Compute the on-chain content hash from raw RLP field slices.
 ///
-/// RLP is self-delimiting so bare concatenation would technically be
-/// unambiguous, but we prepend each field's length anyway — it's cheap
-/// and means correctness doesn't silently depend on the raw slices
-/// being perfectly canonical.
+/// Formula: `keccak256(len(f1) || f1 || len(f2) || f2 || len(f3) || f3 || len(f4) || f4)`
+///
+/// where `len(f)` is the field's byte length as a big-endian `u32`, and
+/// `f1..f4` are the raw RLP encodings of `payload`, `content_type`,
+/// `string_annotations`, and `numeric_annotations` respectively.
+///
+/// Length-prefixing each field provides domain separation — the hash is
+/// unambiguous even if the raw slices are not perfectly canonical RLP.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
     content_type_rlp: &[u8],

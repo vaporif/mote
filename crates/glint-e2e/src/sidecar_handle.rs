@@ -59,10 +59,12 @@ impl SidecarHandle {
         }
         let fallback =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/glint-db-sidecar");
-        eyre::ensure!(
-            fallback.exists(),
-            "glint-db-sidecar not found at {fallback:?} — run `cargo build --bin glint-db-sidecar` or set GLINT_SIDECAR_BIN",
-        );
+        if !fallback.exists() {
+            let status = Command::new("cargo")
+                .args(["build", "--bin", "glint-db-sidecar"])
+                .status()?;
+            eyre::ensure!(status.success(), "failed to build glint-db-sidecar");
+        }
         Ok(fallback)
     }
 

@@ -1,15 +1,15 @@
 use alloy_evm::{
-    Database, EvmFactory,
     block::{BlockExecutorFactory, BlockExecutorFor},
     eth::{
-        EthBlockExecutionCtx, EthBlockExecutor, EthBlockExecutorFactory, EthTxResult,
-        receipt_builder::ReceiptBuilder, spec::EthExecutorSpec,
+        receipt_builder::ReceiptBuilder, spec::EthExecutorSpec, EthBlockExecutionCtx,
+        EthBlockExecutor, EthBlockExecutorFactory, EthTxResult,
     },
     precompiles::PrecompilesMap,
+    Database, EvmFactory,
 };
 use alloy_primitives::Log;
 use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
-use revm::{Inspector, context::result::ResultAndState, database::State};
+use revm::{context::result::ResultAndState, database::State, Inspector};
 use std::marker::PhantomData;
 
 use super::{GlintBlockExecutor, GlintBlockExecutorFactory, GlintResultBuilder, GlintTransaction};
@@ -23,7 +23,11 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
     type TxType = T;
     type Result = EthTxResult<H, T>;
 
-    fn build_crud_result(result: ResultAndState<H>, tx_type: T) -> EthTxResult<H, T> {
+    fn build_crud_result(
+        result: ResultAndState<H>,
+        tx_type: T,
+        _sender: alloy_primitives::Address,
+    ) -> EthTxResult<H, T> {
         EthTxResult {
             result,
             blob_gas_used: 0,
