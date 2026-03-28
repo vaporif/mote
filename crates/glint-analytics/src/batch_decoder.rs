@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
     decode_numeric_map, decode_string_map,
 };
 
@@ -127,11 +127,20 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
                     Some(addr_from_fsb(operator_col, i))
                 };
 
-                if let Some(row) = store.get_mut(&entity_key) {
-                    row.owner = new_owner;
-                    row.extend_policy = extend_policy;
-                    row.operator = operator;
-                    row.tx_hash = tx_hash;
+                if let Some(existing) = store.get(&entity_key).cloned() {
+                    store.insert(EntityRow {
+                        entity_key,
+                        owner: new_owner,
+                        extend_policy,
+                        operator,
+                        tx_hash,
+                        expires_at_block: existing.expires_at_block,
+                        content_type: existing.content_type,
+                        payload: existing.payload,
+                        string_annotations: existing.string_annotations,
+                        numeric_annotations: existing.numeric_annotations,
+                        created_at_block: existing.created_at_block,
+                    });
                 } else {
                     warn!(?entity_key, "PermissionsChanged for missing entity");
                 }
@@ -194,9 +203,9 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use glint_primitives::exex_types::BatchOp;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     use super::*;
     use crate::entity_store::EntityStore;

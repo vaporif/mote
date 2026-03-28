@@ -364,9 +364,6 @@ impl TableProvider for IndexedTableProvider {
         Box::pin(async move {
             let indexes = &snapshot.indexes;
 
-            // Intersect all resolved filter bitmaps; unresolved filters are skipped
-            // here because DataFusion applies them post-scan (they're marked Unsupported
-            // in supports_filters_pushdown).
             let mut result_bitmap: Option<RoaringBitmap> = None;
             for filter in &filters {
                 if let FilterMatch::Resolved(bm) = match_filter(filter, indexes) {

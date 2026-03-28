@@ -1,14 +1,14 @@
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     sync::{Arc, LazyLock},
 };
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use arrow::{
     array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-        UInt64Builder,
         builder::{MapBuilder, MapFieldNames},
+        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder,
+        UInt8Builder,
     },
     datatypes::{DataType, Field, Fields, Schema, SchemaRef},
     record_batch::RecordBatch,
@@ -325,11 +325,7 @@ fn remove_from_btree<K: Ord + Clone>(map: &mut BTreeMap<K, RoaringBitmap>, key: 
 }
 
 fn map_field_names() -> MapFieldNames {
-    MapFieldNames {
-        entry: "entries".to_owned(),
-        key: "key".to_owned(),
-        value: "value".to_owned(),
-    }
+    glint_primitives::exex_schema::map_field_names()
 }
 
 fn build_entity_schema() -> Schema {
@@ -382,7 +378,7 @@ pub fn entity_schema() -> SchemaRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
 
     fn sample_row(byte: u8) -> EntityRow {
         EntityRow {
@@ -452,12 +448,10 @@ mod tests {
         assert!(batch.schema().field_with_name("content_type").is_ok());
         assert!(batch.schema().field_with_name("payload").is_ok());
         assert!(batch.schema().field_with_name("string_annotations").is_ok());
-        assert!(
-            batch
-                .schema()
-                .field_with_name("numeric_annotations")
-                .is_ok()
-        );
+        assert!(batch
+            .schema()
+            .field_with_name("numeric_annotations")
+            .is_ok());
         assert!(batch.schema().field_with_name("created_at_block").is_ok());
         assert!(batch.schema().field_with_name("tx_hash").is_ok());
         assert!(batch.schema().field_with_name("extend_policy").is_ok());
@@ -547,19 +541,15 @@ mod tests {
 
         let slot = store.entity_to_slot[&B256::repeat_byte(0x01)];
 
-        assert!(
-            !store
-                .string_ann_index
-                .contains_key(&("k1".to_owned(), "v1".to_owned()))
-        );
+        assert!(!store
+            .string_ann_index
+            .contains_key(&("k1".to_owned(), "v1".to_owned())));
         assert!(!store.numeric_ann_index.contains_key(&("n1".to_owned(), 42)));
-        assert!(
-            store
-                .numeric_ann_range
-                .get("n1")
-                .and_then(|bt| bt.get(&42))
-                .is_none()
-        );
+        assert!(store
+            .numeric_ann_range
+            .get("n1")
+            .and_then(|bt| bt.get(&42))
+            .is_none());
 
         let str_bm = &store.string_ann_index[&("k1".to_owned(), "v2".to_owned())];
         assert!(str_bm.contains(slot));

@@ -130,15 +130,6 @@ fn delete_sqlite_from_block(sqlite_conn: &Arc<Mutex<Connection>>, block: u64) ->
     Ok(())
 }
 
-fn insert_sqlite_batch(
-    sqlite_conn: &Arc<Mutex<Connection>>,
-    batch: &arrow::record_batch::RecordBatch,
-) -> eyre::Result<()> {
-    let conn = sqlite_conn.lock();
-    writer::insert_batch(&conn, batch)?;
-    Ok(())
-}
-
 enum BatchOutcome {
     Continue,
     EnterLive,
@@ -166,7 +157,7 @@ fn process_batch(
                 *last_block = block;
             }
             if !is_revert {
-                insert_sqlite_batch(sqlite_conn, batch)?;
+                writer::insert_batch(&sqlite_conn.lock(), batch)?;
             }
             if is_revert && let Some(block) = batch_decoder::batch_block_number(batch) {
                 delete_sqlite_from_block(sqlite_conn, block)?;

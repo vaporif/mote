@@ -1,7 +1,7 @@
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
-        UInt32Array, UInt64Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt32Array,
+        UInt64Array, UInt8Array,
     },
     record_batch::RecordBatch,
 };
@@ -130,8 +130,11 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
         }
     }
 
-    let last_block = block_number_col.value(batch.num_rows() - 1);
-    schema::set_last_processed_block(&tx, last_block)?;
+    let max_block = (0..batch.num_rows())
+        .map(|i| block_number_col.value(i))
+        .max()
+        .expect("non-empty batch");
+    schema::set_last_processed_block(&tx, max_block)?;
 
     tx.commit().wrap_err("committing SQLite transaction")?;
     Ok(())
@@ -231,7 +234,7 @@ mod tests {
     use crate::schema;
 
     use glint_primitives::exex_schema::entity_events_schema;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

@@ -282,11 +282,7 @@ impl TableProvider for HistoricalTableProvider {
 }
 
 fn map_field_names() -> MapFieldNames {
-    MapFieldNames {
-        entry: "entries".to_owned(),
-        key: "key".to_owned(),
-        value: "value".to_owned(),
-    }
+    glint_primitives::exex_schema::map_field_names()
 }
 
 #[allow(
@@ -409,10 +405,13 @@ fn build_result_batch(rows: &[EventSqlRow], schema: &SchemaRef) -> DfResult<Reco
                 let pairs: Vec<Vec<String>> = serde_json::from_str(json_str)
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
                 for pair in &pairs {
-                    if pair.len() == 2 {
-                        str_ann_b.keys().append_value(&pair[0]);
-                        str_ann_b.values().append_value(&pair[1]);
+                    if pair.len() != 2 {
+                        return Err(datafusion::error::DataFusionError::Internal(
+                            format!("malformed string annotation pair in DB: expected [key, value], got {pair:?}"),
+                        ));
                     }
+                    str_ann_b.keys().append_value(&pair[0]);
+                    str_ann_b.values().append_value(&pair[1]);
                 }
                 str_ann_b.append(true).map_err(arrow_err)?;
             }
@@ -426,13 +425,16 @@ fn build_result_batch(rows: &[EventSqlRow], schema: &SchemaRef) -> DfResult<Reco
                 let pairs: Vec<serde_json::Value> = serde_json::from_str(json_str)
                     .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
                 for pair in &pairs {
-                    if let (Some(k), Some(v)) = (
+                    let (Some(k), Some(v)) = (
                         pair.get(0).and_then(|v| v.as_str()),
                         pair.get(1).and_then(serde_json::Value::as_u64),
-                    ) {
-                        num_ann_b.keys().append_value(k);
-                        num_ann_b.values().append_value(v);
-                    }
+                    ) else {
+                        return Err(datafusion::error::DataFusionError::Internal(
+                            format!("malformed numeric annotation pair in DB: expected [key, value], got {pair}"),
+                        ));
+                    };
+                    num_ann_b.keys().append_value(k);
+                    num_ann_b.values().append_value(v);
                 }
                 num_ann_b.append(true).map_err(arrow_err)?;
             }
