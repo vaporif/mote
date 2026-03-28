@@ -35,6 +35,7 @@ impl SidecarHandle {
             .arg(health_port.to_string())
             .arg("--db-path")
             .arg(&db_path)
+            .env("RUST_LOG", "debug")
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file))
             .spawn()?;
@@ -47,6 +48,7 @@ impl SidecarHandle {
             _db_dir: db_dir,
         };
 
+        eprintln!("sidecar log file: {}", handle.log_file.display());
         handle.wait_healthy()?;
         Ok(handle)
     }

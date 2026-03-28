@@ -64,6 +64,7 @@ impl EthNodeHandle {
             _datadir: datadir,
         };
 
+        eprintln!("node log file: {}", handle.log_file.display());
         handle.wait_ready()?;
         Ok(handle)
     }
@@ -88,15 +89,27 @@ impl EthNodeHandle {
             .collect()
     }
 
+    /// Resolves the eth-glint binary path.
+    ///
+    /// Builds in release mode because reth v1.11.3 has a spurious `debug_assert`
+    /// in `DeferredTrieData::wait_cloned` that panics when called from a dedicated
+    /// rayon pool (fixed upstream in paradigmxyz/reth#22505, not yet in a release).
     fn resolve_binary() -> eyre::Result<PathBuf> {
         if let Ok(bin) = std::env::var("GLINT_BIN") {
             return Ok(PathBuf::from(bin));
         }
         let fallback =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/eth-glint");
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/eth-glint");
         if !fallback.exists() {
             let status = Command::new("cargo")
-                .args(["build", "-p", "glint-node-eth", "--bin", "eth-glint"])
+                .args([
+                    "build",
+                    "--release",
+                    "-p",
+                    "glint-node-eth",
+                    "--bin",
+                    "eth-glint",
+                ])
                 .status()?;
             eyre::ensure!(status.success(), "failed to build eth-glint");
         }
