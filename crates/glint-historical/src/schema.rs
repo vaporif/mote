@@ -1,6 +1,7 @@
 use eyre::WrapErr;
 use rusqlite::{Connection, OptionalExtension};
 
+// TODO: support migrations instead of drop-and-recreate on schema version bump
 const SCHEMA_VERSION: &str = "1";
 
 pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
