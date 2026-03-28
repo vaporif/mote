@@ -103,24 +103,25 @@ pub fn drop_and_recreate(conn: &Connection) -> eyre::Result<()> {
 }
 
 pub fn delete_events_from_block(conn: &Connection, block_number: u64) -> eyre::Result<usize> {
+    let block = i64::try_from(block_number).wrap_err("block number overflows i64")?;
     let count = conn.execute(
         "DELETE FROM entity_events WHERE block_number >= ?1",
-        [block_number],
+        [block],
     )?;
     Ok(count)
 }
 
 pub fn prune_before_block(conn: &Connection, block_number: u64) -> eyre::Result<usize> {
-    let count = conn.execute(
-        "DELETE FROM entity_events WHERE block_number < ?1",
-        [block_number],
-    )?;
+    let block = i64::try_from(block_number).wrap_err("block number overflows i64")?;
+    let count = conn.execute("DELETE FROM entity_events WHERE block_number < ?1", [block])?;
     Ok(count)
 }
 
 pub fn event_count(conn: &Connection) -> eyre::Result<u64> {
-    conn.query_row("SELECT COUNT(*) FROM entity_events", [], |row| row.get(0))
-        .wrap_err("counting entity_events")
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM entity_events", [], |row| row.get(0))
+        .wrap_err("counting entity_events")?;
+    u64::try_from(count).wrap_err("event count overflows u64")
 }
 
 #[cfg(test)]
