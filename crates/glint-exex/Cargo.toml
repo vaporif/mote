@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-glint-primitives.workspace = true
+glint-primitives = { workspace = true, features = ["arrow"] }
 
 reth-exex.workspace = true
 reth-exex-types.workspace = true

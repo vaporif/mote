@@ -1,0 +1,19 @@
+/// Column names used in entity event Arrow batches.
+pub const BLOCK_NUMBER: &str = "block_number";
+pub const BLOCK_HASH: &str = "block_hash";
+pub const TX_INDEX: &str = "tx_index";
+pub const TX_HASH: &str = "tx_hash";
+pub const LOG_INDEX: &str = "log_index";
+pub const EVENT_TYPE: &str = "event_type";
+pub const ENTITY_KEY: &str = "entity_key";
+pub const OWNER: &str = "owner";
+pub const EXPIRES_AT_BLOCK: &str = "expires_at_block";
+pub const OLD_EXPIRES_AT_BLOCK: &str = "old_expires_at_block";
+pub const CONTENT_TYPE: &str = "content_type";
+pub const PAYLOAD: &str = "payload";
+pub const STRING_ANNOTATIONS: &str = "string_annotations";
+pub const NUMERIC_ANNOTATIONS: &str = "numeric_annotations";
+pub const EXTEND_POLICY: &str = "extend_policy";
+pub const OPERATOR: &str = "operator";
+pub const TIP_BLOCK: &str = "tip_block";
+pub const OP: &str = "op";

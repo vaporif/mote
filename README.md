@@ -7,9 +7,9 @@ Ephemeral on-chain storage layer, built on reth.
 
 Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, carry queryable annotations, and disappear when their time is up.
 
-Runs as both a standalone Ethereum node (`eth-glint`) and an OP Stack L3 (`op-glint`)
+Runs as both a standalone Ethereum node (`eth-glint`) and an OP Stack L3 (`op-glint`).
 
-**The full flow - node startup, entity creation, ExEx streaming, and Flight SQL queries - is covered by e2e tests**.
+**The full flow - node startup, entity creation, ExEx streaming, and Flight SQL queries - is covered by e2e tests.**
 
 ## Why
 
@@ -42,28 +42,41 @@ just run-eth --dev --dev.block-time 1000ms --http
 # or for OP Stack: just run-op --dev --dev.block-time 1000ms --http
 ```
 
-Terminal 2 - start the analytics sidecar (connects to the node's ExEx socket):
+Terminal 2 - start the sidecar (connects to the node's ExEx socket, serves Flight SQL + historical queries):
 
 ```bash
 just run-analytics
 ```
 
-The node listens on `localhost:8545` (JSON-RPC). Analytics exposes Flight SQL on `localhost:50051` and health on `localhost:8080`.
+The node listens on `localhost:8545` (JSON-RPC). The sidecar exposes Flight SQL on `localhost:50051` and health on `localhost:8080`.
 
 ### Query entities
 
 Any Flight SQL client works. With `arrow-flight` CLI or DBeaver, connect to `localhost:50051`:
 
 ```sql
+-- live entities
 SELECT entity_key, content_type, expires_at_block FROM entities;
 
 -- annotation lookups (bitmap-indexed)
 SELECT * FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH';
 SELECT * FROM entities WHERE num_ann(numeric_annotations, 'price') > 1000;
 SELECT * FROM entities WHERE owner = x'aa...' AND num_ann(numeric_annotations, 'price') >= 500;
-```
-`str_ann` / `num_ann` are UDF I'm still evaluating if thould be removed as their removal is a more complex work that will require v2 but it is possible to have client facing normal sql with no strings attached.
 
+-- historical events (SQLite-backed, requires block range)
+SELECT * FROM entity_events WHERE block_number BETWEEN 100 AND 200;
+```
+
+`str_ann` / `num_ann` are UDFs. Still evaluating whether to replace them with a flatter schema in v2 so clients get plain SQL with no custom functions.
+
+### JSON-RPC
+
+The node exposes a few entity-specific RPC methods alongside the standard Ethereum ones:
+
+- `glint_getEntity(key)` - metadata, operator, content hash
+- `glint_getEntityCount()` - total live entities
+- `glint_getUsedSlots()` - storage slot count
+- `glint_getBlockTiming()` - current block number and timestamp
 
 ## Relationship to Arkiv
 
@@ -110,48 +123,75 @@ graph TB
         subgraph exex["glint-exex (ExEx)"]
             notify["ExExNotification<br/>(commit/reorg)"]
             arrow["Entity event logs<br/>→ Arrow RecordBatch"]
+            ring["Ring buffer<br/>(replay on reconnect)"]
             notify --> arrow
+            arrow --> ring
         end
+
+        rpc_node["glint_* JSON-RPC<br/>(entity, slots, timing)"]
 
         crud -->|committed block| notify
     end
 
-    subgraph analytics["glint-analytics (separate process)"]
-        store["Arrow RecordBatch<br/>+ roaring bitmap indexes"]
-        df["DataFusion + custom<br/>TableProvider (filter pushdown)"]
-        flight["Flight SQL server"]
-        rpc["JSON-RPC endpoint"]
-        store --> df
+    subgraph sidecar["glint-db-sidecar"]
+        direction TB
+
+        subgraph live["Live path (glint-analytics)"]
+            store["In-memory EntityStore<br/>+ roaring bitmap indexes"]
+            df["DataFusion<br/>(filter pushdown)"]
+            store --> df
+        end
+
+        subgraph hist["Historical path (glint-historical)"]
+            sqlite["SQLite<br/>(entity_events)"]
+            hist_prov["Historical TableProvider"]
+            sqlite --> hist_prov
+        end
+
+        flight["Flight SQL server<br/>(entities + entity_events)"]
+        health["Health endpoint"]
+
         df --> flight
-        df --> rpc
+        hist_prov --> flight
     end
 
-    arrow -->|Arrow IPC<br/>unix socket| store
+    ring -->|Arrow IPC<br/>unix socket| store
+    ring -->|Arrow IPC<br/>unix socket| sqlite
 
     subgraph clients["Clients"]
+        sdk["glint-sdk (Rust)"]
         grafana["Grafana"]
-        dbeaver["DBeaver"]
-        jupyter["Jupyter"]
+        dbeaver["DBeaver / Jupyter"]
         app["dApps"]
     end
 
+    flight --> sdk
     flight --> grafana
     flight --> dbeaver
-    flight --> jupyter
-    rpc --> app
+    rpc_node --> app
+    rpc_node --> sdk
 
     style node fill:#f0f4f8,stroke:#4a6785,color:#1a2a3a
     style engine fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
     style exex fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
-    style analytics fill:#e8f5e9,stroke:#2e7d32,color:#1a2a3a
+    style sidecar fill:#e8f5e9,stroke:#2e7d32,color:#1a2a3a
+    style live fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
+    style hist fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
     style clients fill:#fff3e0,stroke:#e65100,color:#1a2a3a
 ```
 
-`glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations - create, update, delete, extend. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
+`glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations - create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, and pushes them over a unix socket. No state of its own.
+`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket.
 
-`glint-analytics` is a separate binary that consumes that stream. It holds all live entities in memory as Arrow columnar data with roaring bitmap indexes on owner, string annotations, and numeric annotations (hash + B-tree for range queries). Queries go through DataFusion and Flight SQL, plus a JSON-RPC endpoint. If it crashes or falls behind, blocks keep producing - the node doesn't know or care.
+`glint-db-sidecar` is the query layer. It runs as a separate process, consumes the ExEx stream, and serves two tables over Flight SQL:
+
+- **`entities`** - live entity state held in memory by `glint-analytics`. Roaring bitmap indexes on owner, string annotations, and numeric annotations. DataFusion with filter pushdown.
+- **`entity_events`** - historical event log persisted to SQLite by `glint-historical`. Block-range queries.
+
+If the sidecar crashes or falls behind, the node keeps producing blocks. On reconnect the ExEx replays from its ring buffer.
+
+`glint-sdk` is a Rust client library for building and sending Glint transactions, querying entities over JSON-RPC, and running Flight SQL queries.
 
 ### Query engine
 
@@ -163,7 +203,7 @@ Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orde
 
 Secondary indexes sit alongside the Arrow data - hash indexes on annotation key/value pairs and owner, a B-tree for numeric range queries, all backed by roaring bitmaps. A custom DataFusion `TableProvider` checks incoming filters against these indexes. If a filter matches an indexed field, it resolves via bitmap lookup in microseconds. If not, DataFusion does a full columnar scan, which is still fast for analytics. One engine, one copy of the data.
 
-Also if we do need to support longer lasting entities that wont fit inside RAM, there's an option of datafusion table provider https://github.com/datafusion-contrib/datafusion-table-providers. It will use any of supported databases (including sqlite,) as storage, so datafusion while push down data there and will only supply Flight SQL as protocol layer. We will lose OLAP though.
+If we do need to support longer-lasting entities that won't fit in RAM, there's [datafusion-table-providers](https://github.com/datafusion-contrib/datafusion-table-providers). It can use SQLite (or others) as storage with DataFusion as the query layer. We'd lose OLAP performance though.
 
 Supported indexed operations: equality and inequality on `owner`, `str_ann()`, and `num_ann()`; range queries (`>`, `>=`, `<`, `<=`) on numeric annotations; `IN` lists on all indexed fields; `AND`/`OR` combinations. Unrecognized filters fall through to DataFusion's post-scan filtering.
 
@@ -186,7 +226,7 @@ Supported indexed operations: equality and inequality on `owner`, `str_ann()`, a
 
 1. **Create** (anyone) - Send a transaction to the processor address with RLP-encoded `GlintTransaction` operations. The sender becomes the owner. The entity gets a deterministic key (`keccak256(tx_hash || payload_len || payload || op_index)`), 64 bytes written to trie, and a lifecycle event log emitted. The full payload lives only in the event log, not in the trie. You can optionally set an `operator` and an `extend_policy` at creation time.
 
-   A 32-byte content hash (`keccak256(payload || content_type || rlp(annotations))`) goes on-chain so clients can verify query results against the trie. A malicious sequencer can't serve altered data without the hash mismatch showing up in a Merkle proof.
+   A 32-byte content hash goes on-chain so clients can verify query results against the trie. A malicious sequencer can't serve altered data without the hash mismatch showing up in a Merkle proof.
 
 2. **Update** (owner or operator) - Replace payload and annotations, reset the BTL. Same key, new content. The operator can update content and BTL but cannot change permissions (extend_policy or operator) - only the owner can do that.
 
@@ -196,7 +236,7 @@ Supported indexed operations: equality and inequality on `owner`, `str_ann()`, a
 
 5. **Delete** (owner or operator) - Immediate removal.
 
-6. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index (`HashMap<BlockNumber, Vec<EntityKey>>`) and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
+6. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
 
 ### Recovery
 
@@ -204,9 +244,9 @@ Everything in-memory rebuilds from the chain. No snapshots, no separate sync mod
 
 On node restart, `glint-engine` scans MAX_BTL blocks of entity event logs from reth's database to reconstruct the expiration index. Log reading only, not EVM re-execution - at ~1 week of history (302,400 blocks at 2s) this takes seconds to a few minutes.
 
-On analytics restart, `glint-analytics` connects to the ExEx IPC stream and rebuilds from empty. The ExEx replays from its WAL checkpoint, and after MAX_BTL blocks from tip all live entities are reconstructed. Anything older is already expired. Crash, disconnect, fresh deploy - same path every time.
+On sidecar restart, it connects to the ExEx IPC stream and rebuilds from empty. The ExEx replays from its ring buffer, and after MAX_BTL blocks from tip all live entities are reconstructed. Anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy - same path every time.
 
-If the ExEx's IPC buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects glint-analytics, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and the WAL retains notifications until the ExEx catches up.
+If the ExEx's IPC buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects the sidecar, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
 
 ## License
 

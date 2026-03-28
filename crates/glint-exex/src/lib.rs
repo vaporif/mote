@@ -46,6 +46,8 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(SNAPSHOT_CHANNEL_SIZE);
     let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
 
+    // TODO: checkpoint persistence — right now we replay from genesis on every
+    // restart. Persist the ring buffer and max_reported height to disk.
     let cancellation_token = CancellationToken::new();
     let mut ring_buffer = RingBuffer::new();
     let rb_stats = ring_buffer.stats();
@@ -162,8 +164,9 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
 
             Some(result) = OptionFuture::from(pending_replay_done_rx.as_mut().map(|rx| &mut *rx)) => {
                 pending_replay_done_rx = None;
-                if result.is_ok() {
-                    replay_in_progress = false;
+                replay_in_progress = false;
+                if result.is_err() {
+                    warn!("replay_done channel dropped without completion signal");
                 }
             }
 
@@ -226,6 +229,8 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
     }
 }
 
+// TODO: revert batches are sent live but never stored in the ring buffer, so a
+// reconnecting consumer's snapshot will be missing revert events after a reorg.
 fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     chain: &reth_execution_types::Chain<N>,
     ring_buffer: &mut RingBuffer,
@@ -350,12 +355,14 @@ fn try_send_batch(
                 grace.record_failure();
                 if grace.should_disconnect {
                     // TODO: metrics
-                    warn!("backpressure threshold exceeded in notification loop");
+                    warn!("backpressure threshold exceeded, disconnecting consumer");
+                    consumer_connected.store(false, Ordering::Release);
                 }
             }
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             debug!("batch channel closed");
+            consumer_connected.store(false, Ordering::Release);
         }
     }
 }
@@ -368,13 +375,11 @@ fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
     max_reported: &mut BlockNumHash,
 ) {
     let consumer_last_delivered = *delivered_rx.borrow();
-    let ring_buffer_oldest = ring_buffer.oldest();
 
-    let computed = consumer_last_delivered.unwrap_or_else(|| {
-        // No consumer yet — hold at oldest ring buffer entry to prevent WAL pruning
-        // of unseen blocks. If ring buffer is empty, report current tip.
-        ring_buffer_oldest.unwrap_or(current_tip)
-    });
+    // If the consumer told us how far it got, hold there so the WAL keeps
+    // everything it hasn't seen. Otherwise just report the tip — the ring
+    // buffer keeps its own history for replay.
+    let computed = consumer_last_delivered.unwrap_or(current_tip);
 
     // Safety cap: never fall behind tip - MAX_BTL to prevent unbounded WAL growth
     let absolute_floor = current_tip.number.saturating_sub(MAX_BTL);
@@ -391,5 +396,95 @@ fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
         *max_reported = height;
         let _ = ctx.send_finished_height(height);
         debug!(number = height.number, "reported finished height");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_batch() -> RecordBatch {
+        crate::arrow::build_watermark_batch(1).unwrap()
+    }
+
+    #[test]
+    fn backpressure_disconnects_consumer_after_threshold() {
+        let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+
+        let _ = batch_tx.try_send((None, dummy_batch()));
+
+        for _ in 0..3 {
+            try_send_batch(
+                &batch_tx,
+                None,
+                dummy_batch(),
+                &consumer_connected,
+                &mut grace,
+                false,
+            );
+        }
+
+        assert!(
+            grace.should_disconnect,
+            "grace should flag disconnect after threshold"
+        );
+        assert!(
+            !consumer_connected.load(Ordering::Acquire),
+            "consumer_connected should be false after backpressure disconnect"
+        );
+    }
+
+    #[test]
+    fn backpressure_suppressed_during_replay() {
+        let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+
+        let _ = batch_tx.try_send((None, dummy_batch()));
+
+        for _ in 0..5 {
+            try_send_batch(
+                &batch_tx,
+                None,
+                dummy_batch(),
+                &consumer_connected,
+                &mut grace,
+                true, // replay_in_progress
+            );
+        }
+
+        assert!(
+            !grace.should_disconnect,
+            "grace should not flag disconnect during replay"
+        );
+        assert!(
+            consumer_connected.load(Ordering::Acquire),
+            "consumer should remain connected during replay"
+        );
+    }
+
+    #[test]
+    fn closed_channel_disconnects_consumer() {
+        let (batch_tx, batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+
+        drop(batch_rx);
+
+        try_send_batch(
+            &batch_tx,
+            None,
+            dummy_batch(),
+            &consumer_connected,
+            &mut grace,
+            false,
+        );
+
+        assert!(
+            !consumer_connected.load(Ordering::Acquire),
+            "consumer_connected should be false after channel closed"
+        );
     }
 }

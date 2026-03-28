@@ -200,6 +200,35 @@ mod tests {
     }
 
     #[test]
+    fn reorg_reset_preserves_future_expirations() {
+        let mut idx = ExpirationIndex::new();
+        let key_103 = B256::repeat_byte(0x03);
+        let key_104 = B256::repeat_byte(0x04);
+        let key_105 = B256::repeat_byte(0x05);
+
+        idx.insert(103, key_103);
+        idx.insert(104, key_104);
+        idx.insert(105, key_105);
+
+        idx.drain_block(100);
+        idx.drain_block(101);
+        idx.drain_block(102);
+        let drained_103 = idx.drain_block(103);
+        assert_eq!(drained_103, vec![key_103]);
+        assert_eq!(idx.last_drained_block(), Some(103));
+
+        idx.reset_last_drained();
+        assert_eq!(idx.last_drained_block(), None);
+
+        assert!(idx.get_expired(104).unwrap().contains(&key_104));
+        assert!(idx.get_expired(105).unwrap().contains(&key_105));
+        assert_eq!(idx.get_expired(103), None);
+
+        let drained_104 = idx.drain_block(104);
+        assert_eq!(drained_104, vec![key_104]);
+    }
+
+    #[test]
     fn iter_entries_yields_all_blocks() {
         let mut idx = ExpirationIndex::new();
         let key_a = B256::repeat_byte(0x01);

@@ -23,6 +23,7 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
     fn build_crud_result(
         result: ResultAndState<H>,
         tx_type: T,
+        sender: alloy_primitives::Address,
     ) -> alloy_op_evm::block::OpTxResult<H, T> {
         alloy_op_evm::block::OpTxResult {
             inner: EthTxResult {
@@ -31,7 +32,7 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
                 tx_type,
             },
             is_deposit: false,
-            sender: alloy_primitives::Address::ZERO,
+            sender,
         }
     }
 }

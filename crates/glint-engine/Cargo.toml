@@ -48,5 +48,6 @@ op = [
 
 [dev-dependencies]
 reth-ethereum = { workspace = true }
+reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-optimism-chainspec = { workspace = true }
 tempfile = "3"

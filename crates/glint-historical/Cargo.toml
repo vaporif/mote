@@ -1,10 +1,10 @@
 [package]
-name = "glint-analytics"
+name = "glint-historical"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Query service for Glint ephemeral entity storage"
+description = "SQLite historical storage for Glint entity events"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -12,21 +12,19 @@ categories.workspace = true
 
 [dependencies]
 glint-primitives = { workspace = true, features = ["arrow"] }
-
-alloy-primitives.workspace = true
-
+rusqlite.workspace = true
+eyre.workspace = true
+tracing.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
-tokio.workspace = true
+serde_json.workspace = true
 datafusion.workspace = true
-tracing.workspace = true
-eyre.workspace = true
-bytes.workspace = true
-roaring.workspace = true
+parking_lot.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
-arrow = { workspace = true, features = ["prettyprint"] }
 alloy-primitives.workspace = true
 glint-primitives = { workspace = true, features = ["test-utils"] }
 

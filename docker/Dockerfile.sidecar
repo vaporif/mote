@@ -1,0 +1,21 @@
+FROM rust:1.94.1-bookworm AS chef
+RUN cargo install cargo-chef
+RUN apt-get update && apt-get install -y --no-install-recommends clang pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release --bin glint-db-sidecar
+RUN mkdir -p /empty-data
+
+FROM gcr.io/distroless/cc-debian12
+COPY --from=builder /src/target/release/glint-db-sidecar /usr/local/bin/glint-db-sidecar
+COPY --from=builder /empty-data /data
+EXPOSE 50051 8080
+ENTRYPOINT ["/usr/local/bin/glint-db-sidecar"]

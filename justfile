@@ -46,9 +46,10 @@ run-eth *args:
 run-op *args:
     cargo run -p glint-node-op -- node --chain etc/genesis.json {{args}}
 
-run-analytics *args:
-    cargo run -p glint-analytics -- {{args}}
+run-sidecar *args:
+    cargo run -p glint-db-sidecar -- {{args}}
 
 e2e:
-    cargo build --bin eth-glint --bin glint-analytics
+    docker build -f docker/Dockerfile.node -t eth-glint:latest .
+    docker build -f docker/Dockerfile.sidecar -t glint-db-sidecar:latest .
     cargo nextest run -p glint-e2e --run-ignored all

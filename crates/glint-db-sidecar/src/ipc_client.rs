@@ -6,7 +6,6 @@ use arrow::record_batch::RecordBatch;
 use eyre::WrapErr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handshake {
@@ -41,12 +40,6 @@ pub async fn connect_and_subscribe(
         oldest_block,
         tip_block,
     };
-
-    info!(
-        oldest = handshake.oldest_block,
-        tip = handshake.tip_block,
-        "connected to ExEx"
-    );
 
     let std_stream = stream.into_std()?;
     std_stream.set_nonblocking(false)?;

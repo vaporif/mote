@@ -23,7 +23,11 @@ impl<H: Send + Sync + 'static, T: Default + Clone + Send + Sync + 'static> Glint
     type TxType = T;
     type Result = EthTxResult<H, T>;
 
-    fn build_crud_result(result: ResultAndState<H>, tx_type: T) -> EthTxResult<H, T> {
+    fn build_crud_result(
+        result: ResultAndState<H>,
+        tx_type: T,
+        _sender: alloy_primitives::Address,
+    ) -> EthTxResult<H, T> {
         EthTxResult {
             result,
             blob_gas_used: 0,

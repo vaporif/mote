@@ -1,0 +1,23 @@
+FROM rust:1.94.1-bookworm AS chef
+RUN cargo install cargo-chef
+RUN apt-get update && apt-get install -y --no-install-recommends clang pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ARG BINARY=eth-glint
+COPY --from=planner /src/recipe.json recipe.json
+# release build: reth v1.11.3 has a spurious debug_assert in deferred_trie
+# (fixed upstream in paradigmxyz/reth#22505, not yet in a release tag)
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release --bin ${BINARY}
+
+FROM gcr.io/distroless/cc-debian12
+ARG BINARY=eth-glint
+COPY --from=builder /src/target/release/${BINARY} /usr/local/bin/glint-node
+COPY etc/genesis.json /etc/glint/genesis.json
+ENTRYPOINT ["/usr/local/bin/glint-node"]

@@ -1,15 +1,14 @@
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, MapFieldNames, StringBuilder,
-    UInt8Builder, UInt32Builder, UInt64Builder,
+    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, StringBuilder, UInt8Builder,
+    UInt32Builder, UInt64Builder,
 };
-use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
 use alloy_primitives::B256;
+use glint_primitives::exex_schema::{entity_events_schema, map_field_names};
 use glint_primitives::exex_types::{BatchOp, EntityEventType};
-
 use glint_primitives::parse::EntityEvent;
 
 #[derive(Debug, Clone)]
@@ -18,70 +17,6 @@ pub struct EventRow {
     pub tx_index: u32,
     pub tx_hash: B256,
     pub log_index: u32,
-}
-
-static SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| Arc::new(build_schema()));
-
-#[must_use]
-pub fn entity_events_schema() -> Arc<Schema> {
-    Arc::clone(&SCHEMA)
-}
-
-fn build_schema() -> Schema {
-    Schema::new(vec![
-        Field::new("block_number", DataType::UInt64, false),
-        Field::new("block_hash", DataType::FixedSizeBinary(32), false),
-        Field::new("tx_index", DataType::UInt32, false),
-        Field::new("tx_hash", DataType::FixedSizeBinary(32), false),
-        Field::new("log_index", DataType::UInt32, false),
-        Field::new("event_type", DataType::UInt8, false),
-        Field::new("entity_key", DataType::FixedSizeBinary(32), false),
-        Field::new("owner", DataType::FixedSizeBinary(20), true),
-        Field::new("expires_at_block", DataType::UInt64, true),
-        Field::new("old_expires_at_block", DataType::UInt64, true),
-        Field::new("content_type", DataType::Utf8, true),
-        Field::new("payload", DataType::Binary, true),
-        Field::new(
-            "string_annotations",
-            DataType::Map(
-                Arc::new(Field::new(
-                    "entries",
-                    DataType::Struct(
-                        vec![
-                            Field::new("key", DataType::Utf8, false),
-                            Field::new("value", DataType::Utf8, true),
-                        ]
-                        .into(),
-                    ),
-                    false,
-                )),
-                false,
-            ),
-            true,
-        ),
-        Field::new(
-            "numeric_annotations",
-            DataType::Map(
-                Arc::new(Field::new(
-                    "entries",
-                    DataType::Struct(
-                        vec![
-                            Field::new("key", DataType::Utf8, false),
-                            Field::new("value", DataType::UInt64, true),
-                        ]
-                        .into(),
-                    ),
-                    false,
-                )),
-                false,
-            ),
-            true,
-        ),
-        Field::new("extend_policy", DataType::UInt8, true),
-        Field::new("operator", DataType::FixedSizeBinary(20), true),
-        Field::new("tip_block", DataType::UInt64, false),
-        Field::new("op", DataType::UInt8, false),
-    ])
 }
 
 struct BatchBuilders {
@@ -158,7 +93,7 @@ impl BatchBuilders {
             Arc::new(self.tip_block.finish()),
             Arc::new(self.op.finish()),
         ];
-        RecordBatch::try_new(Arc::clone(&SCHEMA), columns).expect("columns must match SCHEMA")
+        RecordBatch::try_new(entity_events_schema(), columns).expect("columns must match SCHEMA")
     }
 }
 
@@ -334,14 +269,6 @@ fn append_null_fields(b: &mut BatchBuilders) -> arrow::error::Result<()> {
     Ok(())
 }
 
-fn map_field_names() -> MapFieldNames {
-    MapFieldNames {
-        entry: "entries".into(),
-        key: "key".into(),
-        value: "value".into(),
-    }
-}
-
 fn append_string_annotations(
     builder: &mut MapBuilder<StringBuilder, StringBuilder>,
     keys: &[String],
@@ -370,6 +297,7 @@ fn append_numeric_annotations(
 mod tests {
     use super::*;
     use alloy_primitives::{Address, B256, Bytes};
+    use glint_primitives::exex_schema::columns;
     use glint_primitives::exex_types::BatchOp;
 
     fn sample_created() -> EntityEvent {
@@ -491,10 +419,15 @@ mod tests {
             log_index: 0,
         }];
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
-        let owner_col = batch.column_by_name("owner").unwrap();
+        let owner_col = batch.column_by_name(columns::OWNER).unwrap();
         assert!(!owner_col.is_null(0));
-        assert!(batch.column_by_name("extend_policy").unwrap().is_null(0));
-        assert!(batch.column_by_name("operator").unwrap().is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
     }
 
     #[test]
@@ -506,11 +439,26 @@ mod tests {
             log_index: 0,
         }];
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
-        assert!(batch.column_by_name("expires_at_block").unwrap().is_null(0));
-        assert!(batch.column_by_name("payload").unwrap().is_null(0));
-        assert!(batch.column_by_name("content_type").unwrap().is_null(0));
-        assert!(batch.column_by_name("extend_policy").unwrap().is_null(0));
-        assert!(batch.column_by_name("operator").unwrap().is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXPIRES_AT_BLOCK)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(batch.column_by_name(columns::PAYLOAD).unwrap().is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::CONTENT_TYPE)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(
+            batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
     }
 
     fn sample_permissions_changed() -> EntityEvent {
@@ -533,11 +481,21 @@ mod tests {
         }];
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert!(!batch.column_by_name("owner").unwrap().is_null(0));
-        assert!(!batch.column_by_name("extend_policy").unwrap().is_null(0));
-        assert!(!batch.column_by_name("operator").unwrap().is_null(0));
-        assert!(batch.column_by_name("expires_at_block").unwrap().is_null(0));
-        assert!(batch.column_by_name("payload").unwrap().is_null(0));
+        assert!(!batch.column_by_name(columns::OWNER).unwrap().is_null(0));
+        assert!(
+            !batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(!batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXPIRES_AT_BLOCK)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(batch.column_by_name(columns::PAYLOAD).unwrap().is_null(0));
     }
 
     #[test]
@@ -545,7 +503,7 @@ mod tests {
         let batch = build_watermark_batch(5000).unwrap();
         assert_eq!(batch.num_rows(), 1);
         let op_col = batch
-            .column_by_name("op")
+            .column_by_name(columns::OP)
             .unwrap()
             .as_any()
             .downcast_ref::<arrow::array::UInt8Array>()
