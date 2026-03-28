@@ -33,13 +33,13 @@ keywords = ["ethereum", "reth", "ephemeral", "storage"]
 categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
-glint-engine = { path = "crates/glint-engine" }
-glint-exex = { path = "crates/glint-exex" }
-glint-node = { path = "crates/glint-node" }
-glint-primitives = { path = "crates/glint-primitives" }
-glint-sdk = { path = "crates/glint-sdk" }
-glint-analytics = { path = "crates/glint-analytics" }
-glint-historical = { path = "crates/glint-historical" }
+glint-engine = { path = "crates/engine" }
+glint-exex = { path = "crates/exex" }
+glint-node = { path = "crates/node" }
+glint-primitives = { path = "crates/primitives" }
+glint-sdk = { path = "crates/sdk" }
+glint-analytics = { path = "crates/analytics" }
+glint-historical = { path = "crates/historical" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
