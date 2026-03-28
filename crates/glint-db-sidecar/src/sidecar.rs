@@ -144,7 +144,50 @@ fn insert_sqlite_batch(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+enum BatchOutcome {
+    Continue,
+    EnterLive,
+    NeedsReplay,
+}
+
+impl BatchOutcome {
+    const fn is_needs_replay(&self) -> bool {
+        matches!(self, Self::NeedsReplay)
+    }
+}
+
+fn process_batch(
+    store: &mut EntityStore,
+    sqlite_conn: &Arc<Mutex<Connection>>,
+    batch: &arrow::record_batch::RecordBatch,
+    last_block: &mut u64,
+) -> eyre::Result<BatchOutcome> {
+    let is_revert = is_revert_batch(batch);
+
+    match batch_decoder::apply_batch(store, batch)? {
+        ApplyResult::Watermark => return Ok(BatchOutcome::EnterLive),
+        ApplyResult::Applied => {
+            if let Some(block) = batch_decoder::batch_block_number(batch) {
+                *last_block = block;
+            }
+            if !is_revert {
+                insert_sqlite_batch(sqlite_conn, batch)?;
+            }
+            if is_revert && let Some(block) = batch_decoder::batch_block_number(batch) {
+                delete_sqlite_from_block(sqlite_conn, block)?;
+            }
+        }
+        ApplyResult::NeedsReplay => {
+            if let Some(block) = batch_decoder::batch_block_number(batch) {
+                delete_sqlite_from_block(sqlite_conn, block)?;
+            }
+            return Ok(BatchOutcome::NeedsReplay);
+        }
+    }
+
+    Ok(BatchOutcome::Continue)
+}
+
 async fn run_connection(
     socket_path: &Path,
     store: &mut EntityStore,
@@ -161,18 +204,7 @@ async fn run_connection(
         "connected to ExEx"
     );
 
-    let last_processed = schema::get_last_processed_block(&sqlite_conn.lock())?;
-
-    if let Some(last) = last_processed
-        && handshake.oldest_block > last
-    {
-        return Err(eyre::eyre!(
-            "ExEx ring buffer oldest block ({}) > SQLite last_processed_block ({}). \
-             Run `glint db rebuild --from-block {last}` to recover.",
-            handshake.oldest_block,
-            last,
-        ));
-    }
+    check_gap(sqlite_conn, &handshake)?;
 
     let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel(256);
 
@@ -191,62 +223,24 @@ async fn run_connection(
     let mut last_block: u64 = resume_block;
 
     while let Some(batch) = batch_rx.recv().await {
-        let is_revert = is_revert_batch(&batch);
-
-        match batch_decoder::apply_batch(store, &batch)? {
-            ApplyResult::Watermark => {
+        match process_batch(store, sqlite_conn, &batch, &mut last_block)? {
+            BatchOutcome::EnterLive => {
                 info!("watermark received, entering live mode");
                 is_live = true;
                 let _ = ready_tx.send(true);
                 let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
                 continue;
             }
-            ApplyResult::Applied => {
-                if let Some(block) = batch_decoder::batch_block_number(&batch) {
-                    last_block = block;
-                }
-
-                if !is_revert {
-                    insert_sqlite_batch(sqlite_conn, &batch)?;
-                }
-
-                if is_revert && let Some(block) = batch_decoder::batch_block_number(&batch) {
-                    delete_sqlite_from_block(sqlite_conn, block)?;
-                }
-            }
-            ApplyResult::NeedsReplay => {
-                if let Some(block) = batch_decoder::batch_block_number(&batch) {
-                    delete_sqlite_from_block(sqlite_conn, block)?;
-                }
-                return Ok(ConnectionOutcome::NeedsReplay);
-            }
+            BatchOutcome::NeedsReplay => return Ok(ConnectionOutcome::NeedsReplay),
+            BatchOutcome::Continue => {}
         }
 
         if is_live {
             while let Ok(queued) = batch_rx.try_recv() {
-                let q_is_revert = is_revert_batch(&queued);
-
-                match batch_decoder::apply_batch(store, &queued)? {
-                    ApplyResult::Applied => {
-                        if let Some(block) = batch_decoder::batch_block_number(&queued) {
-                            last_block = block;
-                        }
-                        if !q_is_revert {
-                            insert_sqlite_batch(sqlite_conn, &queued)?;
-                        }
-                        if q_is_revert
-                            && let Some(block) = batch_decoder::batch_block_number(&queued)
-                        {
-                            delete_sqlite_from_block(sqlite_conn, block)?;
-                        }
-                    }
-                    ApplyResult::Watermark => {}
-                    ApplyResult::NeedsReplay => {
-                        if let Some(block) = batch_decoder::batch_block_number(&queued) {
-                            delete_sqlite_from_block(sqlite_conn, block)?;
-                        }
-                        return Ok(ConnectionOutcome::NeedsReplay);
-                    }
+                if process_batch(store, sqlite_conn, &queued, &mut last_block)?
+                    .is_needs_replay()
+                {
+                    return Ok(ConnectionOutcome::NeedsReplay);
                 }
             }
             let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
@@ -260,6 +254,26 @@ async fn run_connection(
     }
 
     Ok(ConnectionOutcome::Closed { last_block })
+}
+
+fn check_gap(
+    sqlite_conn: &Arc<Mutex<Connection>>,
+    handshake: &ipc_client::Handshake,
+) -> eyre::Result<()> {
+    let last_processed = schema::get_last_processed_block(&sqlite_conn.lock())?;
+
+    if let Some(last) = last_processed
+        && handshake.oldest_block > last
+    {
+        eyre::bail!(
+            "ExEx ring buffer oldest block ({}) > SQLite last_processed_block ({}). \
+             Run `glint db rebuild --from-block {last}` to recover.",
+            handshake.oldest_block,
+            last,
+        );
+    }
+
+    Ok(())
 }
 
 fn is_revert_batch(batch: &arrow::record_batch::RecordBatch) -> bool {
