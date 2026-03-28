@@ -3,6 +3,8 @@ use std::sync::{Arc, LazyLock};
 use arrow::array::builder::MapFieldNames;
 use arrow::datatypes::{DataType, Field, Schema};
 
+pub use crate::columns;
+
 static SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| Arc::new(build_schema()));
 
 #[must_use]
@@ -19,22 +21,59 @@ pub fn map_field_names() -> MapFieldNames {
     }
 }
 
+static HISTORICAL_SCHEMA: LazyLock<Arc<Schema>> =
+    LazyLock::new(|| Arc::new(build_historical_schema()));
+
+/// Subset of [`entity_events_schema`] exposed by the historical table provider.
+#[must_use]
+pub fn historical_output_schema() -> Arc<Schema> {
+    Arc::clone(&HISTORICAL_SCHEMA)
+}
+
+const HISTORICAL_COLUMNS: &[&str] = &[
+    columns::BLOCK_NUMBER,
+    columns::EVENT_TYPE,
+    columns::ENTITY_KEY,
+    columns::OWNER,
+    columns::EXPIRES_AT_BLOCK,
+    columns::CONTENT_TYPE,
+    columns::PAYLOAD,
+    columns::STRING_ANNOTATIONS,
+    columns::NUMERIC_ANNOTATIONS,
+    columns::EXTEND_POLICY,
+    columns::OPERATOR,
+];
+
+fn build_historical_schema() -> Schema {
+    let full = build_schema();
+    let fields: Vec<_> = HISTORICAL_COLUMNS
+        .iter()
+        .map(|name| {
+            full.field_with_name(name)
+                .unwrap_or_else(|_| panic!("exex schema missing column {name}"))
+                .clone()
+        })
+        .collect();
+    Schema::new(fields)
+}
+
 fn build_schema() -> Schema {
+    use columns::*;
     Schema::new(vec![
-        Field::new("block_number", DataType::UInt64, false),
-        Field::new("block_hash", DataType::FixedSizeBinary(32), false),
-        Field::new("tx_index", DataType::UInt32, false),
-        Field::new("tx_hash", DataType::FixedSizeBinary(32), false),
-        Field::new("log_index", DataType::UInt32, false),
-        Field::new("event_type", DataType::UInt8, false),
-        Field::new("entity_key", DataType::FixedSizeBinary(32), false),
-        Field::new("owner", DataType::FixedSizeBinary(20), true),
-        Field::new("expires_at_block", DataType::UInt64, true),
-        Field::new("old_expires_at_block", DataType::UInt64, true),
-        Field::new("content_type", DataType::Utf8, true),
-        Field::new("payload", DataType::Binary, true),
+        Field::new(BLOCK_NUMBER, DataType::UInt64, false),
+        Field::new(BLOCK_HASH, DataType::FixedSizeBinary(32), false),
+        Field::new(TX_INDEX, DataType::UInt32, false),
+        Field::new(TX_HASH, DataType::FixedSizeBinary(32), false),
+        Field::new(LOG_INDEX, DataType::UInt32, false),
+        Field::new(EVENT_TYPE, DataType::UInt8, false),
+        Field::new(ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(OWNER, DataType::FixedSizeBinary(20), true),
+        Field::new(EXPIRES_AT_BLOCK, DataType::UInt64, true),
+        Field::new(OLD_EXPIRES_AT_BLOCK, DataType::UInt64, true),
+        Field::new(CONTENT_TYPE, DataType::Utf8, true),
+        Field::new(PAYLOAD, DataType::Binary, true),
         Field::new(
-            "string_annotations",
+            STRING_ANNOTATIONS,
             DataType::Map(
                 Arc::new(Field::new(
                     "entries",
@@ -52,7 +91,7 @@ fn build_schema() -> Schema {
             true,
         ),
         Field::new(
-            "numeric_annotations",
+            NUMERIC_ANNOTATIONS,
             DataType::Map(
                 Arc::new(Field::new(
                     "entries",
@@ -69,9 +108,9 @@ fn build_schema() -> Schema {
             ),
             true,
         ),
-        Field::new("extend_policy", DataType::UInt8, true),
-        Field::new("operator", DataType::FixedSizeBinary(20), true),
-        Field::new("tip_block", DataType::UInt64, false),
-        Field::new("op", DataType::UInt8, false),
+        Field::new(EXTEND_POLICY, DataType::UInt8, true),
+        Field::new(OPERATOR, DataType::FixedSizeBinary(20), true),
+        Field::new(TIP_BLOCK, DataType::UInt64, false),
+        Field::new(OP, DataType::UInt8, false),
     ])
 }

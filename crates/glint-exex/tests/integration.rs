@@ -11,6 +11,7 @@ use arrow::record_batch::RecordBatch;
 use glint_exex::arrow::{EventRow, build_record_batch};
 use glint_exex::ring_buffer::RingBufferStats;
 use glint_exex::stream::{ProbeResponse, SnapshotRequest, socket_writer_task};
+use glint_primitives::exex_schema::columns;
 use glint_primitives::exex_types::BatchOp;
 use glint_primitives::parse::EntityEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -74,7 +75,7 @@ fn subscribe_msg(resume_block: u64) -> Vec<u8> {
 
 fn is_watermark(batch: &RecordBatch) -> bool {
     batch
-        .column_by_name("op")
+        .column_by_name(columns::OP)
         .and_then(|c| c.as_any().downcast_ref::<UInt8Array>())
         .is_some_and(|col| !col.is_empty() && col.value(0) == 0xFF)
 }

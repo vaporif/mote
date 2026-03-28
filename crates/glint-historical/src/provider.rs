@@ -6,9 +6,9 @@ use arrow::{
     array::{
         ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder,
         UInt64Builder,
-        builder::{MapBuilder, MapFieldNames},
+        builder::MapBuilder,
     },
-    datatypes::{DataType, Field, Fields, Schema, SchemaRef},
+    datatypes::SchemaRef,
 };
 use datafusion::{
     catalog::Session,
@@ -22,47 +22,6 @@ use datafusion::{
 use rusqlite::Connection;
 
 use parking_lot::Mutex;
-
-fn historical_output_schema() -> SchemaRef {
-    let str_ann_entry = Field::new(
-        "entries",
-        DataType::Struct(Fields::from(vec![
-            Field::new("key", DataType::Utf8, false),
-            Field::new("value", DataType::Utf8, true),
-        ])),
-        false,
-    );
-    let num_ann_entry = Field::new(
-        "entries",
-        DataType::Struct(Fields::from(vec![
-            Field::new("key", DataType::Utf8, false),
-            Field::new("value", DataType::UInt64, true),
-        ])),
-        false,
-    );
-
-    Arc::new(Schema::new(vec![
-        Field::new("block_number", DataType::UInt64, false),
-        Field::new("event_type", DataType::UInt8, false),
-        Field::new("entity_key", DataType::FixedSizeBinary(32), false),
-        Field::new("owner", DataType::FixedSizeBinary(20), true),
-        Field::new("expires_at_block", DataType::UInt64, true),
-        Field::new("content_type", DataType::Utf8, true),
-        Field::new("payload", DataType::Binary, true),
-        Field::new(
-            "string_annotations",
-            DataType::Map(Arc::new(str_ann_entry), false),
-            true,
-        ),
-        Field::new(
-            "numeric_annotations",
-            DataType::Map(Arc::new(num_ann_entry), false),
-            true,
-        ),
-        Field::new("extend_policy", DataType::UInt8, true),
-        Field::new("operator", DataType::FixedSizeBinary(20), true),
-    ]))
-}
 
 pub struct HistoricalTableProvider {
     conn: Arc<Mutex<Connection>>,
@@ -79,7 +38,7 @@ impl HistoricalTableProvider {
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self {
             conn,
-            schema: historical_output_schema(),
+            schema: glint_primitives::exex_schema::historical_output_schema(),
         }
     }
 }
@@ -180,7 +139,7 @@ pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
 }
 
 fn is_block_number_col(expr: &Expr) -> bool {
-    matches!(expr, Expr::Column(c) if c.name() == "block_number")
+    matches!(expr, Expr::Column(c) if c.name() == columns::BLOCK_NUMBER)
 }
 
 const fn extract_u64_literal(expr: &Expr) -> Option<u64> {
@@ -196,7 +155,7 @@ const fn extract_u64_literal(expr: &Expr) -> Option<u64> {
 
 fn references_block_number(expr: &Expr) -> bool {
     match expr {
-        Expr::Column(c) => c.name() == "block_number",
+        Expr::Column(c) => c.name() == columns::BLOCK_NUMBER,
         Expr::BinaryExpr(be) => {
             references_block_number(&be.left) || references_block_number(&be.right)
         }
@@ -269,9 +228,7 @@ impl TableProvider for HistoricalTableProvider {
     }
 }
 
-fn map_field_names() -> MapFieldNames {
-    glint_primitives::exex_schema::map_field_names()
-}
+use glint_primitives::exex_schema::{columns, map_field_names};
 
 #[allow(
     clippy::cast_sign_loss,

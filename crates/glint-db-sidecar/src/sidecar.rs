@@ -8,6 +8,7 @@ use glint_analytics::{
 
 use crate::{flight_sql, health, ipc_client};
 use glint_historical::{provider::HistoricalTableProvider, schema, writer};
+use glint_primitives::exex_schema::columns;
 use rusqlite::Connection;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
@@ -19,12 +20,14 @@ enum ConnectionOutcome {
     NeedsReplay,
 }
 
-pub async fn run(
-    exex_socket: std::path::PathBuf,
-    flight_port: u16,
-    health_port: u16,
-    db_path: std::path::PathBuf,
-) -> eyre::Result<()> {
+pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
+    let crate::cli::RunArgs {
+        exex_socket,
+        flight_port,
+        health_port,
+        db_path,
+    } = args;
+
     let sqlite_conn = Connection::open(&db_path)?;
     schema::create_tables(&sqlite_conn)?;
     schema::check_schema_version(&sqlite_conn)?;
@@ -35,7 +38,7 @@ pub async fn run(
     let sqlite_conn = Arc::new(Mutex::new(sqlite_conn));
 
     let mut store = EntityStore::new();
-    let mut resume_block: u64 = 0;
+    let mut resume_block: u64 = last_processed.unwrap_or(0);
 
     let (shutdown_tx, _) = watch::channel(false);
     let (ready_tx, ready_rx) = watch::channel(false);
@@ -150,22 +153,24 @@ fn process_batch(
 ) -> eyre::Result<BatchOutcome> {
     let is_revert = is_revert_batch(batch);
 
+    let block = batch_decoder::batch_block_number(batch);
+
     match batch_decoder::apply_batch(store, batch)? {
         ApplyResult::Watermark => return Ok(BatchOutcome::EnterLive),
         ApplyResult::Applied => {
-            if let Some(block) = batch_decoder::batch_block_number(batch) {
-                *last_block = block;
+            if let Some(b) = block {
+                *last_block = b;
             }
             if !is_revert {
                 writer::insert_batch(&sqlite_conn.lock(), batch)?;
             }
-            if is_revert && let Some(block) = batch_decoder::batch_block_number(batch) {
-                delete_sqlite_from_block(sqlite_conn, block)?;
+            if is_revert && let Some(b) = block {
+                delete_sqlite_from_block(sqlite_conn, b)?;
             }
         }
         ApplyResult::NeedsReplay => {
-            if let Some(block) = batch_decoder::batch_block_number(batch) {
-                delete_sqlite_from_block(sqlite_conn, block)?;
+            if let Some(b) = block {
+                delete_sqlite_from_block(sqlite_conn, b)?;
             }
             return Ok(BatchOutcome::NeedsReplay);
         }
@@ -262,7 +267,7 @@ fn check_gap(
 
 fn is_revert_batch(batch: &arrow::record_batch::RecordBatch) -> bool {
     batch
-        .column_by_name("op")
+        .column_by_name(columns::OP)
         .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt8Array>())
         .map(|c| c.value(0))
         == Some(glint_primitives::exex_types::BatchOp::Revert as u8)

@@ -22,15 +22,7 @@ async fn main() -> eyre::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Run(args) => {
-            sidecar::run(
-                args.exex_socket,
-                args.flight_port,
-                args.health_port,
-                args.db_path,
-            )
-            .await
-        }
+        Command::Run(args) => sidecar::run(args).await,
         Command::Db { command } => match command {
             DbCommand::Rebuild {
                 rpc_url,

@@ -1,4 +1,5 @@
 pub mod annotations;
+pub mod columns;
 pub mod config;
 pub mod constants;
 pub mod entity;

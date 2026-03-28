@@ -4,12 +4,13 @@ use alloy_primitives::Bytes;
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 use eyre::WrapErr;
+use glint_primitives::exex_schema::columns as col_names;
 use glint_primitives::exex_types::{BatchOp, EntityEventType};
 use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
     decode_numeric_map, decode_string_map,
 };
 
@@ -25,7 +26,7 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
         return Ok(ApplyResult::Applied);
     }
 
-    let op_col = col_u8(batch, "op")?;
+    let op_col = col_u8(batch, col_names::OP)?;
 
     // Batches are homogeneous by op.
     let op_val = op_col.value(0);
@@ -47,18 +48,18 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
 }
 
 fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> eyre::Result<()> {
-    let block_number_col = col_u64(batch, "block_number")?;
-    let tx_hash_col = col_fsb(batch, "tx_hash")?;
-    let event_type_col = col_u8(batch, "event_type")?;
-    let entity_key_col = col_fsb(batch, "entity_key")?;
-    let owner_col = col_fsb(batch, "owner")?;
-    let expires_col = col_u64(batch, "expires_at_block")?;
-    let content_type_col = col_string(batch, "content_type")?;
-    let payload_col = col_binary(batch, "payload")?;
-    let str_ann_col = col_map(batch, "string_annotations")?;
-    let num_ann_col = col_map(batch, "numeric_annotations")?;
-    let extend_policy_col = col_u8(batch, "extend_policy")?;
-    let operator_col = col_fsb(batch, "operator")?;
+    let block_number_col = col_u64(batch, col_names::BLOCK_NUMBER)?;
+    let tx_hash_col = col_fsb(batch, col_names::TX_HASH)?;
+    let event_type_col = col_u8(batch, col_names::EVENT_TYPE)?;
+    let entity_key_col = col_fsb(batch, col_names::ENTITY_KEY)?;
+    let owner_col = col_fsb(batch, col_names::OWNER)?;
+    let expires_col = col_u64(batch, col_names::EXPIRES_AT_BLOCK)?;
+    let content_type_col = col_string(batch, col_names::CONTENT_TYPE)?;
+    let payload_col = col_binary(batch, col_names::PAYLOAD)?;
+    let str_ann_col = col_map(batch, col_names::STRING_ANNOTATIONS)?;
+    let num_ann_col = col_map(batch, col_names::NUMERIC_ANNOTATIONS)?;
+    let extend_policy_col = col_u8(batch, col_names::EXTEND_POLICY)?;
+    let operator_col = col_fsb(batch, col_names::OPERATOR)?;
 
     for i in 0..nrows {
         let event_type_raw = event_type_col.value(i);
@@ -156,9 +157,9 @@ fn apply_revert(
     batch: &RecordBatch,
     nrows: usize,
 ) -> eyre::Result<ApplyResult> {
-    let event_type_col = col_u8(batch, "event_type")?;
-    let entity_key_col = col_fsb(batch, "entity_key")?;
-    let old_expires_col = col_u64(batch, "old_expires_at_block")?;
+    let event_type_col = col_u8(batch, col_names::EVENT_TYPE)?;
+    let entity_key_col = col_fsb(batch, col_names::ENTITY_KEY)?;
+    let old_expires_col = col_u64(batch, col_names::OLD_EXPIRES_AT_BLOCK)?;
 
     for i in (0..nrows).rev() {
         let event_type_raw = event_type_col.value(i);
@@ -198,14 +199,16 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
     if batch.num_rows() == 0 {
         return None;
     }
-    col_u64(batch, "block_number").ok().map(|col| col.value(0))
+    col_u64(batch, col_names::BLOCK_NUMBER)
+        .ok()
+        .map(|col| col.value(0))
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use glint_primitives::exex_types::BatchOp;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     use super::*;
     use crate::entity_store::EntityStore;

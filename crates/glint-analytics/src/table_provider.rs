@@ -23,6 +23,8 @@ use datafusion::{
 use roaring::RoaringBitmap;
 use tokio::sync::watch;
 
+use glint_primitives::exex_schema::columns;
+
 use crate::entity_store::{IndexSnapshot, Snapshot, entity_schema};
 
 enum FilterMatch {
@@ -58,7 +60,7 @@ fn extract_owner_literal(expr: &Expr) -> Option<Address> {
 }
 
 fn is_owner_col(expr: &Expr) -> bool {
-    matches!(expr, Expr::Column(c) if c.name() == "owner")
+    matches!(expr, Expr::Column(c) if c.name() == columns::OWNER)
 }
 
 fn match_binary_expr(

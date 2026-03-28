@@ -1,11 +1,12 @@
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
-        UInt32Array, UInt64Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt32Array,
+        UInt64Array, UInt8Array,
     },
     record_batch::RecordBatch,
 };
 use eyre::WrapErr;
+use glint_primitives::exex_schema::columns;
 use rusqlite::Connection;
 
 use crate::schema;
@@ -16,22 +17,22 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
         return Ok(());
     }
 
-    let block_number_col = col_u64(batch, "block_number")?;
-    let block_hash_col = col_fsb(batch, "block_hash")?;
-    let tx_index_col = col_u32(batch, "tx_index")?;
-    let tx_hash_col = col_fsb(batch, "tx_hash")?;
-    let log_index_col = col_u32(batch, "log_index")?;
-    let event_type_col = col_u8(batch, "event_type")?;
-    let entity_key_col = col_fsb(batch, "entity_key")?;
-    let owner_col = col_fsb(batch, "owner")?;
-    let expires_col = col_u64(batch, "expires_at_block")?;
-    let old_expires_col = col_u64(batch, "old_expires_at_block")?;
-    let content_type_col = col_string(batch, "content_type")?;
-    let payload_col = col_binary(batch, "payload")?;
-    let str_ann_col = col_map(batch, "string_annotations")?;
-    let num_ann_col = col_map(batch, "numeric_annotations")?;
-    let extend_policy_col = col_u8(batch, "extend_policy")?;
-    let operator_col = col_fsb(batch, "operator")?;
+    let block_number_col = col_u64(batch, columns::BLOCK_NUMBER)?;
+    let block_hash_col = col_fsb(batch, columns::BLOCK_HASH)?;
+    let tx_index_col = col_u32(batch, columns::TX_INDEX)?;
+    let tx_hash_col = col_fsb(batch, columns::TX_HASH)?;
+    let log_index_col = col_u32(batch, columns::LOG_INDEX)?;
+    let event_type_col = col_u8(batch, columns::EVENT_TYPE)?;
+    let entity_key_col = col_fsb(batch, columns::ENTITY_KEY)?;
+    let owner_col = col_fsb(batch, columns::OWNER)?;
+    let expires_col = col_u64(batch, columns::EXPIRES_AT_BLOCK)?;
+    let old_expires_col = col_u64(batch, columns::OLD_EXPIRES_AT_BLOCK)?;
+    let content_type_col = col_string(batch, columns::CONTENT_TYPE)?;
+    let payload_col = col_binary(batch, columns::PAYLOAD)?;
+    let str_ann_col = col_map(batch, columns::STRING_ANNOTATIONS)?;
+    let num_ann_col = col_map(batch, columns::NUMERIC_ANNOTATIONS)?;
+    let extend_policy_col = col_u8(batch, columns::EXTEND_POLICY)?;
+    let operator_col = col_fsb(batch, columns::OPERATOR)?;
 
     let tx = conn
         .unchecked_transaction()
@@ -39,7 +40,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
 
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT OR IGNORE INTO entity_events (
+            "INSERT OR REPLACE INTO entity_events (
                 block_number, block_hash, tx_index, tx_hash, log_index,
                 event_type, entity_key, owner, expires_at_block, old_expires_at_block,
                 content_type, payload, string_annotations, numeric_annotations,
@@ -60,54 +61,17 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
             validate_blob_len(tx_hash, 32, "tx_hash")?;
             validate_blob_len(entity_key, 32, "entity_key")?;
 
-            let owner: Option<&[u8]> = if owner_col.is_null(i) {
-                None
-            } else {
-                let v = owner_col.value(i);
-                validate_blob_len(v, 20, "owner")?;
-                Some(v)
-            };
-
-            let expires_at: Option<i64> = if expires_col.is_null(i) {
-                None
-            } else {
-                Some(expires_col.value(i) as i64)
-            };
-
-            let old_expires_at: Option<i64> = if old_expires_col.is_null(i) {
-                None
-            } else {
-                Some(old_expires_col.value(i) as i64)
-            };
-
-            let content_type: Option<&str> = if content_type_col.is_null(i) {
-                None
-            } else {
-                Some(content_type_col.value(i))
-            };
-
-            let payload: Option<&[u8]> = if payload_col.is_null(i) {
-                None
-            } else {
-                Some(payload_col.value(i))
-            };
+            let owner: Option<&[u8]> = nullable_blob(owner_col, i, 20, "owner")?;
+            let expires_at: Option<i64> = nullable_u64_as_i64(expires_col, i);
+            let old_expires_at: Option<i64> = nullable_u64_as_i64(old_expires_col, i);
+            let content_type: Option<&str> = nullable_str(content_type_col, i);
+            let payload: Option<&[u8]> = nullable_bytes(payload_col, i);
 
             let string_annotations = encode_string_map(str_ann_col, i)?;
             let numeric_annotations = encode_numeric_map(num_ann_col, i)?;
 
-            let extend_policy: Option<i64> = if extend_policy_col.is_null(i) {
-                None
-            } else {
-                Some(i64::from(extend_policy_col.value(i)))
-            };
-
-            let operator: Option<&[u8]> = if operator_col.is_null(i) {
-                None
-            } else {
-                let v = operator_col.value(i);
-                validate_blob_len(v, 20, "operator")?;
-                Some(v)
-            };
+            let extend_policy: Option<i64> = nullable_u8_as_i64(extend_policy_col, i);
+            let operator: Option<&[u8]> = nullable_blob(operator_col, i, 20, "operator")?;
 
             stmt.execute(rusqlite::params![
                 (block_number as i64),
@@ -145,6 +109,37 @@ fn validate_blob_len(blob: &[u8], expected: usize, name: &str) -> eyre::Result<(
         eyre::bail!("{name} blob length {}, expected {expected}", blob.len());
     }
     Ok(())
+}
+
+fn nullable_str<'a>(col: &'a StringArray, i: usize) -> Option<&'a str> {
+    (!col.is_null(i)).then(|| col.value(i))
+}
+
+fn nullable_bytes<'a>(col: &'a BinaryArray, i: usize) -> Option<&'a [u8]> {
+    (!col.is_null(i)).then(|| col.value(i))
+}
+
+fn nullable_blob<'a>(
+    col: &'a FixedSizeBinaryArray,
+    i: usize,
+    expected_len: usize,
+    name: &str,
+) -> eyre::Result<Option<&'a [u8]>> {
+    if col.is_null(i) {
+        return Ok(None);
+    }
+    let v = col.value(i);
+    validate_blob_len(v, expected_len, name)?;
+    Ok(Some(v))
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn nullable_u64_as_i64(col: &UInt64Array, i: usize) -> Option<i64> {
+    (!col.is_null(i)).then(|| col.value(i) as i64)
+}
+
+fn nullable_u8_as_i64(col: &UInt8Array, i: usize) -> Option<i64> {
+    (!col.is_null(i)).then(|| i64::from(col.value(i)))
 }
 
 macro_rules! col {
@@ -234,7 +229,7 @@ mod tests {
     use crate::schema;
 
     use glint_primitives::exex_schema::entity_events_schema;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -275,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_batch_duplicate_is_ignored() {
+    fn insert_batch_duplicate_is_idempotent() {
         let conn = setup_db();
         let batch = build_batch(&[EventBuilder::created(10, 0x01)]);
         insert_batch(&conn, &batch).unwrap();

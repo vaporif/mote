@@ -617,14 +617,13 @@ fn insert_sender_account(
     original_info: &AccountInfo,
     gas_cost: U256,
 ) {
-    let original = Box::new(original_info.clone());
-    let mut info = *original.clone();
+    let mut info = original_info.clone();
     info.nonce = info.nonce.saturating_add(1);
     info.balance = info.balance.saturating_sub(gas_cost);
 
     let account = Account {
         info,
-        original_info: original,
+        original_info: Box::new(original_info.clone()),
         transaction_id: 0,
         storage: revm::state::EvmStorage::default(),
         status: AccountStatus::Touched,

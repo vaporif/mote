@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray};
 use datafusion::prelude::*;
 use glint_historical::{provider::HistoricalTableProvider, schema, writer};
+use glint_primitives::exex_schema::columns;
 use glint_primitives::exex_types::EntityEventType;
 use glint_primitives::test_utils::{EventBuilder, build_batch};
 use parking_lot::Mutex;
@@ -186,7 +187,7 @@ async fn e2e_annotations_survive_roundtrip() {
     let batches = df.collect().await.unwrap();
     assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
 
-    let str_map = batches[0].column_by_name("string_annotations").unwrap();
+    let str_map = batches[0].column_by_name(columns::STRING_ANNOTATIONS).unwrap();
     let str_map = str_map.as_map();
     let keys = str_map.keys().as_string::<i32>();
     let values = str_map.values().as_string::<i32>();
@@ -205,7 +206,7 @@ async fn e2e_annotations_survive_roundtrip() {
         ]
     );
 
-    let num_map = batches[0].column_by_name("numeric_annotations").unwrap();
+    let num_map = batches[0].column_by_name(columns::NUMERIC_ANNOTATIONS).unwrap();
     let num_map = num_map.as_map();
     let keys = num_map.keys().as_string::<i32>();
     let values = num_map
@@ -425,7 +426,7 @@ async fn e2e_owner_and_entity_key_readable() {
     assert_eq!(batches[0].num_rows(), 1);
 
     let entity_key_col = batches[0]
-        .column_by_name("entity_key")
+        .column_by_name(columns::ENTITY_KEY)
         .unwrap()
         .as_fixed_size_binary();
     assert_eq!(
@@ -434,7 +435,7 @@ async fn e2e_owner_and_entity_key_readable() {
     );
 
     let owner_col = batches[0]
-        .column_by_name("owner")
+        .column_by_name(columns::OWNER)
         .unwrap()
         .as_fixed_size_binary();
     assert_eq!(
@@ -478,17 +479,17 @@ async fn e2e_null_optional_fields() {
 
     assert!(
         batches[0]
-            .column_by_name("expires_at_block")
+            .column_by_name(columns::EXPIRES_AT_BLOCK)
             .unwrap()
             .is_null(0)
     );
     assert!(
         batches[0]
-            .column_by_name("content_type")
+            .column_by_name(columns::CONTENT_TYPE)
             .unwrap()
             .is_null(0)
     );
-    assert!(batches[0].column_by_name("payload").unwrap().is_null(0));
+    assert!(batches[0].column_by_name(columns::PAYLOAD).unwrap().is_null(0));
 }
 
 #[tokio::test]
