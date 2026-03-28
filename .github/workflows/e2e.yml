@@ -37,10 +37,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # release build: reth v1.11.3 has a spurious debug_assert in deferred_trie
-      # (fixed upstream in paradigmxyz/reth#22505, not yet in a release tag)
-      - name: Build binaries
-        run: nix develop --command cargo build --release --bin eth-glint --bin glint-db-sidecar
+      - name: Build Docker images
+        run: |
+          docker build -f docker/Dockerfile.node -t eth-glint:latest .
+          docker build -f docker/Dockerfile.sidecar -t glint-db-sidecar:latest .
 
       - name: E2E tests
         run: nix develop --command cargo nextest run -p glint-e2e --run-ignored all

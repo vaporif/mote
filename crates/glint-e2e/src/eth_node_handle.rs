@@ -1,71 +1,70 @@
-use std::fs::File;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 use tempfile::TempDir;
+use testcontainers::core::{IntoContainerPort, Mount};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, runners::AsyncRunner};
 
 pub struct EthNodeHandle {
-    child: Child,
+    _container: ContainerAsync<GenericImage>,
+    container_id: String,
     rpc_url: String,
-    exex_socket: PathBuf,
-    _datadir: TempDir,
-    log_file: PathBuf,
+    exex_volume_path: PathBuf,
+    _exex_dir: TempDir,
 }
 
 impl EthNodeHandle {
-    pub fn spawn() -> eyre::Result<Self> {
-        let bin = Self::resolve_binary()?;
-        let genesis = Self::resolve_genesis()?;
-        let datadir = tempfile::tempdir()?;
-        let port = Self::pick_port()?;
-        let p2p_port = Self::pick_port()?;
-        let auth_port = Self::pick_port()?;
-        let rpc_url = format!("http://127.0.0.1:{port}");
+    pub async fn spawn() -> eyre::Result<Self> {
+        let image_tag = std::env::var("GLINT_IMAGE_TAG").unwrap_or_else(|_| "latest".into());
+        let tmpdir_base = std::env::var("GLINT_E2E_TMPDIR").unwrap_or_else(|_| "/tmp".into());
+        let exex_dir = tempfile::Builder::new()
+            .prefix("glint-e2e-")
+            .tempdir_in(tmpdir_base)?;
+        let exex_host_path = exex_dir.path().to_path_buf();
 
-        let log_file = datadir.path().join("node-output.log");
-        let stderr_file = File::create(&log_file)?;
-        let stdout_file = stderr_file.try_clone()?;
-        let exex_socket = datadir.path().join("glint-exex.sock");
+        let image = GenericImage::new("eth-glint", &image_tag)
+            .with_exposed_port(8545.tcp())
+            .with_mount(Mount::bind_mount(exex_host_path.to_str().unwrap(), "/exex"))
+            .with_cmd(vec![
+                "node",
+                "--chain",
+                "/etc/glint/genesis.json",
+                "--dev",
+                "--dev.block-time",
+                "1s",
+                "--http",
+                "--http.addr",
+                "0.0.0.0",
+                "--http.port",
+                "8545",
+                "--port",
+                "30303",
+                "--discovery.port",
+                "30303",
+                "--authrpc.port",
+                "8551",
+                "--datadir",
+                "/data",
+                "--log.file.directory",
+                "/data/logs",
+                "--glint.exex-socket-path",
+                "/exex/glint-exex.sock",
+                "-vvvv",
+            ]);
 
-        let child = Command::new(&bin)
-            .arg("node")
-            .arg("--chain")
-            .arg(&genesis)
-            .arg("--dev")
-            .arg("--dev.block-time")
-            .arg("1s")
-            .arg("--http")
-            .arg("--http.port")
-            .arg(port.to_string())
-            .arg("--port")
-            .arg(p2p_port.to_string())
-            .arg("--discovery.port")
-            .arg(p2p_port.to_string())
-            .arg("--authrpc.port")
-            .arg(auth_port.to_string())
-            .arg("--datadir")
-            .arg(datadir.path())
-            .arg("--log.file.directory")
-            .arg(datadir.path().join("logs"))
-            .arg("--glint.exex-socket-path")
-            .arg(&exex_socket)
-            .arg("-vvvv")
-            .stdout(Stdio::from(stdout_file))
-            .stderr(Stdio::from(stderr_file))
-            .spawn()?;
+        let container = image.start().await?;
+        let container_id = container.id().to_string();
+        let host_port = container.get_host_port_ipv4(8545.tcp()).await?;
+        let rpc_url = format!("http://127.0.0.1:{host_port}");
 
-        let mut handle = Self {
-            child,
+        let handle = Self {
+            _container: container,
+            container_id,
             rpc_url,
-            exex_socket,
-            log_file,
-            _datadir: datadir,
+            exex_volume_path: exex_host_path,
+            _exex_dir: exex_dir,
         };
 
-        eprintln!("node log file: {}", handle.log_file.display());
-        handle.wait_ready()?;
+        handle.wait_ready().await?;
         Ok(handle)
     }
 
@@ -73,71 +72,19 @@ impl EthNodeHandle {
         &self.rpc_url
     }
 
-    pub fn exex_socket(&self) -> &Path {
-        &self.exex_socket
+    pub fn exex_volume_path(&self) -> &Path {
+        &self.exex_volume_path
     }
 
-    pub fn dump_logs(&self) -> String {
-        std::fs::read_to_string(&self.log_file).unwrap_or_else(|e| format!("<read error: {e}>"))
+    pub fn logs(&self) -> String {
+        crate::fetch_container_logs(&self.container_id)
     }
 
-    pub fn grep_logs(&self, pattern: &str) -> Vec<String> {
-        self.dump_logs()
-            .lines()
-            .filter(|l| l.contains(pattern))
-            .map(String::from)
-            .collect()
-    }
+    async fn wait_ready(&self) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let client = reqwest::Client::new();
 
-    /// Resolves the eth-glint binary path.
-    ///
-    /// Builds in release mode because reth v1.11.3 has a spurious `debug_assert`
-    /// in `DeferredTrieData::wait_cloned` that panics when called from a dedicated
-    /// rayon pool (fixed upstream in paradigmxyz/reth#22505, not yet in a release).
-    fn resolve_binary() -> eyre::Result<PathBuf> {
-        if let Ok(bin) = std::env::var("GLINT_BIN") {
-            return Ok(PathBuf::from(bin));
-        }
-        let fallback =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/eth-glint");
-        if !fallback.exists() {
-            let status = Command::new("cargo")
-                .args([
-                    "build",
-                    "--release",
-                    "-p",
-                    "glint-node-eth",
-                    "--bin",
-                    "eth-glint",
-                ])
-                .status()?;
-            eyre::ensure!(status.success(), "failed to build eth-glint");
-        }
-        Ok(fallback)
-    }
-
-    fn resolve_genesis() -> eyre::Result<PathBuf> {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../etc/genesis.json")
-            .canonicalize()
-            .map_err(Into::into)
-    }
-
-    fn pick_port() -> eyre::Result<u16> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        Ok(listener.local_addr()?.port())
-    }
-
-    fn wait_ready(&mut self) -> eyre::Result<()> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let client = reqwest::blocking::Client::new();
-
-        while std::time::Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait()? {
-                let log = std::fs::read_to_string(&self.log_file).unwrap_or_default();
-                eyre::bail!("node exited with {status} before becoming ready\n{log}");
-            }
-
+        while tokio::time::Instant::now() < deadline {
             let body = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "eth_blockNumber",
@@ -149,43 +96,34 @@ impl EthNodeHandle {
                 .post(&self.rpc_url)
                 .json(&body)
                 .send()
+                .await
                 .ok()
-                .and_then(|r| r.json::<serde_json::Value>().ok())
-                .and_then(|j| j.get("result").cloned())
                 .is_some()
             {
                 return Ok(());
             }
 
-            std::thread::sleep(Duration::from_millis(500));
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        self.child.kill().ok();
         eyre::bail!("node did not become ready within 30s")
     }
 }
 
 impl Drop for EthNodeHandle {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
-
         if std::thread::panicking() {
-            let logs = std::fs::read_to_string(&self.log_file).unwrap_or_default();
+            let logs = crate::fetch_container_logs(&self.container_id);
             let glint_lines: Vec<&str> = logs.lines().filter(|l| l.contains("glint")).collect();
             eprintln!("\n=== GLINT NODE LOGS (filtered) ===");
-            for line in &glint_lines {
-                eprintln!("{line}");
-            }
             if glint_lines.is_empty() {
-                // Show last 50 lines if no glint-specific logs found
                 let all_lines: Vec<&str> = logs.lines().collect();
                 let start = all_lines.len().saturating_sub(50);
-                eprintln!(
-                    "(no glint-specific logs found, showing last {} lines)",
-                    all_lines.len() - start
-                );
                 for line in &all_lines[start..] {
+                    eprintln!("{line}");
+                }
+            } else {
+                for line in &glint_lines {
                     eprintln!("{line}");
                 }
             }

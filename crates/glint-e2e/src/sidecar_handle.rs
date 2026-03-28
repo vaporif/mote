@@ -1,140 +1,106 @@
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::path::Path;
 
-use tempfile::TempDir;
+use testcontainers::core::{IntoContainerPort, Mount};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, runners::AsyncRunner};
 
 pub struct SidecarHandle {
-    child: Child,
-    flight_port: u16,
-    health_port: u16,
-    log_file: PathBuf,
-    _db_dir: TempDir,
+    _container: ContainerAsync<GenericImage>,
+    container_id: String,
+    flight_url: String,
+    health_url: String,
 }
 
 impl SidecarHandle {
-    pub fn spawn(exex_socket: &Path) -> eyre::Result<Self> {
-        let bin = Self::resolve_binary()?;
-        let flight_port = pick_port()?;
-        let health_port = pick_port()?;
-        let db_dir = tempfile::tempdir()?;
-        let db_path = db_dir.path().join("glint-sidecar.db");
+    pub async fn spawn(exex_volume_path: &Path) -> eyre::Result<Self> {
+        let image_tag = std::env::var("GLINT_IMAGE_TAG").unwrap_or_else(|_| "latest".into());
 
-        let log_file = db_dir.path().join("sidecar-output.log");
-        let stderr_file = std::fs::File::create(&log_file)?;
-        let stdout_file = stderr_file.try_clone()?;
+        let image = GenericImage::new("glint-db-sidecar", &image_tag)
+            .with_exposed_port(50051.tcp())
+            .with_exposed_port(8080.tcp())
+            .with_env_var("RUST_LOG", "debug")
+            .with_mount(Mount::bind_mount(
+                exex_volume_path.to_str().unwrap(),
+                "/exex",
+            ))
+            .with_cmd(vec![
+                "run",
+                "--exex-socket",
+                "/exex/glint-exex.sock",
+                "--flight-port",
+                "50051",
+                "--health-port",
+                "8080",
+                "--db-path",
+                "/data/glint-sidecar.db",
+            ]);
 
-        let child = Command::new(&bin)
-            .arg("run")
-            .arg("--exex-socket")
-            .arg(exex_socket)
-            .arg("--flight-port")
-            .arg(flight_port.to_string())
-            .arg("--health-port")
-            .arg(health_port.to_string())
-            .arg("--db-path")
-            .arg(&db_path)
-            .env("RUST_LOG", "debug")
-            .stdout(Stdio::from(stdout_file))
-            .stderr(Stdio::from(stderr_file))
-            .spawn()?;
+        let container = image.start().await?;
+        let container_id = container.id().to_string();
+        let flight_port = container.get_host_port_ipv4(50051.tcp()).await?;
+        let health_port = container.get_host_port_ipv4(8080.tcp()).await?;
+        let flight_url = format!("http://127.0.0.1:{flight_port}");
+        let health_url = format!("http://127.0.0.1:{health_port}");
 
-        let mut handle = Self {
-            child,
-            flight_port,
-            health_port,
-            log_file,
-            _db_dir: db_dir,
+        let handle = Self {
+            _container: container,
+            container_id,
+            flight_url,
+            health_url,
         };
 
-        eprintln!("sidecar log file: {}", handle.log_file.display());
-        handle.wait_healthy()?;
+        handle.wait_healthy().await?;
         Ok(handle)
     }
 
-    pub fn flight_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.flight_port)
+    pub fn flight_url(&self) -> &str {
+        &self.flight_url
     }
 
-    pub fn health_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.health_port)
+    pub fn health_url(&self) -> &str {
+        &self.health_url
     }
 
-    pub fn dump_logs(&self) -> String {
-        std::fs::read_to_string(&self.log_file).unwrap_or_else(|e| format!("<read error: {e}>"))
+    pub fn logs(&self) -> String {
+        crate::fetch_container_logs(&self.container_id)
     }
 
-    fn resolve_binary() -> eyre::Result<PathBuf> {
-        if let Ok(bin) = std::env::var("GLINT_SIDECAR_BIN") {
-            return Ok(PathBuf::from(bin));
-        }
-        let fallback =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/glint-db-sidecar");
-        if !fallback.exists() {
-            let status = Command::new("cargo")
-                .args([
-                    "build",
-                    "-p",
-                    "glint-db-sidecar",
-                    "--bin",
-                    "glint-db-sidecar",
-                ])
-                .status()?;
-            eyre::ensure!(status.success(), "failed to build glint-db-sidecar");
-        }
-        Ok(fallback)
-    }
+    async fn wait_healthy(&self) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let client = reqwest::Client::new();
+        let url = format!("{}/health", self.health_url);
 
-    fn wait_healthy(&mut self) -> eyre::Result<()> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let client = reqwest::blocking::Client::new();
-        let url = format!("http://127.0.0.1:{}/health", self.health_port);
-
-        while std::time::Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait()? {
-                eyre::bail!("sidecar exited with {status} before becoming healthy");
-            }
-
+        while tokio::time::Instant::now() < deadline {
             if client
                 .get(&url)
                 .send()
+                .await
                 .ok()
                 .is_some_and(|r| r.status().is_success())
             {
                 return Ok(());
             }
 
-            std::thread::sleep(Duration::from_millis(500));
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
-        self.child.kill().ok();
         eyre::bail!("sidecar did not become healthy within 30s")
     }
 }
 
 impl Drop for SidecarHandle {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
-
         if std::thread::panicking() {
-            let logs = std::fs::read_to_string(&self.log_file).unwrap_or_default();
-            let lines: Vec<&str> = logs.lines().collect();
-            let start = lines.len().saturating_sub(50);
+            let logs = crate::fetch_container_logs(&self.container_id);
+            let all_lines: Vec<&str> = logs.lines().collect();
+            let start = all_lines.len().saturating_sub(50);
             eprintln!(
                 "\n=== SIDECAR LOGS (last {} lines) ===",
-                lines.len() - start
+                all_lines.len() - start
             );
-            for line in &lines[start..] {
+            for line in &all_lines[start..] {
                 eprintln!("{line}");
             }
             eprintln!("=== END SIDECAR LOGS ===\n");
         }
     }
-}
-
-fn pick_port() -> eyre::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
 }

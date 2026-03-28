@@ -49,8 +49,7 @@ run-op *args:
 run-sidecar *args:
     cargo run -p glint-db-sidecar -- {{args}}
 
-# release build: reth v1.11.3 has a spurious debug_assert in deferred_trie
-# (fixed upstream in paradigmxyz/reth#22505, not yet in a release tag)
 e2e:
-    cargo build --release --bin eth-glint --bin glint-db-sidecar
+    docker build -f docker/Dockerfile.node -t eth-glint:latest .
+    docker build -f docker/Dockerfile.sidecar -t glint-db-sidecar:latest .
     cargo nextest run -p glint-e2e --run-ignored all

@@ -15,11 +15,9 @@ fn dev_wallet() -> EthereumWallet {
 }
 
 #[tokio::test]
-#[ignore = "requires built eth-glint binary; run with `just e2e`"]
+#[ignore = "requires eth-glint Docker image; run with `just e2e`"]
 async fn test_create_entity() -> eyre::Result<()> {
-    let node = tokio::task::spawn_blocking(EthNodeHandle::spawn)
-        .await
-        .expect("spawn_blocking panicked")?;
+    let node = EthNodeHandle::spawn().await?;
 
     let wallet = dev_wallet();
     let expected_owner = wallet.default_signer().address();
@@ -65,20 +63,14 @@ async fn test_create_entity() -> eyre::Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires built eth-glint + glint-db-sidecar binaries; run with `just e2e`"]
+#[ignore = "requires eth-glint + glint-db-sidecar Docker images; run with `just e2e`"]
 async fn test_flight_sql_query() -> eyre::Result<()> {
-    let node = tokio::task::spawn_blocking(EthNodeHandle::spawn)
-        .await
-        .expect("spawn_blocking panicked")?;
-
-    let exex_socket = node.exex_socket().to_path_buf();
-    let sidecar = tokio::task::spawn_blocking(move || SidecarHandle::spawn(&exex_socket))
-        .await
-        .expect("spawn_blocking panicked")?;
+    let node = EthNodeHandle::spawn().await?;
+    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
 
     let client = Glint::builder(node.rpc_url())
         .wallet(dev_wallet())
-        .flight_url(&sidecar.flight_url())
+        .flight_url(sidecar.flight_url())
         .build()
         .await?;
 
@@ -107,20 +99,14 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires built eth-glint + glint-db-sidecar binaries; run with `just e2e`"]
+#[ignore = "requires eth-glint + glint-db-sidecar Docker images; run with `just e2e`"]
 async fn test_historical_query() -> eyre::Result<()> {
-    let node = tokio::task::spawn_blocking(EthNodeHandle::spawn)
-        .await
-        .expect("spawn_blocking panicked")?;
-
-    let exex_socket = node.exex_socket().to_path_buf();
-    let sidecar = tokio::task::spawn_blocking(move || SidecarHandle::spawn(&exex_socket))
-        .await
-        .expect("spawn_blocking panicked")?;
+    let node = EthNodeHandle::spawn().await?;
+    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
 
     let client = Glint::builder(node.rpc_url())
         .wallet(dev_wallet())
-        .flight_url(&sidecar.flight_url())
+        .flight_url(sidecar.flight_url())
         .build()
         .await?;
 
@@ -173,22 +159,20 @@ async fn test_historical_query() -> eyre::Result<()> {
 
 async fn wait_for_sidecar_ready(sidecar: &SidecarHandle) -> eyre::Result<()> {
     let ready_url = format!("{}/ready", sidecar.health_url());
-    tokio::task::spawn_blocking(move || {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        let client = reqwest::blocking::Client::new();
-        while std::time::Instant::now() < deadline {
-            if client
-                .get(&ready_url)
-                .send()
-                .ok()
-                .is_some_and(|r| r.status().is_success())
-            {
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+    let client = reqwest::Client::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+
+    while tokio::time::Instant::now() < deadline {
+        if client
+            .get(&ready_url)
+            .send()
+            .await
+            .ok()
+            .is_some_and(|r| r.status().is_success())
+        {
+            return Ok(());
         }
-        eyre::bail!("sidecar /ready not 200 within 60s")
-    })
-    .await
-    .expect("spawn_blocking panicked")
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    eyre::bail!("sidecar /ready not 200 within 60s")
 }
