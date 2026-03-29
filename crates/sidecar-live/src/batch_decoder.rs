@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
     decode_numeric_map, decode_string_map,
 };
 
@@ -37,6 +37,13 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
     let op = BatchOp::try_from(op_val).map_err(|v| eyre::eyre!("unknown BatchOp value: {v}"))?;
 
     let nrows = batch.num_rows();
+
+    if let Some(block) = batch_block_number(batch) {
+        match op {
+            BatchOp::Commit => store.set_current_block(block),
+            BatchOp::Revert => store.set_current_block(block.saturating_sub(1)),
+        }
+    }
 
     match op {
         BatchOp::Commit => {
@@ -206,9 +213,9 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
     use glint_primitives::exex_types::BatchOp;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     use super::*;
     use crate::entity_store::EntityStore;
@@ -403,5 +410,62 @@ mod tests {
         .with_op(BatchOp::Revert)]);
         let result = apply_batch(&mut store, &revert_batch).unwrap();
         assert_eq!(result, ApplyResult::NeedsReplay);
+    }
+
+    #[test]
+    fn commit_advances_current_block() {
+        let mut store = EntityStore::new();
+        assert_eq!(store.current_block(), 0);
+
+        let batch = build_batch(&[created_event(200).with_op(BatchOp::Commit)]);
+        apply_batch(&mut store, &batch).unwrap();
+        assert_eq!(store.current_block(), 0); // block_number from created(0, ...)
+    }
+
+    #[test]
+    fn commit_at_block_10_sets_current_block() {
+        let mut store = EntityStore::new();
+
+        let batch = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())]);
+        apply_batch(&mut store, &batch).unwrap();
+        assert_eq!(store.current_block(), 10);
+    }
+
+    #[test]
+    fn revert_sets_current_block_to_previous() {
+        let mut store = EntityStore::new();
+
+        let create = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())]);
+        apply_batch(&mut store, &create).unwrap();
+        assert_eq!(store.current_block(), 10);
+
+        let revert = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())
+            .with_op(BatchOp::Revert)]);
+        apply_batch(&mut store, &revert).unwrap();
+        assert_eq!(store.current_block(), 9);
+    }
+
+    #[test]
+    fn revert_at_block_zero_saturates() {
+        let mut store = EntityStore::new();
+
+        let create = build_batch(&[created_event(200)]);
+        apply_batch(&mut store, &create).unwrap();
+
+        let revert = build_batch(&[created_event(200).with_op(BatchOp::Revert)]);
+        apply_batch(&mut store, &revert).unwrap();
+        assert_eq!(store.current_block(), 0);
     }
 }
