@@ -58,8 +58,6 @@ impl HistoricalTableProvider {
     }
 }
 
-// --- Block range extraction from DataFusion filter expressions ---
-
 pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
     use datafusion::logical_expr::{BinaryExpr, Operator};
 
@@ -98,9 +96,6 @@ pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
     }
 }
 
-/// Normalize a binary comparison so `block_number` is always on the left.
-/// Returns `(normalized_op, literal_value)` where `normalized_op` is the operator
-/// as if `block_number` were on the left side.
 fn normalize_comparison(
     left: &Expr,
     op: datafusion::logical_expr::Operator,
@@ -180,8 +175,6 @@ fn references_block_number(expr: &Expr) -> bool {
     }
 }
 
-// --- TableProvider implementation ---
-
 #[async_trait]
 impl TableProvider for HistoricalTableProvider {
     fn as_any(&self) -> &dyn Any {
@@ -245,8 +238,6 @@ impl TableProvider for HistoricalTableProvider {
         Ok(Arc::new(exec) as Arc<dyn ExecutionPlan>)
     }
 }
-
-// --- SQLite query → Arrow batch conversion ---
 
 #[allow(
     clippy::cast_sign_loss,
