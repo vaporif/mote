@@ -487,4 +487,79 @@ mod tests {
             "consumer_connected should be false after channel closed"
         );
     }
+
+    #[test]
+    fn disconnected_consumer_skips_send() {
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
+        let consumer_connected = Arc::new(AtomicBool::new(false));
+        let mut grace = stream::GraceState::default();
+
+        try_send_batch(
+            &batch_tx,
+            None,
+            dummy_batch(),
+            &consumer_connected,
+            &mut grace,
+            false,
+        );
+
+        assert!(batch_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn successful_send_resets_grace() {
+        let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+
+        grace.force_disconnect();
+        assert!(grace.should_disconnect);
+
+        try_send_batch(
+            &batch_tx,
+            None,
+            dummy_batch(),
+            &consumer_connected,
+            &mut grace,
+            false,
+        );
+
+        assert!(!grace.should_disconnect);
+    }
+
+    struct MockTx(alloy_primitives::B256);
+
+    impl alloy_consensus::transaction::TxHashRef for MockTx {
+        fn tx_hash(&self) -> &alloy_primitives::B256 {
+            &self.0
+        }
+    }
+
+    #[test]
+    fn no_receipts_yields_no_events() {
+        let receipts: Vec<alloy_consensus::Receipt<alloy_primitives::Log>> = vec![];
+        let transactions: Vec<MockTx> = vec![];
+        let events = collect_events_from_receipts(&receipts, &transactions);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn non_glint_logs_are_ignored() {
+        use alloy_primitives::{Address, Log, LogData, B256};
+
+        let non_glint_log = Log {
+            address: Address::repeat_byte(0xff),
+            data: LogData::new_unchecked(vec![B256::ZERO], Default::default()),
+        };
+
+        let receipt = alloy_consensus::Receipt {
+            status: alloy_consensus::Eip658Value::Eip658(true),
+            cumulative_gas_used: 0,
+            logs: vec![non_glint_log.clone(), non_glint_log],
+        };
+
+        let tx = MockTx(B256::repeat_byte(0x01));
+        let events = collect_events_from_receipts(&[receipt], &[tx]);
+        assert!(events.is_empty());
+    }
 }

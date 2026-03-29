@@ -1,7 +1,7 @@
-use alloy_primitives::{Address, B256, Log, U256};
+use alloy_primitives::{Address, Log, B256, U256};
 use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
-    entity::{EntityMetadata, derive_entity_key},
+    entity::{derive_entity_key, EntityMetadata},
     events::{
         EntityCreated, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdated,
         LogAnnotations,
@@ -11,13 +11,13 @@ use glint_primitives::{
         entity_content_hash_key, entity_operator_key, entity_storage_key,
     },
 };
-use reth_evm::{Evm, block::BlockExecutionError};
+use reth_evm::{block::BlockExecutionError, Evm};
 use revm::DatabaseCommit;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument};
 
-use super::decode::{DecodedGlintTransaction, decode_with_raw_slices};
-use super::{GlintBlockExecutor, GlintResultBuilder, glint_err};
+use super::decode::{decode_with_raw_slices, DecodedGlintTransaction};
+use super::{glint_err, GlintBlockExecutor, GlintResultBuilder};
 
 use super::{
     GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, GLINT_GAS_PER_CREATE, GLINT_GAS_PER_DELETE,
@@ -689,5 +689,68 @@ mod tests {
 
         // "key1" (4) + "val1" (4) + "nk" (2) + 8 = 18
         assert_eq!(annotation_gas_bytes(&str_anns, &num_anns), 18);
+    }
+
+    #[test]
+    fn owner_is_authorized() {
+        let sender = Address::with_last_byte(1);
+        assert!(authorize_mutation(sender, sender, None));
+    }
+
+    #[test]
+    fn operator_is_authorized() {
+        let sender = Address::with_last_byte(1);
+        let owner = Address::with_last_byte(2);
+        assert!(authorize_mutation(sender, owner, Some(sender)));
+    }
+
+    #[test]
+    fn stranger_is_not_authorized() {
+        let sender = Address::with_last_byte(1);
+        let owner = Address::with_last_byte(2);
+        let operator = Address::with_last_byte(3);
+        assert!(!authorize_mutation(sender, owner, Some(operator)));
+    }
+
+    #[test]
+    fn non_owner_without_operator_is_not_authorized() {
+        let sender = Address::with_last_byte(1);
+        let owner = Address::with_last_byte(2);
+        assert!(!authorize_mutation(sender, owner, None));
+    }
+
+    #[test]
+    fn unzip_empty_annotations_produces_empty_fields() {
+        let result = unzip_annotations(&[], &[]);
+        assert!(result.string_keys.is_empty());
+        assert!(result.string_values.is_empty());
+        assert!(result.numeric_keys.is_empty());
+        assert!(result.numeric_values.is_empty());
+    }
+
+    #[test]
+    fn unzip_splits_keys_and_values() {
+        use glint_primitives::transaction::{NumericAnnotation, StringAnnotation};
+
+        let str_anns = vec![
+            StringAnnotation {
+                key: "sk1".into(),
+                value: "sv1".into(),
+            },
+            StringAnnotation {
+                key: "sk2".into(),
+                value: "sv2".into(),
+            },
+        ];
+        let num_anns = vec![NumericAnnotation {
+            key: "nk1".into(),
+            value: 10,
+        }];
+
+        let result = unzip_annotations(&str_anns, &num_anns);
+        assert_eq!(result.string_keys, vec!["sk1", "sk2"]);
+        assert_eq!(result.string_values, vec!["sv1", "sv2"]);
+        assert_eq!(result.numeric_keys, vec!["nk1"]);
+        assert_eq!(result.numeric_values, vec![10]);
     }
 }

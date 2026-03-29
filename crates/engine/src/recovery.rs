@@ -5,7 +5,7 @@ use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::B256;
 use glint_primitives::config::GlintChainConfig;
 use glint_primitives::constants::PROCESSOR_ADDRESS;
-use glint_primitives::parse::{EntityEvent, parse_log};
+use glint_primitives::parse::{parse_log, EntityEvent};
 use reth_provider::ReceiptProvider;
 use tracing::{info, warn};
 
@@ -401,5 +401,109 @@ mod tests {
         let path = dir.path().join("corrupt.bin");
         std::fs::write(&path, b"not a valid checkpoint").unwrap();
         assert!(load_checkpoint(&path).is_err());
+    }
+
+    #[test]
+    fn permissions_changed_does_not_alter_expiry() {
+        let mut tracker = LiveEntityTracker::new();
+        let key = B256::repeat_byte(0x01);
+        tracker.apply_event(&created(key, 1000));
+        tracker.apply_event(&EntityEvent::PermissionsChanged {
+            entity_key: key,
+            old_owner: Address::ZERO,
+            new_owner: Address::repeat_byte(0x01),
+            extend_policy: 1,
+            operator: Address::ZERO,
+            gas_cost: 5_000,
+        });
+        assert!(tracker.all_seen_keys().contains(&key));
+        assert_eq!(tracker.live_entities().get(&key), Some(&1000));
+    }
+
+    #[test]
+    fn into_inner_separates_live_and_seen() {
+        let mut tracker = LiveEntityTracker::new();
+        let key_a = B256::repeat_byte(0x01);
+        let key_b = B256::repeat_byte(0x02);
+        tracker.apply_event(&created(key_a, 1000));
+        tracker.apply_event(&created(key_b, 2000));
+        tracker.apply_event(&EntityEvent::Deleted {
+            entity_key: key_b,
+            owner: Address::ZERO,
+            sender: Address::ZERO,
+            gas_cost: 10_000,
+        });
+
+        let (entities, all_seen) = tracker.into_inner();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities.get(&key_a), Some(&1000));
+        assert_eq!(all_seen.len(), 2);
+        assert!(all_seen.contains(&key_a));
+        assert!(all_seen.contains(&key_b));
+    }
+
+    #[test]
+    fn every_event_type_appears_in_all_seen() {
+        let mut tracker = LiveEntityTracker::new();
+        let key_create = B256::repeat_byte(0x01);
+        let key_update = B256::repeat_byte(0x02);
+        let key_delete = B256::repeat_byte(0x03);
+        let key_perms = B256::repeat_byte(0x04);
+
+        tracker.apply_event(&created(key_create, 1000));
+        tracker.apply_event(&EntityEvent::Updated {
+            entity_key: key_update,
+            owner: Address::ZERO,
+            old_expires_at: 500,
+            new_expires_at: 2000,
+            content_type: String::new(),
+            payload: Bytes::default(),
+            string_keys: vec![],
+            string_values: vec![],
+            numeric_keys: vec![],
+            numeric_values: vec![],
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 40_000,
+        });
+        tracker.apply_event(&EntityEvent::Deleted {
+            entity_key: key_delete,
+            owner: Address::ZERO,
+            sender: Address::ZERO,
+            gas_cost: 10_000,
+        });
+        tracker.apply_event(&EntityEvent::PermissionsChanged {
+            entity_key: key_perms,
+            old_owner: Address::ZERO,
+            new_owner: Address::repeat_byte(0x01),
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 5_000,
+        });
+
+        let seen = tracker.all_seen_keys();
+        assert_eq!(seen.len(), 4);
+        assert!(seen.contains(&key_create));
+        assert!(seen.contains(&key_update));
+        assert!(seen.contains(&key_delete));
+        assert!(seen.contains(&key_perms));
+    }
+
+    #[test]
+    fn empty_checkpoint_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.bin");
+
+        let index = ExpirationIndex::new();
+        let tip_block = 0;
+        let tip_hash = B256::ZERO;
+
+        save_checkpoint(&index, tip_block, &tip_hash, &path).unwrap();
+
+        let (loaded_index, loaded_tip, loaded_hash) = load_checkpoint(&path).unwrap();
+        assert_eq!(loaded_tip, 0);
+        assert_eq!(loaded_hash, B256::ZERO);
+        assert!(loaded_index.get_expired(0).is_none());
+        assert!(loaded_index.get_expired(100).is_none());
     }
 }
