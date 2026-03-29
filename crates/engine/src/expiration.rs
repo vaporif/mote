@@ -479,4 +479,24 @@ mod tests {
         assert!(expired.contains(&key_b));
         assert!(expired.contains(&key_c));
     }
+
+    #[test]
+    fn restore_merges_with_new_inserts() {
+        let mut idx = ExpirationIndex::new();
+        let old_key = B256::repeat_byte(0x01);
+        let new_key = B256::repeat_byte(0x02);
+
+        idx.insert(10, old_key);
+        idx.drain_block(10);
+
+        // After drain, a new entity is inserted at the same block (e.g. during reorg replay)
+        idx.insert(10, new_key);
+
+        let restored = idx.restore_drained_since(10);
+        assert_eq!(restored, 1);
+
+        let expired = idx.get_expired(10).unwrap();
+        assert!(expired.contains(&old_key));
+        assert!(expired.contains(&new_key));
+    }
 }
