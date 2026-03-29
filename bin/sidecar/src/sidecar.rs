@@ -118,8 +118,8 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                         resume_block = 0;
                     }
                     Err(e) => {
-                        warn!(?e, "connection error");
-                        resume_block = 0;
+                        resume_block = last_processed_resume_block(&write_conn);
+                        warn!(?e, resume_block, "connection error, resuming from last processed block");
                     }
                 }
             }
@@ -274,10 +274,43 @@ fn check_gap(
     Ok(())
 }
 
+/// Recover resume point from `SQLite` after a transient connection error.
+/// Falls back to 0 (full replay) if `SQLite` has no progress or is unreadable.
+fn last_processed_resume_block(sqlite_conn: &Arc<Mutex<Connection>>) -> u64 {
+    schema::get_last_processed_block(&sqlite_conn.lock())
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
+
 fn is_revert_batch(batch: &arrow::record_batch::RecordBatch) -> bool {
     batch
         .column_by_name(columns::OP)
         .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt8Array>())
         .map(|c| c.value(0))
         == Some(glint_primitives::exex_types::BatchOp::Revert as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_sqlite() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().unwrap();
+        schema::create_tables(&conn).unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn resume_block_after_error_preserves_sqlite_progress() {
+        let conn = setup_sqlite();
+        schema::set_last_processed_block(&conn.lock(), 500).unwrap();
+        assert_eq!(last_processed_resume_block(&conn), 500);
+    }
+
+    #[test]
+    fn resume_block_after_error_returns_zero_without_progress() {
+        let conn = setup_sqlite();
+        assert_eq!(last_processed_resume_block(&conn), 0);
+    }
 }
