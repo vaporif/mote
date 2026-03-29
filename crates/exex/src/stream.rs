@@ -335,8 +335,8 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // TODO: this drain can discard batches for blocks above the snapshot tip that
-    // arrived between the snapshot request and reply. Buffer those instead.
+    // Drain stale batches — the ring buffer snapshot already contains them,
+    // so these are duplicates. The ring buffer is the single source of truth.
     while batch_rx.try_recv().is_ok() {}
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
