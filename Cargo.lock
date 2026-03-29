@@ -4602,6 +4602,7 @@ dependencies = [
  "reth-exex-types",
  "reth-node-api",
  "reth-primitives-traits",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

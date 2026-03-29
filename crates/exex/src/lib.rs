@@ -151,8 +151,6 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                     }
                 };
 
-                ring_buffer.evict_if_needed();
-
                 report_finished_height(
                     &ctx,
                     &ring_buffer,

@@ -274,8 +274,7 @@ fn check_gap(
     Ok(())
 }
 
-/// Recover resume point from `SQLite` after a transient connection error.
-/// Falls back to 0 (full replay) if `SQLite` has no progress or is unreadable.
+/// Last block persisted in SQLite, or 0 if unknown.
 fn last_processed_resume_block(sqlite_conn: &Arc<Mutex<Connection>>) -> u64 {
     schema::get_last_processed_block(&sqlite_conn.lock())
         .ok()

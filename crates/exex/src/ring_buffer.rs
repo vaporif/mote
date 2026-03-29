@@ -2,8 +2,8 @@ use alloy_eips::BlockNumHash;
 use arrow::record_batch::RecordBatch;
 use glint_primitives::exex_types::BatchOp;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const DEFAULT_MEMORY_CAP: u64 = 256 * 1024 * 1024; // 256 MB
 const PER_ENTRY_OVERHEAD: u64 = 256;
@@ -66,6 +66,12 @@ impl RingBuffer {
     pub fn push(&mut self, bnh: BlockNumHash, op: BatchOp, batch: RecordBatch) {
         self.memory_usage += Self::batch_memory(&batch);
         self.entries.push_back(RingBufferEntry { bnh, op, batch });
+        self.evict_to_cap();
+        self.update_atomics();
+    }
+
+    /// Evict from the front until memory usage is within the cap.
+    fn evict_to_cap(&mut self) {
         while self.memory_usage > self.memory_cap && self.entries.len() > 1 {
             if let Some(evicted) = self.entries.pop_front() {
                 self.memory_usage = self
@@ -73,28 +79,10 @@ impl RingBuffer {
                     .saturating_sub(Self::batch_memory(&evicted.batch));
             }
         }
-        self.update_atomics();
     }
 
-    /// Drop entries from the front until we're under the memory cap.
-    /// We can't evict by block number — a revert for block 5 might have
-    /// been appended moments ago.
-    pub fn evict_if_needed(&mut self) {
-        while self.memory_usage > self.memory_cap {
-            if let Some(evicted) = self.entries.pop_front() {
-                self.memory_usage = self
-                    .memory_usage
-                    .saturating_sub(Self::batch_memory(&evicted.batch));
-            } else {
-                break;
-            }
-        }
-        self.update_atomics();
-    }
-
-    /// Everything the consumer missed since `resume_block`.
-    /// Finds the first commit matching that block and returns the tail after it.
-    /// Falls back to the whole buffer when the block is 0 or already evicted.
+    /// Returns entries after the first commit for `resume_block`.
+    /// Returns the whole buffer when the block is 0 or not found.
     #[must_use]
     pub fn snapshot_from(&self, resume_block: u64) -> Vec<(BlockNumHash, RecordBatch)> {
         let start = if resume_block == 0 {
@@ -312,16 +300,6 @@ mod tests {
         // gets: revert(7), revert(6), revert(5), commit(5'), commit(6'), commit(7')
         let snap = rb.snapshot_from(7);
         assert_eq!(snap.len(), 6);
-    }
-
-    #[test]
-    fn evict_if_needed_respects_memory_cap() {
-        let mut rb = RingBuffer::with_memory_cap(1000);
-        for i in 1..=50_u64 {
-            rb.push(bnh(i), BatchOp::Commit, dummy_batch(10));
-        }
-        rb.evict_if_needed();
-        assert!(rb.memory_usage() <= 1000);
     }
 
     #[test]

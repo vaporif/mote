@@ -38,6 +38,7 @@ alloy-primitives.workspace = true
 alloy-eips.workspace = true
 glint-primitives.workspace = true
 borsh.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
