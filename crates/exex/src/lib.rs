@@ -277,7 +277,6 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
             }
         }
     }
-
 }
 
 #[allow(clippy::cast_possible_truncation)] // tx/log indices are bounded by block gas limits
