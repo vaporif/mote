@@ -981,4 +981,238 @@ mod tests {
         let decoded = GlintTransaction::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(tx, decoded);
     }
+
+    #[test]
+    fn extend_policy_rejects_unknown_discriminant() {
+        let mut buf = Vec::new();
+        2u8.encode(&mut buf);
+        assert!(ExtendPolicy::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn create_rejects_non_list_rlp() {
+        let mut buf = Vec::new();
+        "not a list".encode(&mut buf);
+        assert!(Create::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn update_rejects_non_list_rlp() {
+        let mut buf = Vec::new();
+        "not a list".encode(&mut buf);
+        assert!(Update::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn update_rejects_invalid_extend_policy() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let btl: u64 = 100;
+        let content_type = "text/plain";
+        let payload: Vec<u8> = b"data".to_vec();
+        let str_anns: Vec<StringAnnotation> = vec![];
+        let num_anns: Vec<NumericAnnotation> = vec![];
+        let invalid_ep: u8 = 0xFE; // not 0xFF, 0, or 1
+        let op_tag: u8 = OPERATOR_TAG_UNCHANGED;
+
+        let payload_len = entity_key.length()
+            + btl.length()
+            + content_type.length()
+            + payload.length()
+            + str_anns.length()
+            + num_anns.length()
+            + invalid_ep.length()
+            + op_tag.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        btl.encode(&mut buf);
+        content_type.encode(&mut buf);
+        payload.encode(&mut buf);
+        str_anns.encode(&mut buf);
+        num_anns.encode(&mut buf);
+        invalid_ep.encode(&mut buf);
+        op_tag.encode(&mut buf);
+
+        assert!(Update::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn update_rejects_invalid_operator_tag() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let btl: u64 = 100;
+        let content_type = "text/plain";
+        let payload: Vec<u8> = b"data".to_vec();
+        let str_anns: Vec<StringAnnotation> = vec![];
+        let num_anns: Vec<NumericAnnotation> = vec![];
+        let ep_val: u8 = EXTEND_POLICY_NO_CHANGE;
+        let invalid_op_tag: u8 = 3; // not 0, 1, or 2
+
+        let payload_len = entity_key.length()
+            + btl.length()
+            + content_type.length()
+            + payload.length()
+            + str_anns.length()
+            + num_anns.length()
+            + ep_val.length()
+            + invalid_op_tag.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        btl.encode(&mut buf);
+        content_type.encode(&mut buf);
+        payload.encode(&mut buf);
+        str_anns.encode(&mut buf);
+        num_anns.encode(&mut buf);
+        ep_val.encode(&mut buf);
+        invalid_op_tag.encode(&mut buf);
+
+        assert!(Update::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn change_owner_rejects_invalid_owner_tag() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let invalid_owner_tag: u8 = 2; // not 0 or 1
+        let ep_val: u8 = EXTEND_POLICY_NO_CHANGE;
+        let op_tag: u8 = OPERATOR_TAG_UNCHANGED;
+
+        let payload_len =
+            entity_key.length() + invalid_owner_tag.length() + ep_val.length() + op_tag.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        invalid_owner_tag.encode(&mut buf);
+        ep_val.encode(&mut buf);
+        op_tag.encode(&mut buf);
+
+        assert!(ChangeOwner::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn change_owner_rejects_invalid_extend_policy() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner_tag: u8 = OWNER_TAG_UNCHANGED;
+        let invalid_ep: u8 = 0xFE; // not 0xFF, 0, or 1
+        let op_tag: u8 = OPERATOR_TAG_UNCHANGED;
+
+        let payload_len =
+            entity_key.length() + owner_tag.length() + invalid_ep.length() + op_tag.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        owner_tag.encode(&mut buf);
+        invalid_ep.encode(&mut buf);
+        op_tag.encode(&mut buf);
+
+        assert!(ChangeOwner::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn change_owner_rejects_invalid_operator_tag() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let owner_tag: u8 = OWNER_TAG_UNCHANGED;
+        let ep_val: u8 = EXTEND_POLICY_NO_CHANGE;
+        let invalid_op_tag: u8 = 5; // not 0, 1, or 2
+
+        let payload_len =
+            entity_key.length() + owner_tag.length() + ep_val.length() + invalid_op_tag.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        owner_tag.encode(&mut buf);
+        ep_val.encode(&mut buf);
+        invalid_op_tag.encode(&mut buf);
+
+        assert!(ChangeOwner::decode(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn create_decodes_legacy_format_without_policy_or_operator() {
+        let mut buf = Vec::new();
+        let btl: u64 = 100;
+        let content_type = "text/plain";
+        let payload: Vec<u8> = b"hello".to_vec();
+        let str_anns: Vec<StringAnnotation> = vec![];
+        let num_anns: Vec<NumericAnnotation> = vec![];
+
+        let payload_len = btl.length()
+            + content_type.length()
+            + payload.length()
+            + str_anns.length()
+            + num_anns.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        btl.encode(&mut buf);
+        content_type.encode(&mut buf);
+        payload.encode(&mut buf);
+        str_anns.encode(&mut buf);
+        num_anns.encode(&mut buf);
+
+        let decoded = Create::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.extend_policy, ExtendPolicy::OwnerOnly);
+        assert_eq!(decoded.operator, None);
+        assert_eq!(decoded.btl, 100);
+        assert_eq!(decoded.content_type, "text/plain");
+        assert_eq!(decoded.payload, b"hello");
+    }
+
+    #[test]
+    fn update_decodes_legacy_format_without_policy_or_operator() {
+        let mut buf = Vec::new();
+        let entity_key = B256::repeat_byte(0x01);
+        let btl: u64 = 200;
+        let content_type = "text/plain";
+        let payload: Vec<u8> = b"updated".to_vec();
+        let str_anns: Vec<StringAnnotation> = vec![];
+        let num_anns: Vec<NumericAnnotation> = vec![];
+
+        let payload_len = entity_key.length()
+            + btl.length()
+            + content_type.length()
+            + payload.length()
+            + str_anns.length()
+            + num_anns.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: payload_len,
+        }
+        .encode(&mut buf);
+        entity_key.encode(&mut buf);
+        btl.encode(&mut buf);
+        content_type.encode(&mut buf);
+        payload.encode(&mut buf);
+        str_anns.encode(&mut buf);
+        num_anns.encode(&mut buf);
+
+        let decoded = Update::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.extend_policy, None);
+        assert_eq!(decoded.operator, None);
+        assert_eq!(decoded.entity_key, entity_key);
+        assert_eq!(decoded.btl, 200);
+        assert_eq!(decoded.content_type, "text/plain");
+        assert_eq!(decoded.payload, b"updated");
+    }
 }
