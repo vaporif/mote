@@ -309,7 +309,10 @@ fn batch_dedup_key(batch: &RecordBatch) -> Option<BatchKey> {
         .map(|a| a.value(0))?;
     let block_hash = batch
         .column_by_name(columns::BLOCK_HASH)
-        .and_then(|c| c.as_any().downcast_ref::<arrow::array::FixedSizeBinaryArray>())
+        .and_then(|c| {
+            c.as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+        })
         .map(|a| {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(a.value(0));
@@ -397,8 +400,7 @@ async fn replay_snapshot(
 
     // Forward batches the snapshot didn't cover.
     for (maybe_bnh, batch) in buffered {
-        let dominated = batch_dedup_key(&batch)
-            .is_some_and(|key| snapshot_keys.contains(&key));
+        let dominated = batch_dedup_key(&batch).is_some_and(|key| snapshot_keys.contains(&key));
         if !dominated {
             if writer_tx.send(batch).await.is_err() {
                 return Err(eyre::eyre!("writer closed during buffered batch send"));
@@ -520,9 +522,11 @@ mod tests {
             let stream = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
             let std_stream = stream.into_std().unwrap();
             std_stream.set_nonblocking(false).unwrap();
-            let reader =
-                arrow::ipc::reader::StreamReader::try_new(&std_stream, None).unwrap();
-            reader.into_iter().filter_map(Result::ok).collect::<Vec<_>>()
+            let reader = arrow::ipc::reader::StreamReader::try_new(&std_stream, None).unwrap();
+            reader
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>()
         });
 
         let (server_stream, _) = listener.accept().await.unwrap();
@@ -741,8 +745,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_buffers_and_forwards_non_snapshot_batches() {
-        let (batch_tx, mut batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
         let (bnh1, batch1) = make_test_batch(1, 0x01, BatchOp::Commit);
         let (bnh2, batch2) = make_test_batch(2, 0x02, BatchOp::Commit);
@@ -755,10 +758,7 @@ mod tests {
         let snapshot = vec![(bnh1, batch1), (bnh2, batch2)];
         let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
 
-        assert_eq!(
-            tip, 3,
-            "tip should advance to block 3 from buffered batch"
-        );
+        assert_eq!(tip, 3, "tip should advance to block 3 from buffered batch");
         assert_eq!(
             received.len(),
             4,
@@ -778,8 +778,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_filters_snapshot_covered_batches() {
-        let (batch_tx, mut batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
         let (bnh1, batch1) = make_test_batch(1, 0x01, BatchOp::Commit);
         let (bnh2, batch2) = make_test_batch(2, 0x02, BatchOp::Commit);
@@ -802,8 +801,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_forwards_reorg_batches_with_different_hash() {
-        let (batch_tx, mut batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
         // Snapshot covers block 100 with hash 0xAA
         let (bnh100, batch100) = make_test_batch(100, 0xAA, BatchOp::Commit);
@@ -823,26 +821,18 @@ mod tests {
 
         assert_eq!(tip, 100, "tip should be 100 from reorg commit");
         // snapshot(1) + watermark(1) + revert(1) + commit(1) = 4
-        assert_eq!(
-            received.len(),
-            4,
-            "reorg batches should be forwarded"
-        );
+        assert_eq!(received.len(), 4, "reorg batches should be forwarded");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_filters_duplicate_revert_in_buffer() {
-        let (batch_tx, mut batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
         // Snapshot contains a revert for block 5
         let (bnh5, revert5) = make_test_batch(5, 0x05, BatchOp::Revert);
 
         // Channel also has the same revert (duplicate)
-        batch_tx
-            .send((None, revert5.clone()))
-            .await
-            .unwrap();
+        batch_tx.send((None, revert5.clone())).await.unwrap();
 
         let snapshot = vec![(bnh5, revert5)];
         let (_, received) = run_replay_test(&mut batch_rx, snapshot).await;
@@ -857,15 +847,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_empty_buffer_is_noop() {
-        let (_batch_tx, mut batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+        let (_batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
         let (tip, received) = run_replay_test(&mut batch_rx, vec![]).await;
 
-        assert_eq!(
-            tip, 0,
-            "tip should be resume_block with empty snapshot"
-        );
+        assert_eq!(tip, 0, "tip should be resume_block with empty snapshot");
         assert_eq!(
             received.len(),
             1,
