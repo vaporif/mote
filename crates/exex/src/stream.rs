@@ -335,8 +335,7 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // Drain stale batches — the ring buffer snapshot already contains them,
-    // so these are duplicates. The ring buffer is the single source of truth.
+    // The snapshot already covers these — just clear the channel.
     while batch_rx.try_recv().is_ok() {}
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);

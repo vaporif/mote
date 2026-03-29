@@ -76,9 +76,9 @@ impl RingBuffer {
         self.update_atomics();
     }
 
-    /// Evict oldest entries (by insertion order) to stay within memory cap.
-    /// Block-number-based eviction is not used because reverts for old blocks
-    /// may have been inserted recently and must not be dropped.
+    /// Drop entries from the front until we're under the memory cap.
+    /// We can't evict by block number — a revert for block 5 might have
+    /// been appended moments ago.
     pub fn evict_if_needed(&mut self) {
         while self.memory_usage > self.memory_cap {
             if let Some(evicted) = self.entries.pop_front() {
@@ -92,8 +92,9 @@ impl RingBuffer {
         self.update_atomics();
     }
 
-    /// Return all entries inserted after the first commit for `resume_block`.
-    /// If `resume_block` is 0 or not found, returns everything in the buffer.
+    /// Everything the consumer missed since `resume_block`.
+    /// Finds the first commit matching that block and returns the tail after it.
+    /// Falls back to the whole buffer when the block is 0 or already evicted.
     #[must_use]
     pub fn snapshot_from(&self, resume_block: u64) -> Vec<(BlockNumHash, RecordBatch)> {
         let start = if resume_block == 0 {
