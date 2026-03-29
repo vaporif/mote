@@ -4,7 +4,7 @@ mod eth;
 #[cfg(feature = "op")]
 mod op;
 
-use crate::expiration::ExpirationIndex;
+use crate::expiration::{DRAIN_HISTORY_CAPACITY, ExpirationIndex};
 
 use alloy_consensus::{Transaction, TransactionEnvelope};
 use alloy_eips::Encodable2718 as _;
@@ -432,12 +432,18 @@ where
         if let Some(last) = exp_idx.last_drained_block()
             && current_block <= last
         {
-            // Reorg detected: current_block <= last_drained.
-            // Only reset the drain cursor — do NOT clear future expiration entries.
-            // Already-drained blocks have empty entries (removed by drain_block).
-            // Un-drained blocks contain valid future expirations that must be preserved,
-            // otherwise entities become immortal after a reorg.
-            exp_idx.reset_last_drained();
+            let restored = exp_idx.restore_drained_since(current_block);
+            if last.saturating_sub(current_block) > DRAIN_HISTORY_CAPACITY as u64 {
+                warn!(
+                    current_block,
+                    last_drained = last,
+                    "reorg deeper than drain history buffer; some expirations may be lost until restart"
+                );
+            }
+            debug!(
+                current_block,
+                restored, "reorg: restored drained expirations"
+            );
         }
 
         let expired_keys = exp_idx.drain_block(current_block);

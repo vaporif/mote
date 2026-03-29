@@ -190,6 +190,7 @@ fn apply_revert(
                     warn!(?entity_key, "reverting Extended event for missing entity");
                 }
             }
+            // TODO: implement proper inverse operations instead of forcing full replay
             EntityEventType::Updated
             | EntityEventType::Deleted
             | EntityEventType::Expired
