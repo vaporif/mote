@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/vaporif/glint/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vaporif/glint/actions/workflows/ci.yml)
 [![E2E](https://github.com/vaporif/glint/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/vaporif/glint/actions/workflows/e2e.yml)
+[![Audit](https://github.com/vaporif/glint/actions/workflows/audit.yml/badge.svg?branch=main)](https://github.com/vaporif/glint/actions/workflows/audit.yml)
 
 Ephemeral on-chain storage layer, built on reth.
 
