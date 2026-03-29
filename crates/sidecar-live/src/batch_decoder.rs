@@ -121,9 +121,9 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
             EntityEventType::Extended => {
                 let new_expires_at_block = expires_col.value(i);
 
-                if let Some(row) = store.get_mut(&entity_key) {
-                    row.expires_at_block = new_expires_at_block;
-                    row.tx_hash = tx_hash;
+                if let Some(mut row) = store.get_mut(&entity_key) {
+                    row.set_expires_at_block(new_expires_at_block);
+                    row.set_tx_hash(tx_hash);
                 }
             }
             EntityEventType::PermissionsChanged => {
@@ -182,8 +182,8 @@ fn apply_revert(
             EntityEventType::Extended => {
                 let old_expires = old_expires_col.value(i);
 
-                if let Some(row) = store.get_mut(&entity_key) {
-                    row.expires_at_block = old_expires;
+                if let Some(mut row) = store.get_mut(&entity_key) {
+                    row.set_expires_at_block(old_expires);
                     // tx_hash can't be fully restored — the revert payload doesn't carry
                     // the pre-extension tx_hash, so we leave it as-is.
                 } else {

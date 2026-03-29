@@ -20,10 +20,12 @@ alloy-rlp.workspace = true
 alloy-provider.workspace = true
 alloy-network.workspace = true
 alloy-rpc-types-eth.workspace = true
+alloy-transport.workspace = true
 
 jsonrpsee = { workspace = true, features = ["http-client"] }
 tokio = { workspace = true, features = ["full"] }
-eyre.workspace = true
+thiserror.workspace = true
+url.workspace = true
 
 arrow-flight.workspace = true
 arrow.workspace = true

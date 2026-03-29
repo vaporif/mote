@@ -50,6 +50,7 @@ alloy-eips = "1.7"
 alloy-provider = { version = "=1.7.3", features = ["reqwest"] }
 alloy-network = "=1.7.3"
 alloy-signer-local = "=1.7.3"
+alloy-transport = "=1.7.3"
 alloy-transport-http = { version = "=1.7.3", features = ["reqwest"] }
 alloy-rpc-types-eth = "=1.7.3"
 
@@ -113,6 +114,7 @@ tempfile = "3"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 regex = "1"
 thiserror = "2"
+url = "2"
 color-eyre = "0.6"
 
 # Patch crates.io versions with the same optimism monorepo rev so there's only

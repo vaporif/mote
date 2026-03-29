@@ -70,6 +70,21 @@ pub struct Snapshot {
     pub(crate) indexes: Arc<IndexSnapshot>,
 }
 
+/// Guarded mutable reference to an [`EntityRow`] that only exposes
+/// non-indexed fields. Prevents accidental mutation of indexed fields
+/// (owner, annotations) which would silently corrupt bitmap indexes.
+pub(crate) struct EntityRowMut<'a>(&'a mut EntityRow);
+
+impl EntityRowMut<'_> {
+    pub(crate) const fn set_expires_at_block(&mut self, block: u64) {
+        self.0.expires_at_block = block;
+    }
+
+    pub(crate) const fn set_tx_hash(&mut self, hash: B256) {
+        self.0.tx_hash = hash;
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct EntityStore {
     entities: HashMap<B256, EntityRow>,
@@ -129,11 +144,11 @@ impl EntityStore {
         self.entities.get(key)
     }
 
-    /// Only non-indexed fields (`expires_at_block`, `tx_hash`) may be mutated
-    /// through this reference. Mutating indexed fields (owner, annotations)
-    /// will silently corrupt the bitmap indexes.
-    pub(crate) fn get_mut(&mut self, key: &B256) -> Option<&mut EntityRow> {
-        self.entities.get_mut(key)
+    /// Returns a guarded mutable reference that only exposes non-indexed
+    /// fields (`expires_at_block`, `tx_hash`). Indexed fields (owner,
+    /// annotations) are read-only to prevent silent bitmap corruption.
+    pub(crate) fn get_mut(&mut self, key: &B256) -> Option<EntityRowMut<'_>> {
+        self.entities.get_mut(key).map(EntityRowMut)
     }
 
     pub fn get_by_owner(&self, owner: &Address) -> Vec<B256> {
@@ -812,5 +827,24 @@ mod tests {
                 .numeric_ann_index
                 .contains_key(&("n2".to_owned(), 77))
         );
+    }
+
+    #[test]
+    fn get_mut_only_exposes_non_indexed_fields() {
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+
+        let key = B256::repeat_byte(0x01);
+        let new_hash = B256::repeat_byte(0xFF);
+
+        let mut row = store.get_mut(&key).expect("entity exists");
+        row.set_expires_at_block(999);
+        row.set_tx_hash(new_hash);
+
+        let entity = store.get(&key).expect("entity exists");
+        assert_eq!(entity.expires_at_block, 999);
+        assert_eq!(entity.tx_hash, new_hash);
+        // owner and annotations unchanged
+        assert_eq!(entity.owner, Address::repeat_byte(0x01));
     }
 }

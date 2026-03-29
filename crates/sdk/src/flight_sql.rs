@@ -6,7 +6,9 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use futures::TryStreamExt;
 use prost::Message;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
+
+use crate::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct GlintFlightClient {
@@ -14,14 +16,15 @@ pub struct GlintFlightClient {
 }
 
 impl GlintFlightClient {
-    pub async fn connect(url: impl Into<String>) -> eyre::Result<Self> {
-        let channel = Channel::from_shared(url.into())?.connect().await?;
+    pub async fn connect(url: impl Into<String>) -> Result<Self, Error> {
+        let endpoint = Endpoint::try_from(url.into())?;
+        let channel = endpoint.connect().await?;
         Ok(Self {
             client: FlightServiceClient::new(channel),
         })
     }
 
-    pub async fn query(&mut self, sql: &str) -> eyre::Result<Vec<RecordBatch>> {
+    pub async fn query(&mut self, sql: &str) -> Result<Vec<RecordBatch>, Error> {
         let cmd = CommandStatementQuery {
             query: sql.to_owned(),
             ..Default::default()
@@ -34,7 +37,7 @@ impl GlintFlightClient {
             .endpoint
             .first()
             .and_then(|ep| ep.ticket.as_ref())
-            .ok_or_else(|| eyre::eyre!("no endpoint/ticket in flight info"))?
+            .ok_or(Error::FlightNoTicket)?
             .clone();
 
         let stream = self.client.do_get(ticket).await?.into_inner();

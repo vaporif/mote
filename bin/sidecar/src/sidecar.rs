@@ -274,7 +274,7 @@ fn check_gap(
     Ok(())
 }
 
-/// Last block persisted in SQLite, or 0 if unknown.
+/// Last block persisted in `SQLite`, or 0 if unknown.
 fn last_processed_resume_block(sqlite_conn: &Arc<Mutex<Connection>>) -> u64 {
     schema::get_last_processed_block(&sqlite_conn.lock())
         .ok()
