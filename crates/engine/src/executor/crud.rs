@@ -1,7 +1,7 @@
-use alloy_primitives::{Address, Log, B256, U256};
+use alloy_primitives::{Address, B256, Log, U256};
 use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
-    entity::{derive_entity_key, EntityMetadata},
+    entity::{EntityMetadata, derive_entity_key},
     events::{
         EntityCreated, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdated,
         LogAnnotations,
@@ -11,13 +11,13 @@ use glint_primitives::{
         entity_content_hash_key, entity_operator_key, entity_storage_key,
     },
 };
-use reth_evm::{block::BlockExecutionError, Evm};
+use reth_evm::{Evm, block::BlockExecutionError};
 use revm::DatabaseCommit;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument};
 
-use super::decode::{decode_with_raw_slices, DecodedGlintTransaction};
-use super::{glint_err, GlintBlockExecutor, GlintResultBuilder};
+use super::decode::{DecodedGlintTransaction, decode_with_raw_slices};
+use super::{GlintBlockExecutor, GlintResultBuilder, glint_err};
 
 use super::{
     GAS_PER_BTL_BLOCK, GAS_PER_DATA_BYTE, GLINT_GAS_PER_CREATE, GLINT_GAS_PER_DELETE,

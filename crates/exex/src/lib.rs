@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn non_glint_logs_are_ignored() {
-        use alloy_primitives::{Address, Log, LogData, B256};
+        use alloy_primitives::{Address, B256, Log, LogData};
 
         let non_glint_log = Log {
             address: Address::repeat_byte(0xff),

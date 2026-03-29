@@ -5,7 +5,7 @@ use alloy_eips::BlockHashOrNumber;
 use alloy_primitives::B256;
 use glint_primitives::config::GlintChainConfig;
 use glint_primitives::constants::PROCESSOR_ADDRESS;
-use glint_primitives::parse::{parse_log, EntityEvent};
+use glint_primitives::parse::{EntityEvent, parse_log};
 use reth_provider::ReceiptProvider;
 use tracing::{info, warn};
 
