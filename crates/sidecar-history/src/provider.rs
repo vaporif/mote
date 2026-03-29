@@ -254,7 +254,7 @@ fn query_block_range(
         .prepare_cached(
             "SELECT block_number, event_type, entity_key, owner, expires_at_block,
                     content_type, payload, string_annotations, numeric_annotations,
-                    extend_policy, operator
+                    extend_policy, operator, gas_cost
              FROM entity_events
              WHERE block_number >= ?1 AND block_number <= ?2
              ORDER BY block_number, log_index",
@@ -284,6 +284,7 @@ struct BatchBuilders {
     num_ann: MapBuilder<StringBuilder, UInt64Builder>,
     extend_policy: UInt8Builder,
     operator: FixedSizeBinaryBuilder,
+    gas_cost: UInt64Builder,
 }
 
 impl BatchBuilders {
@@ -308,6 +309,7 @@ impl BatchBuilders {
             ),
             extend_policy: UInt8Builder::new(),
             operator: FixedSizeBinaryBuilder::new(20),
+            gas_cost: UInt64Builder::new(),
         }
     }
 
@@ -356,6 +358,11 @@ impl BatchBuilders {
         match row.get_ref(10).df_err()?.as_blob_or_null() {
             Ok(Some(v)) => self.operator.append_value(v).map_err(arrow_err)?,
             _ => self.operator.append_null(),
+        }
+
+        match row.get::<_, Option<i64>>(11).df_err()? {
+            Some(v) => self.gas_cost.append_value(v as u64),
+            None => self.gas_cost.append_null(),
         }
 
         Ok(())
@@ -421,6 +428,7 @@ impl BatchBuilders {
             Arc::new(self.num_ann.finish()),
             Arc::new(self.extend_policy.finish()),
             Arc::new(self.operator.finish()),
+            Arc::new(self.gas_cost.finish()),
         ];
 
         RecordBatch::try_new(Arc::clone(schema), columns).map_err(arrow_err)

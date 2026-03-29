@@ -15,5 +15,6 @@ pub const STRING_ANNOTATIONS: &str = "string_annotations";
 pub const NUMERIC_ANNOTATIONS: &str = "numeric_annotations";
 pub const EXTEND_POLICY: &str = "extend_policy";
 pub const OPERATOR: &str = "operator";
+pub const GAS_COST: &str = "gas_cost";
 pub const TIP_BLOCK: &str = "tip_block";
 pub const OP: &str = "op";

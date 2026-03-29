@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, B256};
 use arrow::array::{
-    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder, UInt32Builder,
-    UInt64Builder, builder::MapBuilder,
+    builder::MapBuilder, ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder,
+    UInt32Builder, UInt64Builder, UInt8Builder,
 };
 use arrow::record_batch::RecordBatch;
 
@@ -23,6 +23,7 @@ pub struct EventBuilder {
     pub numeric_annotations: Vec<(String, u64)>,
     pub extend_policy: Option<u8>,
     pub operator: Option<Address>,
+    pub gas_cost: Option<u64>,
     pub tx_index: u32,
     pub tx_hash: B256,
     pub log_index: u32,
@@ -45,6 +46,7 @@ impl EventBuilder {
             numeric_annotations: vec![("priority".into(), 1)],
             extend_policy: Some(0),
             operator: Some(Address::ZERO),
+            gas_cost: Some(50_000),
             tx_index: 0,
             tx_hash: B256::repeat_byte(0xAA),
             log_index: 0,
@@ -67,6 +69,7 @@ impl EventBuilder {
             numeric_annotations: vec![],
             extend_policy: None,
             operator: None,
+            gas_cost: Some(10_000),
             tx_index: 0,
             tx_hash: B256::repeat_byte(0xAA),
             log_index: 0,
@@ -89,6 +92,7 @@ impl EventBuilder {
             numeric_annotations: vec![],
             extend_policy: None,
             operator: None,
+            gas_cost: Some(10_100),
             tx_index: 0,
             tx_hash: B256::repeat_byte(0xAA),
             log_index: 0,
@@ -111,6 +115,7 @@ impl EventBuilder {
             numeric_annotations: vec![("priority".into(), 1)],
             extend_policy: Some(0),
             operator: Some(Address::ZERO),
+            gas_cost: Some(40_000),
             tx_index: 0,
             tx_hash: B256::repeat_byte(0xAA),
             log_index: 0,
@@ -139,6 +144,7 @@ impl EventBuilder {
             numeric_annotations: vec![],
             extend_policy: Some(extend_policy),
             operator: Some(operator),
+            gas_cost: Some(10_000),
             tx_index: 0,
             tx_hash: B256::repeat_byte(0xAA),
             log_index: 0,
@@ -236,6 +242,7 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
     );
     let mut extend_policy_b = UInt8Builder::with_capacity(n);
     let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
+    let mut gas_cost_b = UInt64Builder::with_capacity(n);
     let mut tip_block_b = UInt64Builder::with_capacity(n);
     let mut op_b = UInt8Builder::with_capacity(n);
 
@@ -290,6 +297,10 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
             Some(addr) => operator_b.append_value(addr.as_slice()).unwrap(),
             None => operator_b.append_null(),
         }
+        match ev.gas_cost {
+            Some(v) => gas_cost_b.append_value(v),
+            None => gas_cost_b.append_null(),
+        }
         tip_block_b.append_value(ev.block_number);
         op_b.append_value(ev.op as u8);
     }
@@ -311,6 +322,7 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
         Arc::new(num_ann_b.finish()),
         Arc::new(extend_policy_b.finish()),
         Arc::new(operator_b.finish()),
+        Arc::new(gas_cost_b.finish()),
         Arc::new(tip_block_b.finish()),
         Arc::new(op_b.finish()),
     ];

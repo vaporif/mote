@@ -42,6 +42,7 @@ const HISTORICAL_COLUMNS: &[&str] = &[
     columns::NUMERIC_ANNOTATIONS,
     columns::EXTEND_POLICY,
     columns::OPERATOR,
+    columns::GAS_COST,
 ];
 
 fn build_historical_schema() -> Schema {
@@ -111,6 +112,7 @@ fn build_schema() -> Schema {
         ),
         Field::new(EXTEND_POLICY, DataType::UInt8, true),
         Field::new(OPERATOR, DataType::FixedSizeBinary(20), true),
+        Field::new(GAS_COST, DataType::UInt64, true),
         Field::new(TIP_BLOCK, DataType::UInt64, false),
         Field::new(OP, DataType::UInt8, false),
     ])
