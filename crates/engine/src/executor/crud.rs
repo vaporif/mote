@@ -102,6 +102,8 @@ where
             entity_counter_delta: 0,
         };
 
+        // Safe because validation rejects duplicate entity keys across operations
+        // within a single transaction (see primitives/src/validation.rs).
         Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block)?;
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;

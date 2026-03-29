@@ -1,13 +1,19 @@
 use alloy_eips::BlockNumHash;
 use arrow::record_batch::RecordBatch;
+use glint_primitives::exex_types::BatchOp;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use glint_primitives::constants::MAX_BTL;
-
 const DEFAULT_MEMORY_CAP: u64 = 256 * 1024 * 1024; // 256 MB
 const PER_ENTRY_OVERHEAD: u64 = 256;
+
+#[derive(Clone)]
+pub struct RingBufferEntry {
+    pub bnh: BlockNumHash,
+    pub op: BatchOp,
+    pub batch: RecordBatch,
+}
 
 #[derive(Clone)]
 pub struct RingBufferStats {
@@ -29,7 +35,7 @@ impl RingBufferStats {
 }
 
 pub struct RingBuffer {
-    entries: VecDeque<(BlockNumHash, RecordBatch)>,
+    entries: VecDeque<RingBufferEntry>,
     memory_usage: u64,
     memory_cap: u64,
     stats: RingBufferStats,
@@ -57,64 +63,42 @@ impl RingBuffer {
         }
     }
 
-    pub fn push(&mut self, bnh: BlockNumHash, batch: RecordBatch) {
+    pub fn push(&mut self, bnh: BlockNumHash, op: BatchOp, batch: RecordBatch) {
         self.memory_usage += Self::batch_memory(&batch);
-        self.entries.push_back((bnh, batch));
+        self.entries.push_back(RingBufferEntry { bnh, op, batch });
+        self.evict_to_cap();
+        self.update_atomics();
+    }
+
+    /// Evict from the front until memory usage is within the cap.
+    fn evict_to_cap(&mut self) {
         while self.memory_usage > self.memory_cap && self.entries.len() > 1 {
-            if let Some((_, evicted)) = self.entries.pop_front() {
+            if let Some(evicted) = self.entries.pop_front() {
                 self.memory_usage = self
                     .memory_usage
-                    .saturating_sub(Self::batch_memory(&evicted));
+                    .saturating_sub(Self::batch_memory(&evicted.batch));
             }
         }
-        self.update_atomics();
     }
 
-    pub fn evict_older_than(&mut self, min_block: u64) {
-        while self
-            .entries
-            .front()
-            .is_some_and(|(bnh, _)| bnh.number < min_block)
-        {
-            if let Some((_, batch)) = self.entries.pop_front() {
-                self.memory_usage = self.memory_usage.saturating_sub(Self::batch_memory(&batch));
-            }
-        }
-        self.update_atomics();
-    }
-
-    pub fn evict_if_needed(&mut self, tip: u64) {
-        self.evict_older_than(tip.saturating_sub(MAX_BTL));
-        while self.memory_usage > self.memory_cap {
-            if let Some((_, batch)) = self.entries.pop_front() {
-                self.memory_usage = self.memory_usage.saturating_sub(Self::batch_memory(&batch));
-            } else {
-                break;
-            }
-        }
-        self.update_atomics();
-    }
-
+    /// Returns entries after the first commit for `resume_block`.
+    /// Returns the whole buffer when the block is 0 or not found.
     #[must_use]
     pub fn snapshot_from(&self, resume_block: u64) -> Vec<(BlockNumHash, RecordBatch)> {
+        let start = if resume_block == 0 {
+            0
+        } else {
+            self.entries
+                .iter()
+                .position(|e| e.op == BatchOp::Commit && e.bnh.number == resume_block)
+                .map_or(0, |pos| pos + 1)
+        };
+
         self.entries
             .iter()
-            .filter(|(bnh, _)| bnh.number > resume_block)
-            .map(|(bnh, batch)| (*bnh, batch.clone()))
+            .skip(start)
+            .map(|e| (e.bnh, e.batch.clone()))
             .collect()
-    }
-
-    pub fn truncate_from(&mut self, reorg_start: u64) {
-        while self
-            .entries
-            .back()
-            .is_some_and(|(bnh, _)| bnh.number >= reorg_start)
-        {
-            if let Some((_, batch)) = self.entries.pop_back() {
-                self.memory_usage = self.memory_usage.saturating_sub(Self::batch_memory(&batch));
-            }
-        }
-        self.update_atomics();
     }
 
     #[must_use]
@@ -129,20 +113,20 @@ impl RingBuffer {
 
     #[must_use]
     pub fn oldest(&self) -> Option<BlockNumHash> {
-        self.entries.front().map(|(bnh, _)| *bnh)
+        self.entries.front().map(|e| e.bnh)
     }
 
     #[must_use]
     pub fn newest(&self) -> Option<BlockNumHash> {
-        self.entries.back().map(|(bnh, _)| *bnh)
+        self.entries.back().map(|e| e.bnh)
     }
 
     #[must_use]
     pub fn first_at_or_after(&self, min_block: u64) -> Option<BlockNumHash> {
         self.entries
             .iter()
-            .find(|(bnh, _)| bnh.number >= min_block)
-            .map(|(bnh, _)| *bnh)
+            .find(|e| e.bnh.number >= min_block)
+            .map(|e| e.bnh)
     }
 
     #[must_use]
@@ -163,8 +147,8 @@ impl RingBuffer {
             .memory
             .store(self.memory_usage, Ordering::Relaxed);
 
-        let tip = self.entries.back().map_or(0, |(bnh, _)| bnh.number);
-        let oldest = self.entries.front().map_or(0, |(bnh, _)| bnh.number);
+        let tip = self.entries.back().map_or(0, |e| e.bnh.number);
+        let oldest = self.entries.front().map_or(0, |e| e.bnh.number);
         self.stats.tip.store(tip, Ordering::Relaxed);
         self.stats.oldest.store(oldest, Ordering::Relaxed);
     }
@@ -194,41 +178,23 @@ mod tests {
         RecordBatch::try_new(schema, vec![col]).unwrap()
     }
 
+    fn bnh(n: u64) -> BlockNumHash {
+        BlockNumHash::new(n, B256::repeat_byte(n as u8))
+    }
+
     #[test]
     fn push_and_len() {
         let mut rb = RingBuffer::new();
-        rb.push(
-            BlockNumHash::new(1, B256::repeat_byte(0x01)),
-            dummy_batch(1),
-        );
-        rb.push(
-            BlockNumHash::new(2, B256::repeat_byte(0x02)),
-            dummy_batch(1),
-        );
+        rb.push(bnh(1), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(2), BatchOp::Commit, dummy_batch(1));
         assert_eq!(rb.len(), 2);
     }
 
     #[test]
-    fn evict_by_block_distance() {
-        let mut rb = RingBuffer::new();
-        for i in 1..=10_u8 {
-            rb.push(
-                BlockNumHash::new(i.into(), B256::repeat_byte(i)),
-                dummy_batch(1),
-            );
-        }
-        rb.evict_older_than(5);
-        assert_eq!(rb.oldest().unwrap().number, 5);
-    }
-
-    #[test]
     fn evict_by_memory_cap() {
-        let mut rb = RingBuffer::with_memory_cap(1000); // very small cap
-        for i in 1..=100_u8 {
-            rb.push(
-                BlockNumHash::new(i.into(), B256::repeat_byte(i)),
-                dummy_batch(10),
-            );
+        let mut rb = RingBuffer::with_memory_cap(1000);
+        for i in 1..=100_u64 {
+            rb.push(bnh(i), BatchOp::Commit, dummy_batch(10));
         }
         assert!(rb.memory_usage() <= 1000 + 5000);
     }
@@ -236,53 +202,104 @@ mod tests {
     #[test]
     fn snapshot_from_resume_block() {
         let mut rb = RingBuffer::new();
-        for i in 1..=5_u8 {
-            rb.push(
-                BlockNumHash::new(i.into(), B256::repeat_byte(i)),
-                dummy_batch(1),
-            );
+        for i in 1..=5_u64 {
+            rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
         }
         let snap = rb.snapshot_from(3);
         assert_eq!(snap.len(), 2); // blocks 4 and 5
     }
 
     #[test]
-    fn snapshot_is_detached() {
+    fn snapshot_from_zero_returns_everything() {
         let mut rb = RingBuffer::new();
+        for i in 1..=3_u64 {
+            rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
+        }
+        let snap = rb.snapshot_from(0);
+        assert_eq!(snap.len(), 3);
+    }
+
+    #[test]
+    fn snapshot_from_missing_block_returns_everything() {
+        let mut rb = RingBuffer::new();
+        for i in 5..=8_u64 {
+            rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
+        }
+        // resume_block=2 is not in the buffer
+        let snap = rb.snapshot_from(2);
+        assert_eq!(snap.len(), 4);
+    }
+
+    #[test]
+    fn snapshot_includes_reverts_after_resume_point() {
+        let mut rb = RingBuffer::new();
+        // commit 8, 9, 10 then revert 10, commit 10'
+        rb.push(bnh(8), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(9), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(10), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(10), BatchOp::Revert, dummy_batch(1));
         rb.push(
-            BlockNumHash::new(1, B256::repeat_byte(0x01)),
+            BlockNumHash::new(10, B256::repeat_byte(0xAA)),
+            BatchOp::Commit,
             dummy_batch(1),
         );
-        let snap = rb.snapshot_from(0);
-        rb.truncate_from(1);
-        assert_eq!(snap.len(), 1);
+
+        // Consumer at block 9 — should get: commit(10), revert(10), commit(10')
+        let snap = rb.snapshot_from(9);
+        assert_eq!(snap.len(), 3);
     }
 
     #[test]
-    fn reorg_truncate_and_rebuild() {
+    fn snapshot_from_reverted_block_includes_revert() {
         let mut rb = RingBuffer::new();
-        for i in 1..=5_u8 {
-            rb.push(
-                BlockNumHash::new(i.into(), B256::repeat_byte(i)),
-                dummy_batch(1),
-            );
-        }
-        rb.truncate_from(3);
-        assert_eq!(rb.len(), 2);
-        assert_eq!(rb.newest().unwrap().number, 2);
+        rb.push(bnh(8), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(9), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(10), BatchOp::Commit, dummy_batch(1));
+        rb.push(bnh(10), BatchOp::Revert, dummy_batch(1));
+        rb.push(bnh(9), BatchOp::Revert, dummy_batch(1));
+        rb.push(
+            BlockNumHash::new(9, B256::repeat_byte(0xBB)),
+            BatchOp::Commit,
+            dummy_batch(1),
+        );
+        rb.push(
+            BlockNumHash::new(10, B256::repeat_byte(0xCC)),
+            BatchOp::Commit,
+            dummy_batch(1),
+        );
+
+        // Consumer had block 10 (original). Finds first commit(10) at pos 2.
+        // Returns: revert(10), revert(9), commit(9'), commit(10')
+        let snap = rb.snapshot_from(10);
+        assert_eq!(snap.len(), 4);
     }
 
     #[test]
-    fn deep_reorg_clears_buffer() {
+    fn snapshot_multi_reorg_correct_order() {
         let mut rb = RingBuffer::new();
-        for i in 5..=10_u8 {
+        // chain: 5, 6, 7 → revert 7,6,5 → 5', 6', 7'
+        for i in 5..=7_u64 {
+            rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
+        }
+        for i in (5..=7_u64).rev() {
+            rb.push(bnh(i), BatchOp::Revert, dummy_batch(1));
+        }
+        for i in 5..=7_u64 {
             rb.push(
-                BlockNumHash::new(i.into(), B256::repeat_byte(i)),
+                BlockNumHash::new(i, B256::repeat_byte(0xF0 + i as u8)),
+                BatchOp::Commit,
                 dummy_batch(1),
             );
         }
-        rb.truncate_from(3); // older than all entries
-        assert_eq!(rb.len(), 0);
+
+        // Consumer at block 4 — gets all 9 entries
+        let snap = rb.snapshot_from(4);
+        assert_eq!(snap.len(), 9);
+
+        // Consumer at block 7 — finds first commit(7) at pos 2,
+        // gets: revert(7), revert(6), revert(5), commit(5'), commit(6'), commit(7')
+        let snap = rb.snapshot_from(7);
+        assert_eq!(snap.len(), 6);
     }
 
     #[test]
@@ -291,12 +308,19 @@ mod tests {
         let stats = rb.stats();
         assert_eq!(stats.entries.load(Ordering::Relaxed), 0);
 
-        rb.push(
-            BlockNumHash::new(5, B256::repeat_byte(0x05)),
-            dummy_batch(1),
-        );
+        rb.push(bnh(5), BatchOp::Commit, dummy_batch(1));
         assert_eq!(stats.entries.load(Ordering::Relaxed), 1);
         assert_eq!(stats.tip.load(Ordering::Relaxed), 5);
         assert_eq!(stats.oldest.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn snapshot_is_detached() {
+        let mut rb = RingBuffer::new();
+        rb.push(bnh(1), BatchOp::Commit, dummy_batch(1));
+        let snap = rb.snapshot_from(0);
+        // Evict everything
+        rb.push(bnh(2), BatchOp::Commit, dummy_batch(1));
+        assert_eq!(snap.len(), 1);
     }
 }

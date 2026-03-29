@@ -57,3 +57,32 @@ async fn query_without_block_range_errors() {
         "expected error for query without block range"
     );
 }
+
+#[tokio::test]
+async fn query_with_inverted_block_range_errors() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    schema::create_tables(&conn).unwrap();
+
+    let conn = Arc::new(Mutex::new(conn));
+    let provider = HistoricalTableProvider::new(conn);
+
+    let ctx = SessionContext::new();
+    ctx.register_table("entities", Arc::new(provider)).unwrap();
+
+    let result = ctx
+        .sql("SELECT * FROM entities WHERE block_number BETWEEN 500 AND 100")
+        .await
+        .unwrap()
+        .collect()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "expected error for inverted block range (lower > upper)"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("invalid block range"),
+        "error should mention invalid block range, got: {err_msg}"
+    );
+}

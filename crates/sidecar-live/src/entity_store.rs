@@ -70,6 +70,21 @@ pub struct Snapshot {
     pub(crate) indexes: Arc<IndexSnapshot>,
 }
 
+/// Guarded mutable reference to an [`EntityRow`] that only exposes
+/// non-indexed fields. Prevents accidental mutation of indexed fields
+/// (owner, annotations) which would silently corrupt bitmap indexes.
+pub(crate) struct EntityRowMut<'a>(&'a mut EntityRow);
+
+impl EntityRowMut<'_> {
+    pub(crate) const fn set_expires_at_block(&mut self, block: u64) {
+        self.0.expires_at_block = block;
+    }
+
+    pub(crate) const fn set_tx_hash(&mut self, hash: B256) {
+        self.0.tx_hash = hash;
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct EntityStore {
     entities: HashMap<B256, EntityRow>,
@@ -81,6 +96,7 @@ pub struct EntityStore {
     numeric_ann_index: HashMap<(String, u64), RoaringBitmap>,
     numeric_ann_range: HashMap<String, BTreeMap<u64, RoaringBitmap>>,
     owner_index: HashMap<Address, RoaringBitmap>,
+    current_block: u64,
 }
 
 impl EntityStore {
@@ -128,11 +144,11 @@ impl EntityStore {
         self.entities.get(key)
     }
 
-    /// Only non-indexed fields (`expires_at_block`, `tx_hash`) may be mutated
-    /// through this reference. Mutating indexed fields (owner, annotations)
-    /// will silently corrupt the bitmap indexes.
-    pub(crate) fn get_mut(&mut self, key: &B256) -> Option<&mut EntityRow> {
-        self.entities.get_mut(key)
+    /// Returns a guarded mutable reference that only exposes non-indexed
+    /// fields (`expires_at_block`, `tx_hash`). Indexed fields (owner,
+    /// annotations) are read-only to prevent silent bitmap corruption.
+    pub(crate) fn get_mut(&mut self, key: &B256) -> Option<EntityRowMut<'_>> {
+        self.entities.get_mut(key).map(EntityRowMut)
     }
 
     pub fn get_by_owner(&self, owner: &Address) -> Vec<B256> {
@@ -154,6 +170,14 @@ impl EntityStore {
         self.entities.is_empty()
     }
 
+    pub const fn current_block(&self) -> u64 {
+        self.current_block
+    }
+
+    pub const fn set_current_block(&mut self, block: u64) {
+        self.current_block = block;
+    }
+
     pub fn clear(&mut self) {
         self.entities.clear();
         self.slots.reset();
@@ -164,6 +188,7 @@ impl EntityStore {
         self.numeric_ann_index.clear();
         self.numeric_ann_range.clear();
         self.owner_index.clear();
+        self.current_block = 0;
     }
 
     fn set_index_bits(&mut self, slot: u32, row: &EntityRow) {
@@ -207,9 +232,16 @@ impl EntityStore {
     // TODO: COW/incremental approach
     pub fn snapshot(&self) -> eyre::Result<Snapshot> {
         // BTreeMap iterates in key order, so entries are already sorted by slot.
+        // Exclude expired entities.
+        let current = self.current_block;
         let entries: Vec<(u32, B256)> = self
             .slot_to_entity
             .iter()
+            .filter(|(_, key)| {
+                self.entities
+                    .get(*key)
+                    .is_some_and(|row| row.expires_at_block > current)
+            })
             .map(|(&slot, &key)| (slot, key))
             .collect();
 
@@ -288,17 +320,60 @@ impl EntityStore {
 
         let batch = Arc::new(RecordBatch::try_new(entity_schema(), columns)?);
 
+        // Restrict indexes to live slots only.
+        let live_slots: RoaringBitmap = entries.iter().map(|(slot, _)| *slot).collect();
+
         let indexes = Arc::new(IndexSnapshot {
-            string_ann_index: self.string_ann_index.clone(),
-            numeric_ann_index: self.numeric_ann_index.clone(),
-            numeric_ann_range: self.numeric_ann_range.clone(),
-            owner_index: self.owner_index.clone(),
-            all_live_slots: self.all_live_slots.clone(),
+            string_ann_index: intersect_index(&self.string_ann_index, &live_slots),
+            numeric_ann_index: intersect_index(&self.numeric_ann_index, &live_slots),
+            numeric_ann_range: intersect_range_index(&self.numeric_ann_range, &live_slots),
+            owner_index: intersect_index(&self.owner_index, &live_slots),
+            all_live_slots: live_slots,
             slot_to_row,
         });
 
         Ok(Snapshot { batch, indexes })
     }
+}
+
+fn intersect_index<K: Eq + std::hash::Hash + Clone>(
+    index: &HashMap<K, RoaringBitmap>,
+    live: &RoaringBitmap,
+) -> HashMap<K, RoaringBitmap> {
+    index
+        .iter()
+        .filter_map(|(k, bm)| {
+            let filtered = bm & live;
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((k.clone(), filtered))
+            }
+        })
+        .collect()
+}
+
+fn intersect_range_index(
+    index: &HashMap<String, BTreeMap<u64, RoaringBitmap>>,
+    live: &RoaringBitmap,
+) -> HashMap<String, BTreeMap<u64, RoaringBitmap>> {
+    index
+        .iter()
+        .filter_map(|(k, btree)| {
+            let filtered: BTreeMap<u64, RoaringBitmap> = btree
+                .iter()
+                .filter_map(|(v, bm)| {
+                    let f = bm & live;
+                    if f.is_empty() { None } else { Some((*v, f)) }
+                })
+                .collect();
+            if filtered.is_empty() {
+                None
+            } else {
+                Some((k.clone(), filtered))
+            }
+        })
+        .collect()
 }
 
 fn remove_from_bitmap<K: Eq + std::hash::Hash + Clone>(
@@ -667,5 +742,109 @@ mod tests {
         let mut row_indices: Vec<usize> = snap.indexes.slot_to_row.values().copied().collect();
         row_indices.sort_unstable();
         assert_eq!(row_indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn snapshot_filters_expired_entities() {
+        let mut store = EntityStore::new();
+
+        // Entity expiring at block 100
+        store.insert(sample_row(0x01));
+        // Entity expiring at block 200
+        let mut row2 = sample_row(0x02);
+        row2.expires_at_block = 200;
+        store.insert(row2);
+
+        // current_block=0: both visible
+        let snap = store.snapshot().expect("snapshot");
+        assert_eq!(snap.batch.num_rows(), 2);
+        assert_eq!(snap.indexes.all_live_slots.len(), 2);
+
+        // Advance to block 100: entity 0x01 expires (expires_at_block <= current_block)
+        store.set_current_block(100);
+        let snap = store.snapshot().expect("snapshot");
+        assert_eq!(snap.batch.num_rows(), 1);
+        assert_eq!(snap.indexes.all_live_slots.len(), 1);
+
+        // Advance to block 200: both expired
+        store.set_current_block(200);
+        let snap = store.snapshot().expect("snapshot");
+        assert_eq!(snap.batch.num_rows(), 0);
+        assert_eq!(snap.indexes.all_live_slots.len(), 0);
+    }
+
+    #[test]
+    fn snapshot_expired_entities_excluded_from_indexes() {
+        let mut store = EntityStore::new();
+
+        store.insert(sample_row(0x01));
+        let mut row2 = sample_row(0x02);
+        row2.expires_at_block = 200;
+        row2.owner = Address::repeat_byte(0x02);
+        row2.string_annotations = vec![("k2".into(), "v2".into())];
+        row2.numeric_annotations = vec![("n2".into(), 77)];
+        store.insert(row2);
+
+        // Expire entity 0x01
+        store.set_current_block(100);
+        let snap = store.snapshot().expect("snapshot");
+
+        // Owner index should only contain 0x02's owner
+        assert!(
+            !snap
+                .indexes
+                .owner_index
+                .contains_key(&Address::repeat_byte(0x01))
+        );
+        assert!(
+            snap.indexes
+                .owner_index
+                .contains_key(&Address::repeat_byte(0x02))
+        );
+
+        // String annotation index: k1/v1 from expired entity should be gone
+        assert!(
+            !snap
+                .indexes
+                .string_ann_index
+                .contains_key(&("k1".to_owned(), "v1".to_owned()))
+        );
+        assert!(
+            snap.indexes
+                .string_ann_index
+                .contains_key(&("k2".to_owned(), "v2".to_owned()))
+        );
+
+        // Numeric annotation index: n1/42 from expired entity should be gone
+        assert!(
+            !snap
+                .indexes
+                .numeric_ann_index
+                .contains_key(&("n1".to_owned(), 42))
+        );
+        assert!(
+            snap.indexes
+                .numeric_ann_index
+                .contains_key(&("n2".to_owned(), 77))
+        );
+    }
+
+    #[test]
+    fn get_mut_only_exposes_non_indexed_fields() {
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+
+        let key = B256::repeat_byte(0x01);
+        let new_hash = B256::repeat_byte(0xFF);
+
+        let mut row = store.get_mut(&key).expect("entity exists");
+        row.set_expires_at_block(999);
+        row.set_tx_hash(new_hash);
+
+        let entity = store.get(&key).expect("entity exists");
+        assert_eq!(entity.expires_at_block, 999);
+        assert_eq!(entity.tx_hash, new_hash);
+        // owner and annotations unchanged
+        assert_eq!(entity.owner, Address::repeat_byte(0x01));
     }
 }

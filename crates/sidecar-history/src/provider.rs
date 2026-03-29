@@ -226,6 +226,13 @@ impl TableProvider for HistoricalTableProvider {
             )
         })?;
 
+        if range.0 > range.1 {
+            return Err(datafusion::error::DataFusionError::Plan(format!(
+                "invalid block range: lower ({}) > upper ({})",
+                range.0, range.1
+            )));
+        }
+
         let batch = tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
             query_block_range(&conn, range.0, range.1, &schema)
@@ -481,5 +488,16 @@ mod tests {
         use datafusion::prelude::*;
         let expr = col("owner").eq(lit("foo"));
         assert!(!has_block_range_filter(&[expr]));
+    }
+
+    #[test]
+    fn extract_block_range_inverted_returns_valid_tuple() {
+        use datafusion::prelude::*;
+        // lower > upper produces a valid tuple (validation happens at scan time)
+        let expr = col("block_number")
+            .gt_eq(lit(500u64))
+            .and(col("block_number").lt_eq(lit(100u64)));
+        let range = extract_block_range(&[expr]);
+        assert_eq!(range, Some((500, 100)));
     }
 }

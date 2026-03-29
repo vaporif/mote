@@ -13,6 +13,8 @@ use glint_primitives::constants::PROCESSOR_ADDRESS;
 use glint_primitives::entity::EntityInfo;
 use glint_primitives::rpc::{BlockTiming, GlintApiClient};
 
+use crate::error::Error;
+
 const DEFAULT_GAS_LIMIT: u64 = 1_000_000;
 
 mod sealed {
@@ -34,7 +36,7 @@ pub struct Glint<S: sealed::State = ReadOnly> {
 }
 
 impl Glint<ReadOnly> {
-    pub fn connect(rpc_url: &str) -> eyre::Result<Self> {
+    pub fn connect(rpc_url: &str) -> Result<Self, Error> {
         let rpc = HttpClientBuilder::default().build(rpc_url)?;
         let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?);
         Ok(Self::from_parts(provider, rpc))
@@ -42,7 +44,7 @@ impl Glint<ReadOnly> {
 }
 
 impl Glint<ReadWrite> {
-    pub fn connect_with_wallet(rpc_url: &str, wallet: EthereumWallet) -> eyre::Result<Self> {
+    pub fn connect_with_wallet(rpc_url: &str, wallet: EthereumWallet) -> Result<Self, Error> {
         let rpc = HttpClientBuilder::default().build(rpc_url)?;
         let provider = ProviderBuilder::new()
             .wallet(wallet)
@@ -80,32 +82,30 @@ impl Glint {
 }
 
 impl<S: sealed::State> Glint<S> {
-    pub async fn get_entity(&self, key: B256) -> eyre::Result<Option<EntityInfo>> {
+    pub async fn get_entity(&self, key: B256) -> Result<Option<EntityInfo>, Error> {
         Ok(self.rpc.get_entity(key).await?)
     }
 
-    pub async fn get_entity_count(&self) -> eyre::Result<u64> {
+    pub async fn get_entity_count(&self) -> Result<u64, Error> {
         Ok(self.rpc.get_entity_count().await?)
     }
 
-    pub async fn get_used_slots(&self) -> eyre::Result<u64> {
+    pub async fn get_used_slots(&self) -> Result<u64, Error> {
         Ok(self.rpc.get_used_slots().await?)
     }
 
-    pub async fn get_block_timing(&self) -> eyre::Result<BlockTiming> {
+    pub async fn get_block_timing(&self) -> Result<BlockTiming, Error> {
         Ok(self.rpc.get_block_timing().await?)
     }
 
-    pub async fn query(&self, sql: &str) -> eyre::Result<Vec<arrow::record_batch::RecordBatch>> {
-        let flight = self.flight.as_ref().ok_or_else(|| {
-            eyre::eyre!("flight SQL not configured — use builder with .flight_url()")
-        })?;
+    pub async fn query(&self, sql: &str) -> Result<Vec<arrow::record_batch::RecordBatch>, Error> {
+        let flight = self.flight.as_ref().ok_or(Error::FlightNotConfigured)?;
         flight.lock().await.query(sql).await
     }
 }
 
 impl Glint<ReadWrite> {
-    pub async fn send(&self, tx: &GlintTransaction) -> eyre::Result<TransactionReceipt> {
+    pub async fn send(&self, tx: &GlintTransaction) -> Result<TransactionReceipt, Error> {
         tx.validate()?;
 
         let mut calldata = Vec::new();
@@ -119,6 +119,9 @@ impl Glint<ReadWrite> {
 
         let pending = self.provider.send_transaction(tx_request).await?;
         let receipt = pending.get_receipt().await?;
+        if !receipt.status() {
+            return Err(Error::Reverted(receipt.transaction_hash));
+        }
         Ok(receipt)
     }
 }
@@ -148,7 +151,7 @@ impl<S: sealed::State> GlintBuilder<S> {
         gas_limit: u64,
         flight_url: Option<String>,
         client: Glint<S>,
-    ) -> eyre::Result<Glint<S>> {
+    ) -> Result<Glint<S>, Error> {
         let mut client = client;
         client.gas_limit = gas_limit;
         if let Some(ref flight_url) = flight_url {
@@ -172,7 +175,7 @@ impl GlintBuilder<ReadOnly> {
         }
     }
 
-    pub async fn build(self) -> eyre::Result<Glint<ReadOnly>> {
+    pub async fn build(self) -> Result<Glint<ReadOnly>, Error> {
         let rpc = HttpClientBuilder::default().build(&self.rpc_url)?;
         let url = self.rpc_url.parse()?;
         let provider = ProviderBuilder::new().connect_http(url);
@@ -186,7 +189,7 @@ impl GlintBuilder<ReadOnly> {
 }
 
 impl GlintBuilder<ReadWrite> {
-    pub async fn build(self) -> eyre::Result<Glint<ReadWrite>> {
+    pub async fn build(self) -> Result<Glint<ReadWrite>, Error> {
         let wallet = self.wallet.expect("wallet set by typestate");
         let rpc = HttpClientBuilder::default().build(&self.rpc_url)?;
         let url = self.rpc_url.parse()?;

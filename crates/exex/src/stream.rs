@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::arrow::build_watermark_batch;
 use crate::ring_buffer::RingBufferStats;
-use glint_primitives::exex_schema::entity_events_schema;
+use glint_primitives::exex_schema::{columns, entity_events_schema};
 
 const SUBSCRIBE_MSG_SIZE: usize = 9; // 1 byte msg_type + 8 bytes resume_block
 
@@ -291,6 +292,43 @@ struct ReplayResult {
     tip: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BatchKey {
+    block_number: u64,
+    block_hash: [u8; 32],
+    op: u8,
+}
+
+fn batch_dedup_key(batch: &RecordBatch) -> Option<BatchKey> {
+    if batch.num_rows() == 0 {
+        return None;
+    }
+    let block_number = batch
+        .column_by_name(columns::BLOCK_NUMBER)
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt64Array>())
+        .map(|a| a.value(0))?;
+    let block_hash = batch
+        .column_by_name(columns::BLOCK_HASH)
+        .and_then(|c| {
+            c.as_any()
+                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+        })
+        .map(|a| {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(a.value(0));
+            arr
+        })?;
+    let op = batch
+        .column_by_name(columns::OP)
+        .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt8Array>())
+        .map(|a| a.value(0))?;
+    Some(BatchKey {
+        block_number,
+        block_hash,
+        op,
+    })
+}
+
 async fn replay_snapshot(
     stream: UnixStream,
     resume_block: u64,
@@ -335,9 +373,17 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // TODO: this drain can discard batches for blocks above the snapshot tip that
-    // arrived between the snapshot request and reply. Buffer those instead.
-    while batch_rx.try_recv().is_ok() {}
+    // Buffer any batches that arrived while we waited for the snapshot.
+    let mut buffered = Vec::new();
+    while let Ok(item) = batch_rx.try_recv() {
+        buffered.push(item);
+    }
+
+    // Dedup: skip buffered batches already in the snapshot.
+    let snapshot_keys: HashSet<BatchKey> = snapshot
+        .iter()
+        .filter_map(|(_, batch)| batch_dedup_key(batch))
+        .collect();
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
     for (_, batch) in &snapshot {
@@ -346,10 +392,23 @@ async fn replay_snapshot(
         }
     }
 
-    let tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
+    let mut tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
     let watermark = build_watermark_batch(tip)?;
     if writer_tx.send(watermark).await.is_err() {
         return Err(eyre::eyre!("writer closed during watermark send"));
+    }
+
+    // Forward batches the snapshot didn't cover.
+    for (maybe_bnh, batch) in buffered {
+        let dominated = batch_dedup_key(&batch).is_some_and(|key| snapshot_keys.contains(&key));
+        if !dominated {
+            if writer_tx.send(batch).await.is_err() {
+                return Err(eyre::eyre!("writer closed during buffered batch send"));
+            }
+            if let Some(bnh) = maybe_bnh {
+                tip = bnh.number;
+            }
+        }
     }
 
     let _ = replay_done_tx.send(());
@@ -425,6 +484,72 @@ async fn stream_live(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glint_primitives::exex_types::BatchOp;
+
+    fn make_test_batch(block: u64, hash_byte: u8, op: BatchOp) -> (BlockNumHash, RecordBatch) {
+        let hash = alloy_primitives::B256::repeat_byte(hash_byte);
+        let bnh = BlockNumHash::new(block, hash);
+        let batch = crate::arrow::build_record_batch(
+            block,
+            hash,
+            block,
+            op,
+            &[crate::arrow::EventRow {
+                event: glint_primitives::parse::EntityEvent::Deleted {
+                    entity_key: alloy_primitives::B256::repeat_byte(0x01),
+                    owner: alloy_primitives::Address::ZERO,
+                    sender: alloy_primitives::Address::ZERO,
+                    gas_cost: 100,
+                },
+                tx_index: 0,
+                tx_hash: alloy_primitives::B256::ZERO,
+                log_index: 0,
+            }],
+        )
+        .unwrap();
+        (bnh, batch)
+    }
+
+    async fn run_replay_test(
+        batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
+        snapshot: Vec<(BlockNumHash, RecordBatch)>,
+    ) -> (u64, Vec<RecordBatch>) {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("test.sock");
+        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
+            let std_stream = stream.into_std().unwrap();
+            std_stream.set_nonblocking(false).unwrap();
+            let reader = arrow::ipc::reader::StreamReader::try_new(&std_stream, None).unwrap();
+            reader
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>()
+        });
+
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(1);
+        let snapshot_fulfiller = tokio::spawn(async move {
+            let req = snapshot_rx.recv().await.unwrap();
+            let _ = req.reply_tx.send(snapshot);
+            let _ = req.replay_done_rx.await;
+        });
+
+        let result = replay_snapshot(server_stream, 0, &snapshot_tx, batch_rx)
+            .await
+            .unwrap();
+
+        let tip = result.tip;
+        drop(result.writer_tx);
+        let _ = result.write_handle.await;
+        snapshot_fulfiller.await.unwrap();
+
+        let received = client_handle.await.unwrap();
+        (tip, received)
+    }
 
     #[test]
     fn parse_subscribe_message() {
@@ -583,5 +708,154 @@ mod tests {
         assert!(decoded.consumer_connected);
         assert_eq!(decoded.tip_block, 42);
         assert_eq!(decoded.ring_buffer_entries, 100);
+    }
+
+    #[test]
+    fn batch_dedup_key_extracts_commit() {
+        let (_, batch) = make_test_batch(42, 0xAB, BatchOp::Commit);
+        let key = batch_dedup_key(&batch).unwrap();
+        assert_eq!(key.block_number, 42);
+        assert_eq!(key.block_hash, alloy_primitives::B256::repeat_byte(0xAB).0);
+        assert_eq!(key.op, BatchOp::Commit as u8);
+    }
+
+    #[test]
+    fn batch_dedup_key_extracts_revert() {
+        let (_, batch) = make_test_batch(99, 0xCD, BatchOp::Revert);
+        let key = batch_dedup_key(&batch).unwrap();
+        assert_eq!(key.block_number, 99);
+        assert_eq!(key.op, BatchOp::Revert as u8);
+    }
+
+    #[test]
+    fn batch_dedup_key_watermark() {
+        let batch = build_watermark_batch(500).unwrap();
+        let key = batch_dedup_key(&batch).unwrap();
+        assert_eq!(key.block_number, 0);
+        assert_eq!(key.block_hash, [0u8; 32]);
+        assert_eq!(key.op, 0xFF);
+    }
+
+    #[test]
+    fn batch_dedup_key_empty_batch_returns_none() {
+        let schema = glint_primitives::exex_schema::entity_events_schema();
+        let batch = RecordBatch::new_empty(schema);
+        assert!(batch_dedup_key(&batch).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_buffers_and_forwards_non_snapshot_batches() {
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+
+        let (bnh1, batch1) = make_test_batch(1, 0x01, BatchOp::Commit);
+        let (bnh2, batch2) = make_test_batch(2, 0x02, BatchOp::Commit);
+        let (bnh3, batch3) = make_test_batch(3, 0x03, BatchOp::Commit);
+
+        batch_tx.send((Some(bnh1), batch1.clone())).await.unwrap();
+        batch_tx.send((Some(bnh2), batch2.clone())).await.unwrap();
+        batch_tx.send((Some(bnh3), batch3.clone())).await.unwrap();
+
+        let snapshot = vec![(bnh1, batch1), (bnh2, batch2)];
+        let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
+
+        assert_eq!(tip, 3, "tip should advance to block 3 from buffered batch");
+        assert_eq!(
+            received.len(),
+            4,
+            "expected snapshot(2) + watermark(1) + buffered(1)"
+        );
+
+        let last = &received[3];
+        let bn = last
+            .column_by_name(columns::BLOCK_NUMBER)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::UInt64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(bn, 3, "forwarded batch should be block 3");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_filters_snapshot_covered_batches() {
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+
+        let (bnh1, batch1) = make_test_batch(1, 0x01, BatchOp::Commit);
+        let (bnh2, batch2) = make_test_batch(2, 0x02, BatchOp::Commit);
+
+        // Pre-load channel with same batches as snapshot
+        batch_tx.send((Some(bnh1), batch1.clone())).await.unwrap();
+        batch_tx.send((Some(bnh2), batch2.clone())).await.unwrap();
+
+        let snapshot = vec![(bnh1, batch1), (bnh2, batch2)];
+        let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
+
+        assert_eq!(tip, 2);
+        // Only snapshot batches + watermark; no duplicates forwarded
+        assert_eq!(
+            received.len(),
+            3,
+            "expected snapshot(2) + watermark(1), no duplicates"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_forwards_reorg_batches_with_different_hash() {
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+
+        // Snapshot covers block 100 with hash 0xAA
+        let (bnh100, batch100) = make_test_batch(100, 0xAA, BatchOp::Commit);
+
+        // After snapshot: revert(100, 0xAA) + commit(100', 0xBB)
+        let (_, revert_batch) = make_test_batch(100, 0xAA, BatchOp::Revert);
+        let (bnh100_prime, commit_batch) = make_test_batch(100, 0xBB, BatchOp::Commit);
+
+        batch_tx.send((None, revert_batch)).await.unwrap();
+        batch_tx
+            .send((Some(bnh100_prime), commit_batch))
+            .await
+            .unwrap();
+
+        let snapshot = vec![(bnh100, batch100)];
+        let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
+
+        assert_eq!(tip, 100, "tip should be 100 from reorg commit");
+        // snapshot(1) + watermark(1) + revert(1) + commit(1) = 4
+        assert_eq!(received.len(), 4, "reorg batches should be forwarded");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_filters_duplicate_revert_in_buffer() {
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+
+        // Snapshot contains a revert for block 5
+        let (bnh5, revert5) = make_test_batch(5, 0x05, BatchOp::Revert);
+
+        // Channel also has the same revert (duplicate)
+        batch_tx.send((None, revert5.clone())).await.unwrap();
+
+        let snapshot = vec![(bnh5, revert5)];
+        let (_, received) = run_replay_test(&mut batch_rx, snapshot).await;
+
+        // snapshot(1) + watermark(1), duplicate revert filtered out
+        assert_eq!(
+            received.len(),
+            2,
+            "duplicate revert should be filtered, not forwarded"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_empty_buffer_is_noop() {
+        let (_batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
+
+        let (tip, received) = run_replay_test(&mut batch_rx, vec![]).await;
+
+        assert_eq!(tip, 0, "tip should be resume_block with empty snapshot");
+        assert_eq!(
+            received.len(),
+            1,
+            "only watermark with empty snapshot and empty buffer"
+        );
     }
 }

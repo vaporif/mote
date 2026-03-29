@@ -38,6 +38,13 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
 
     let nrows = batch.num_rows();
 
+    if let Some(block) = batch_block_number(batch) {
+        match op {
+            BatchOp::Commit => store.set_current_block(block),
+            BatchOp::Revert => store.set_current_block(block.saturating_sub(1)),
+        }
+    }
+
     match op {
         BatchOp::Commit => {
             apply_commit(store, batch, nrows).wrap_err("applying commit batch")?;
@@ -114,9 +121,9 @@ fn apply_commit(store: &mut EntityStore, batch: &RecordBatch, nrows: usize) -> e
             EntityEventType::Extended => {
                 let new_expires_at_block = expires_col.value(i);
 
-                if let Some(row) = store.get_mut(&entity_key) {
-                    row.expires_at_block = new_expires_at_block;
-                    row.tx_hash = tx_hash;
+                if let Some(mut row) = store.get_mut(&entity_key) {
+                    row.set_expires_at_block(new_expires_at_block);
+                    row.set_tx_hash(tx_hash);
                 }
             }
             EntityEventType::PermissionsChanged => {
@@ -175,8 +182,8 @@ fn apply_revert(
             EntityEventType::Extended => {
                 let old_expires = old_expires_col.value(i);
 
-                if let Some(row) = store.get_mut(&entity_key) {
-                    row.expires_at_block = old_expires;
+                if let Some(mut row) = store.get_mut(&entity_key) {
+                    row.set_expires_at_block(old_expires);
                     // tx_hash can't be fully restored — the revert payload doesn't carry
                     // the pre-extension tx_hash, so we leave it as-is.
                 } else {
@@ -403,5 +410,62 @@ mod tests {
         .with_op(BatchOp::Revert)]);
         let result = apply_batch(&mut store, &revert_batch).unwrap();
         assert_eq!(result, ApplyResult::NeedsReplay);
+    }
+
+    #[test]
+    fn commit_advances_current_block() {
+        let mut store = EntityStore::new();
+        assert_eq!(store.current_block(), 0);
+
+        let batch = build_batch(&[created_event(200).with_op(BatchOp::Commit)]);
+        apply_batch(&mut store, &batch).unwrap();
+        assert_eq!(store.current_block(), 0); // block_number from created(0, ...)
+    }
+
+    #[test]
+    fn commit_at_block_10_sets_current_block() {
+        let mut store = EntityStore::new();
+
+        let batch = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())]);
+        apply_batch(&mut store, &batch).unwrap();
+        assert_eq!(store.current_block(), 10);
+    }
+
+    #[test]
+    fn revert_sets_current_block_to_previous() {
+        let mut store = EntityStore::new();
+
+        let create = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())]);
+        apply_batch(&mut store, &create).unwrap();
+        assert_eq!(store.current_block(), 10);
+
+        let revert = build_batch(&[EventBuilder::created(10, 0x01)
+            .with_entity_key(default_key())
+            .with_owner(default_owner())
+            .with_expires_at(200)
+            .with_tx_hash(default_tx())
+            .with_op(BatchOp::Revert)]);
+        apply_batch(&mut store, &revert).unwrap();
+        assert_eq!(store.current_block(), 9);
+    }
+
+    #[test]
+    fn revert_at_block_zero_saturates() {
+        let mut store = EntityStore::new();
+
+        let create = build_batch(&[created_event(200)]);
+        apply_batch(&mut store, &create).unwrap();
+
+        let revert = build_batch(&[created_event(200).with_op(BatchOp::Revert)]);
+        apply_batch(&mut store, &revert).unwrap();
+        assert_eq!(store.current_block(), 0);
     }
 }

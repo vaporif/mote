@@ -151,8 +151,6 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                     }
                 };
 
-                ring_buffer.evict_if_needed(current_tip.number);
-
                 report_finished_height(
                     &ctx,
                     &ring_buffer,
@@ -211,7 +209,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
             &events,
         ) {
             Ok(batch) => {
-                ring_buffer.push(bnh, batch.clone());
+                ring_buffer.push(bnh, BatchOp::Commit, batch.clone());
                 try_send_batch(
                     batch_tx,
                     Some(bnh),
@@ -229,8 +227,6 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
     }
 }
 
-// TODO: revert batches are sent live but never stored in the ring buffer, so a
-// reconnecting consumer's snapshot will be missing revert events after a reorg.
 fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     chain: &reth_execution_types::Chain<N>,
     ring_buffer: &mut RingBuffer,
@@ -243,11 +239,10 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
 
     #[allow(clippy::needless_collect)]
     let blocks: Vec<_> = chain.blocks_and_receipts().collect();
-    let mut revert_failed = false;
-
     for (block, receipts) in blocks.into_iter().rev() {
         let block_number = block.header().number();
         let block_hash = block.hash();
+        let bnh = BlockNumHash::new(block_number, block_hash);
         let transactions = block.body().transactions();
 
         let events = collect_events_from_receipts(receipts, transactions);
@@ -264,29 +259,21 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
             &events,
         ) {
             Ok(batch) => {
-                if consumer_connected.load(Ordering::Acquire)
-                    && !replay_in_progress
-                    && batch_tx.try_send((None, batch)).is_err()
-                {
-                    revert_failed = true;
-                    // TODO: metrics
-                }
+                ring_buffer.push(bnh, BatchOp::Revert, batch.clone());
+                try_send_batch(
+                    batch_tx,
+                    None,
+                    batch,
+                    consumer_connected,
+                    grace,
+                    replay_in_progress,
+                );
             }
             Err(e) => {
                 // TODO: metrics
                 error!(block_number, ?e, "failed to build revert record batch");
             }
         }
-    }
-
-    if revert_failed {
-        warn!("revert delivery failed, disconnecting consumer (corrupt state)");
-        // TODO: metrics
-        grace.force_disconnect();
-    }
-
-    if let Some(first) = chain.blocks_iter().next() {
-        ring_buffer.truncate_from(first.header().number());
     }
 }
 
