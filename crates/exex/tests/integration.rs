@@ -44,6 +44,7 @@ fn sample_created_event() -> EntityEvent {
         numeric_values: vec![42],
         extend_policy: 0,
         operator: Address::ZERO,
+        gas_cost: 50_000,
     }
 }
 

@@ -36,6 +36,7 @@ struct BatchBuilders {
     numeric_ann: MapBuilder<StringBuilder, UInt64Builder>,
     extend_policy: UInt8Builder,
     operator: FixedSizeBinaryBuilder,
+    gas_cost: UInt64Builder,
     tip_block: UInt64Builder,
     op: UInt8Builder,
 }
@@ -67,6 +68,7 @@ impl BatchBuilders {
             ),
             extend_policy: UInt8Builder::with_capacity(cap),
             operator: FixedSizeBinaryBuilder::with_capacity(cap, 20),
+            gas_cost: UInt64Builder::with_capacity(cap),
             tip_block: UInt64Builder::with_capacity(cap),
             op: UInt8Builder::with_capacity(cap),
         }
@@ -90,6 +92,7 @@ impl BatchBuilders {
             Arc::new(self.numeric_ann.finish()),
             Arc::new(self.extend_policy.finish()),
             Arc::new(self.operator.finish()),
+            Arc::new(self.gas_cost.finish()),
             Arc::new(self.tip_block.finish()),
             Arc::new(self.op.finish()),
         ];
@@ -129,6 +132,7 @@ pub fn build_record_batch(
                 numeric_values,
                 extend_policy,
                 operator,
+                gas_cost,
             } => {
                 b.event_type.append_value(EntityEventType::Created as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
@@ -143,6 +147,7 @@ pub fn build_record_batch(
 
                 b.extend_policy.append_value(*extend_policy);
                 b.operator.append_value(operator.as_slice())?;
+                b.gas_cost.append_value(*gas_cost);
             }
             EntityEvent::Updated {
                 entity_key,
@@ -157,6 +162,7 @@ pub fn build_record_batch(
                 numeric_values,
                 extend_policy,
                 operator,
+                gas_cost,
             } => {
                 b.event_type.append_value(EntityEventType::Updated as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
@@ -171,14 +177,19 @@ pub fn build_record_batch(
 
                 b.extend_policy.append_value(*extend_policy);
                 b.operator.append_value(operator.as_slice())?;
+                b.gas_cost.append_value(*gas_cost);
             }
             EntityEvent::Deleted {
-                entity_key, owner, ..
+                entity_key,
+                owner,
+                gas_cost,
+                ..
             } => {
                 b.event_type.append_value(EntityEventType::Deleted as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
                 b.owner.append_value(owner.as_slice())?;
                 append_null_fields(&mut b)?;
+                b.gas_cost.append_value(*gas_cost);
             }
             EntityEvent::Expired {
                 entity_key, owner, ..
@@ -187,12 +198,14 @@ pub fn build_record_batch(
                 b.entity_key.append_value(entity_key.as_slice())?;
                 b.owner.append_value(owner.as_slice())?;
                 append_null_fields(&mut b)?;
+                b.gas_cost.append_null();
             }
             EntityEvent::Extended {
                 entity_key,
                 old_expires_at,
                 new_expires_at,
                 owner,
+                gas_cost,
             } => {
                 b.event_type.append_value(EntityEventType::Extended as u8);
                 b.entity_key.append_value(entity_key.as_slice())?;
@@ -205,6 +218,7 @@ pub fn build_record_batch(
                 b.numeric_ann.append(false)?;
                 b.extend_policy.append_null();
                 b.operator.append_null();
+                b.gas_cost.append_value(*gas_cost);
             }
             EntityEvent::PermissionsChanged {
                 entity_key,
@@ -212,6 +226,7 @@ pub fn build_record_batch(
                 new_owner,
                 extend_policy,
                 operator,
+                gas_cost,
             } => {
                 b.event_type
                     .append_value(EntityEventType::PermissionsChanged as u8);
@@ -225,6 +240,7 @@ pub fn build_record_batch(
                 b.numeric_ann.append(false)?;
                 b.extend_policy.append_value(*extend_policy);
                 b.operator.append_value(operator.as_slice())?;
+                b.gas_cost.append_value(*gas_cost);
             }
         }
     }
@@ -251,6 +267,7 @@ pub fn build_watermark_batch(tip_block: u64) -> eyre::Result<RecordBatch> {
     b.numeric_ann.append(false)?;
     b.extend_policy.append_null();
     b.operator.append_null();
+    b.gas_cost.append_null();
     b.tip_block.append_value(tip_block);
     b.op.append_value(0xFF);
 
@@ -313,6 +330,7 @@ mod tests {
             numeric_values: vec![42],
             extend_policy: 0,
             operator: Address::ZERO,
+            gas_cost: 50_000,
         }
     }
 
@@ -321,6 +339,7 @@ mod tests {
             entity_key: B256::repeat_byte(0x03),
             owner: Address::repeat_byte(0x04),
             sender: Address::repeat_byte(0x04),
+            gas_cost: 10_000,
         }
     }
 
@@ -330,13 +349,14 @@ mod tests {
             old_expires_at: 10,
             new_expires_at: 20,
             owner: Address::ZERO,
+            gas_cost: 10_100,
         }
     }
 
     #[test]
     fn schema_column_count() {
         let schema = entity_events_schema();
-        assert_eq!(schema.fields().len(), 18);
+        assert_eq!(schema.fields().len(), 19);
         assert!(schema.field_with_name("block_number").is_ok());
         assert!(schema.field_with_name("block_hash").is_ok());
         assert!(schema.field_with_name("tx_index").is_ok());
@@ -374,7 +394,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 18);
+        assert_eq!(batch.num_columns(), 19);
     }
 
     #[test]
@@ -468,6 +488,7 @@ mod tests {
             new_owner: Address::repeat_byte(0x02),
             extend_policy: 1,
             operator: Address::repeat_byte(0x03),
+            gas_cost: 10_000,
         }
     }
 

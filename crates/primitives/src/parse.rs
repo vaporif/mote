@@ -22,6 +22,7 @@ pub enum EntityEvent {
         numeric_values: Vec<u64>,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     },
     Updated {
         entity_key: B256,
@@ -36,11 +37,13 @@ pub enum EntityEvent {
         numeric_values: Vec<u64>,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     },
     Deleted {
         entity_key: B256,
         owner: Address,
         sender: Address,
+        gas_cost: u64,
     },
     Expired {
         entity_key: B256,
@@ -51,6 +54,7 @@ pub enum EntityEvent {
         old_expires_at: u64,
         new_expires_at: u64,
         owner: Address,
+        gas_cost: u64,
     },
     PermissionsChanged {
         entity_key: B256,
@@ -58,6 +62,7 @@ pub enum EntityEvent {
         new_owner: Address,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     },
 }
 
@@ -93,6 +98,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 numeric_values: d.numeric_annotation_values,
                 extend_policy: d.extend_policy,
                 operator: d.operator,
+                gas_cost: d.gas_cost,
             }))
         }
         s if s == EntityUpdated::SIGNATURE_HASH => {
@@ -116,6 +122,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 numeric_values: d.numeric_annotation_values,
                 extend_policy: d.extend_policy,
                 operator: d.operator,
+                gas_cost: d.gas_cost,
             }))
         }
         s if s == EntityDeleted::SIGNATURE_HASH => {
@@ -124,6 +131,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 entity_key: d.entity_key,
                 owner: d.owner,
                 sender: d.sender,
+                gas_cost: d.gas_cost,
             }))
         }
         s if s == EntityExpired::SIGNATURE_HASH => {
@@ -140,6 +148,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 old_expires_at: d.old_expires_at,
                 new_expires_at: d.new_expires_at,
                 owner: d.owner,
+                gas_cost: d.gas_cost,
             }))
         }
         s if s == EntityPermissionsChanged::SIGNATURE_HASH => {
@@ -150,6 +159,7 @@ pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
                 new_owner: d.new_owner,
                 extend_policy: d.extend_policy,
                 operator: d.operator,
+                gas_cost: d.gas_cost,
             }))
         }
         _ => {
@@ -212,6 +222,7 @@ mod tests {
             },
             0,
             Address::ZERO,
+            50_000,
         )
     }
 
@@ -259,6 +270,7 @@ mod tests {
             },
             1,
             Address::repeat_byte(0x42),
+            40_000,
         );
         let EntityEvent::Updated {
             old_expires_at,
@@ -287,6 +299,7 @@ mod tests {
             B256::repeat_byte(0x03),
             Address::repeat_byte(0x04),
             Address::repeat_byte(0x05),
+            10_000,
         );
         let event = parse_log(&del_log).unwrap().unwrap();
         match event {
@@ -294,6 +307,7 @@ mod tests {
                 entity_key,
                 owner,
                 sender,
+                ..
             } => {
                 assert_eq!(entity_key, B256::repeat_byte(0x03));
                 assert_eq!(owner, Address::repeat_byte(0x04));
@@ -316,8 +330,14 @@ mod tests {
     #[test]
     fn extended_has_owner() {
         let owner = Address::repeat_byte(0x09);
-        let log =
-            EntityExtended::new_log(PROCESSOR_ADDRESS, B256::repeat_byte(0x05), 10, 20, owner);
+        let log = EntityExtended::new_log(
+            PROCESSOR_ADDRESS,
+            B256::repeat_byte(0x05),
+            10,
+            20,
+            owner,
+            10_100,
+        );
         let EntityEvent::Extended {
             old_expires_at,
             new_expires_at,
@@ -344,6 +364,7 @@ mod tests {
             empty_annotations(),
             0,
             Address::ZERO,
+            50_000,
         );
         assert!(parse_log(&log).unwrap().is_none());
     }
@@ -372,6 +393,7 @@ mod tests {
             },
             0,
             Address::ZERO,
+            50_000,
         );
         assert!(parse_log(&log).is_err());
     }
@@ -385,6 +407,7 @@ mod tests {
             Address::repeat_byte(0x02),
             1,
             Address::repeat_byte(0x03),
+            10_000,
         );
         let EntityEvent::PermissionsChanged {
             entity_key,
@@ -392,6 +415,7 @@ mod tests {
             new_owner,
             extend_policy,
             operator,
+            ..
         } = parse_log(&log).unwrap().unwrap()
         else {
             panic!("expected PermissionsChanged");

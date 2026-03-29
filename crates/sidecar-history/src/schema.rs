@@ -35,6 +35,7 @@ pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
             numeric_annotations TEXT,
             extend_policy       INTEGER,
             operator            BLOB,
+            gas_cost            INTEGER,
             PRIMARY KEY (entity_key, block_number, log_index)
         ) STRICT;
 

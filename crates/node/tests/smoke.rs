@@ -32,12 +32,14 @@ fn cold_start_pipeline_tracker_to_index() {
         numeric_values: vec![],
         extend_policy: 0,
         operator: Address::ZERO,
+        gas_cost: 50_000,
     });
     tracker.apply_event(&EntityEvent::Extended {
         entity_key: key,
         old_expires_at: 1000,
         new_expires_at: 1500,
         owner: Address::ZERO,
+        gas_cost: 10_100,
     });
 
     let mut index = ExpirationIndex::new();

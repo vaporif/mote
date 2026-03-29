@@ -33,6 +33,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
     let num_ann_col = col_map(batch, columns::NUMERIC_ANNOTATIONS)?;
     let extend_policy_col = col_u8(batch, columns::EXTEND_POLICY)?;
     let operator_col = col_fsb(batch, columns::OPERATOR)?;
+    let gas_cost_col = col_u64(batch, columns::GAS_COST)?;
 
     let tx = conn
         .unchecked_transaction()
@@ -44,8 +45,8 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 block_number, block_hash, tx_index, tx_hash, log_index,
                 event_type, entity_key, owner, expires_at_block, old_expires_at_block,
                 content_type, payload, string_annotations, numeric_annotations,
-                extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                extend_policy, operator, gas_cost
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
             ON CONFLICT (entity_key, block_number, log_index) DO UPDATE SET
                 block_hash = excluded.block_hash,
                 tx_index = excluded.tx_index,
@@ -59,7 +60,8 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 string_annotations = excluded.string_annotations,
                 numeric_annotations = excluded.numeric_annotations,
                 extend_policy = excluded.extend_policy,
-                operator = excluded.operator",
+                operator = excluded.operator,
+                gas_cost = excluded.gas_cost",
         )?;
 
         for i in 0..batch.num_rows() {
@@ -86,6 +88,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
 
             let extend_policy: Option<i64> = nullable_u8_as_i64(extend_policy_col, i);
             let operator: Option<&[u8]> = nullable_blob(operator_col, i, 20, "operator")?;
+            let gas_cost: Option<i64> = nullable_u64_as_i64(gas_cost_col, i);
 
             stmt.execute(rusqlite::params![
                 (block_number as i64),
@@ -104,6 +107,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 numeric_annotations,
                 extend_policy,
                 operator,
+                gas_cost,
             ])?;
         }
     }

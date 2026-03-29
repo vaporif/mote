@@ -266,6 +266,7 @@ mod tests {
             numeric_values: vec![],
             extend_policy: 0,
             operator: Address::ZERO,
+            gas_cost: 50_000,
         }
     }
 
@@ -286,6 +287,7 @@ mod tests {
             entity_key: key,
             owner: Address::ZERO,
             sender: Address::ZERO,
+            gas_cost: 10_000,
         });
         assert!(tracker.live_entities().is_empty());
     }
@@ -300,6 +302,7 @@ mod tests {
             old_expires_at: 1000,
             new_expires_at: 1500,
             owner: Address::ZERO,
+            gas_cost: 10_100,
         });
         assert_eq!(tracker.live_entities().get(&key), Some(&1500));
     }
@@ -322,6 +325,7 @@ mod tests {
             numeric_values: vec![],
             extend_policy: 0,
             operator: Address::ZERO,
+            gas_cost: 40_000,
         });
         assert_eq!(tracker.live_entities().get(&key), Some(&2000));
     }
@@ -335,6 +339,7 @@ mod tests {
             old_expires_at: 500,
             new_expires_at: 1500,
             owner: Address::ZERO,
+            gas_cost: 10_000,
         });
         assert_eq!(tracker.live_entities().get(&key), Some(&1500));
     }

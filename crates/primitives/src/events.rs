@@ -20,7 +20,8 @@ sol! {
         string[] numeric_annotation_keys,
         uint64[] numeric_annotation_values,
         uint8 extend_policy,
-        address operator
+        address operator,
+        uint64 gas_cost
     );
 
     event EntityUpdated(
@@ -35,13 +36,15 @@ sol! {
         string[] numeric_annotation_keys,
         uint64[] numeric_annotation_values,
         uint8 extend_policy,
-        address operator
+        address operator,
+        uint64 gas_cost
     );
 
     event EntityDeleted(
         bytes32 indexed entity_key,
         address indexed owner,
-        address sender
+        address sender,
+        uint64 gas_cost
     );
 
     event EntityExpired(
@@ -53,7 +56,8 @@ sol! {
         bytes32 indexed entity_key,
         uint64 old_expires_at,
         uint64 new_expires_at,
-        address owner
+        address owner,
+        uint64 gas_cost
     );
 
     event EntityPermissionsChanged(
@@ -61,7 +65,8 @@ sol! {
         address indexed old_owner,
         address new_owner,
         uint8 extend_policy,
-        address operator
+        address operator,
+        uint64 gas_cost
     );
 }
 
@@ -77,6 +82,7 @@ impl EntityCreated {
         annotations: LogAnnotations,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     ) -> Log {
         let event = Self {
             entity_key,
@@ -90,6 +96,7 @@ impl EntityCreated {
             numeric_annotation_values: annotations.numeric_values,
             extend_policy,
             operator,
+            gas_cost,
         };
         Log {
             address,
@@ -110,6 +117,7 @@ impl EntityUpdated {
         annotations: LogAnnotations,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     ) -> Log {
         let event = Self {
             entity_key,
@@ -124,6 +132,7 @@ impl EntityUpdated {
             numeric_annotation_values: annotations.numeric_values,
             extend_policy,
             operator,
+            gas_cost,
         };
         Log {
             address,
@@ -133,11 +142,18 @@ impl EntityUpdated {
 }
 
 impl EntityDeleted {
-    pub fn new_log(address: Address, entity_key: B256, owner: Address, sender: Address) -> Log {
+    pub fn new_log(
+        address: Address,
+        entity_key: B256,
+        owner: Address,
+        sender: Address,
+        gas_cost: u64,
+    ) -> Log {
         let event = Self {
             entity_key,
             owner,
             sender,
+            gas_cost,
         };
         Log {
             address,
@@ -163,12 +179,14 @@ impl EntityExtended {
         old_expires_at: u64,
         new_expires_at: u64,
         owner: Address,
+        gas_cost: u64,
     ) -> Log {
         let event = Self {
             entity_key,
             old_expires_at,
             new_expires_at,
             owner,
+            gas_cost,
         };
         Log {
             address,
@@ -185,6 +203,7 @@ impl EntityPermissionsChanged {
         new_owner: Address,
         extend_policy: u8,
         operator: Address,
+        gas_cost: u64,
     ) -> Log {
         let event = Self {
             entity_key,
@@ -192,6 +211,7 @@ impl EntityPermissionsChanged {
             new_owner,
             extend_policy,
             operator,
+            gas_cost,
         };
         Log {
             address,
@@ -235,6 +255,7 @@ mod tests {
             },
             0,
             Address::ZERO,
+            50_000,
         );
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         assert_eq!(log.data.topics().len(), 3);
@@ -244,6 +265,7 @@ mod tests {
         assert_eq!(decoded.content_type, "text/plain");
         assert_eq!(decoded.extend_policy, 0);
         assert_eq!(decoded.operator, Address::ZERO);
+        assert_eq!(decoded.gas_cost, 50_000);
     }
 
     #[test]
@@ -266,11 +288,13 @@ mod tests {
             },
             1,
             operator,
+            70_000,
         );
 
         let decoded = EntityCreated::decode_log_data(&log.data).unwrap();
         assert_eq!(decoded.extend_policy, 1);
         assert_eq!(decoded.operator, operator);
+        assert_eq!(decoded.gas_cost, 70_000);
     }
 
     #[test]
@@ -278,25 +302,27 @@ mod tests {
         let entity_key = B256::repeat_byte(0x01);
         let owner = Address::repeat_byte(0x02);
         let sender = Address::repeat_byte(0x03);
-        let log = EntityDeleted::new_log(Address::ZERO, entity_key, owner, sender);
+        let log = EntityDeleted::new_log(Address::ZERO, entity_key, owner, sender, 10_000);
         assert_eq!(log.data.topics().len(), 3);
 
         let decoded = EntityDeleted::decode_log_data(&log.data).unwrap();
         assert_eq!(decoded.owner, owner);
         assert_eq!(decoded.sender, sender);
+        assert_eq!(decoded.gas_cost, 10_000);
     }
 
     #[test]
     fn entity_extended_new_log_roundtrips() {
         let entity_key = B256::repeat_byte(0x03);
         let owner = Address::repeat_byte(0x05);
-        let log = EntityExtended::new_log(Address::ZERO, entity_key, 10, 20, owner);
+        let log = EntityExtended::new_log(Address::ZERO, entity_key, 10, 20, owner, 10_100);
         assert_eq!(log.data.topics().len(), 2);
 
         let decoded = EntityExtended::decode_log_data(&log.data).unwrap();
         assert_eq!(decoded.old_expires_at, 10);
         assert_eq!(decoded.new_expires_at, 20);
         assert_eq!(decoded.owner, owner);
+        assert_eq!(decoded.gas_cost, 10_100);
     }
 
     #[test]
@@ -319,6 +345,7 @@ mod tests {
             },
             1,
             operator,
+            40_000,
         );
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         assert_eq!(log.data.topics().len(), 3);
@@ -329,6 +356,7 @@ mod tests {
         assert_eq!(decoded.content_type, "application/json");
         assert_eq!(decoded.extend_policy, 1);
         assert_eq!(decoded.operator, operator);
+        assert_eq!(decoded.gas_cost, 40_000);
     }
 
     #[test]
@@ -355,6 +383,7 @@ mod tests {
             new_owner,
             1,
             operator,
+            10_000,
         );
         assert_eq!(log.data.topics().len(), 3);
 
@@ -363,5 +392,6 @@ mod tests {
         assert_eq!(decoded.new_owner, new_owner);
         assert_eq!(decoded.extend_policy, 1);
         assert_eq!(decoded.operator, operator);
+        assert_eq!(decoded.gas_cost, 10_000);
     }
 }
