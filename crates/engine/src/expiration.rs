@@ -1,7 +1,7 @@
 use alloy_primitives::B256;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
-pub(crate) const DRAIN_HISTORY_CAPACITY: usize = 64;
+pub(crate) const DRAIN_HISTORY_CAPACITY: usize = 256;
 
 #[derive(Debug)]
 struct DrainedBlock {
