@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, B256};
 use arrow::array::{
-    builder::MapBuilder, ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder,
-    UInt32Builder, UInt64Builder, UInt8Builder,
+    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder, UInt32Builder,
+    UInt64Builder, builder::MapBuilder,
 };
 use arrow::record_batch::RecordBatch;
 

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, StringBuilder, UInt32Builder,
-    UInt64Builder, UInt8Builder,
+    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, MapBuilder, StringBuilder, UInt8Builder,
+    UInt32Builder, UInt64Builder,
 };
 use arrow::record_batch::RecordBatch;
 
@@ -313,7 +313,7 @@ fn append_numeric_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
     use glint_primitives::exex_schema::columns;
     use glint_primitives::exex_types::BatchOp;
 
@@ -441,10 +441,12 @@ mod tests {
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
         let owner_col = batch.column_by_name(columns::OWNER).unwrap();
         assert!(!owner_col.is_null(0));
-        assert!(batch
-            .column_by_name(columns::EXTEND_POLICY)
-            .unwrap()
-            .is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
         assert!(batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
     }
 
@@ -457,19 +459,25 @@ mod tests {
             log_index: 0,
         }];
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
-        assert!(batch
-            .column_by_name(columns::EXPIRES_AT_BLOCK)
-            .unwrap()
-            .is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXPIRES_AT_BLOCK)
+                .unwrap()
+                .is_null(0)
+        );
         assert!(batch.column_by_name(columns::PAYLOAD).unwrap().is_null(0));
-        assert!(batch
-            .column_by_name(columns::CONTENT_TYPE)
-            .unwrap()
-            .is_null(0));
-        assert!(batch
-            .column_by_name(columns::EXTEND_POLICY)
-            .unwrap()
-            .is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::CONTENT_TYPE)
+                .unwrap()
+                .is_null(0)
+        );
+        assert!(
+            batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
         assert!(batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
     }
 
@@ -495,15 +503,19 @@ mod tests {
         let batch = build_record_batch(1000, B256::ZERO, 1000, BatchOp::Commit, &events).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert!(!batch.column_by_name(columns::OWNER).unwrap().is_null(0));
-        assert!(!batch
-            .column_by_name(columns::EXTEND_POLICY)
-            .unwrap()
-            .is_null(0));
+        assert!(
+            !batch
+                .column_by_name(columns::EXTEND_POLICY)
+                .unwrap()
+                .is_null(0)
+        );
         assert!(!batch.column_by_name(columns::OPERATOR).unwrap().is_null(0));
-        assert!(batch
-            .column_by_name(columns::EXPIRES_AT_BLOCK)
-            .unwrap()
-            .is_null(0));
+        assert!(
+            batch
+                .column_by_name(columns::EXPIRES_AT_BLOCK)
+                .unwrap()
+                .is_null(0)
+        );
         assert!(batch.column_by_name(columns::PAYLOAD).unwrap().is_null(0));
     }
 

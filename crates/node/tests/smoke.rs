@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256, Bytes};
 
 #[test]
 fn genesis_config_round_trips_through_extraction() {

@@ -1,7 +1,7 @@
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt32Array,
-        UInt64Array, UInt8Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
+        UInt32Array, UInt64Array,
     },
     record_batch::RecordBatch,
 };
@@ -247,7 +247,7 @@ mod tests {
     use crate::schema;
 
     use glint_primitives::exex_schema::entity_events_schema;
-    use glint_primitives::test_utils::{build_batch, EventBuilder};
+    use glint_primitives::test_utils::{EventBuilder, build_batch};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

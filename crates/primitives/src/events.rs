@@ -1,5 +1,5 @@
-use alloy_primitives::{Address, Bytes, Log, B256};
-use alloy_sol_types::{sol, SolEvent};
+use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_sol_types::{SolEvent, sol};
 
 pub struct LogAnnotations {
     pub string_keys: Vec<String>,

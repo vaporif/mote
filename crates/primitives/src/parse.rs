@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, Log, B256};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use alloy_sol_types::SolEvent;
 use tracing::warn;
 
@@ -189,7 +189,7 @@ fn validate_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
 
     use crate::constants::PROCESSOR_ADDRESS;
     use crate::events::{
