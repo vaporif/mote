@@ -4,12 +4,20 @@ use rusqlite::{Connection, OptionalExtension};
 // TODO: support migrations instead of drop-and-recreate on schema version bump
 const SCHEMA_VERSION: &str = "1";
 
+pub fn configure_pragmas(conn: &Connection) -> eyre::Result<()> {
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "mmap_size", 256 * 1024 * 1024)?;
+    conn.pragma_update(None, "cache_size", -64000)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    Ok(())
+}
+
 pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
+    configure_pragmas(conn)?;
+
     conn.execute_batch(
         "
-        PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=NORMAL;
-
         CREATE TABLE IF NOT EXISTS entity_events (
             block_number        INTEGER NOT NULL,
             block_hash          BLOB NOT NULL,

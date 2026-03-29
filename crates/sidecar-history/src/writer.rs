@@ -40,12 +40,26 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
 
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO entity_events (
+            "INSERT INTO entity_events (
                 block_number, block_hash, tx_index, tx_hash, log_index,
                 event_type, entity_key, owner, expires_at_block, old_expires_at_block,
                 content_type, payload, string_annotations, numeric_annotations,
                 extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+            ON CONFLICT (entity_key, block_number, log_index) DO UPDATE SET
+                block_hash = excluded.block_hash,
+                tx_index = excluded.tx_index,
+                tx_hash = excluded.tx_hash,
+                event_type = excluded.event_type,
+                owner = excluded.owner,
+                expires_at_block = excluded.expires_at_block,
+                old_expires_at_block = excluded.old_expires_at_block,
+                content_type = excluded.content_type,
+                payload = excluded.payload,
+                string_annotations = excluded.string_annotations,
+                numeric_annotations = excluded.numeric_annotations,
+                extend_policy = excluded.extend_policy,
+                operator = excluded.operator",
         )?;
 
         for i in 0..batch.num_rows() {

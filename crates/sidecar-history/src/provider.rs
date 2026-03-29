@@ -22,6 +22,22 @@ use rusqlite::Connection;
 
 use parking_lot::Mutex;
 
+use glint_primitives::exex_schema::{columns, map_field_names};
+
+trait IntoDfError<T> {
+    fn df_err(self) -> DfResult<T>;
+}
+
+impl<T, E: std::error::Error + Send + Sync + 'static> IntoDfError<T> for Result<T, E> {
+    fn df_err(self) -> DfResult<T> {
+        self.map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))
+    }
+}
+
+fn arrow_err(e: arrow::error::ArrowError) -> datafusion::error::DataFusionError {
+    datafusion::error::DataFusionError::ArrowError(Box::new(e), None)
+}
+
 pub struct HistoricalTableProvider {
     conn: Arc<Mutex<Connection>>,
     schema: SchemaRef,
@@ -42,6 +58,8 @@ impl HistoricalTableProvider {
     }
 }
 
+// --- Block range extraction from DataFusion filter expressions ---
+
 pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
     use datafusion::logical_expr::{BinaryExpr, Operator};
 
@@ -56,66 +74,9 @@ pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
                         lower = Some(lower.map_or(l, |cur| cur.max(l)));
                         upper = Some(upper.map_or(u, |cur| cur.min(u)));
                     }
-                } else if is_block_number_col(left) {
-                    match op {
-                        Operator::Eq => {
-                            if let Some(v) = extract_u64_literal(right) {
-                                lower = Some(lower.map_or(v, |cur| cur.max(v)));
-                                upper = Some(upper.map_or(v, |cur| cur.min(v)));
-                            }
-                        }
-                        Operator::GtEq => {
-                            if let Some(v) = extract_u64_literal(right) {
-                                lower = Some(lower.map_or(v, |cur| cur.max(v)));
-                            }
-                        }
-                        Operator::Gt => {
-                            if let Some(v) = extract_u64_literal(right) {
-                                lower = Some(lower.map_or(v + 1, |cur| cur.max(v + 1)));
-                            }
-                        }
-                        Operator::LtEq => {
-                            if let Some(v) = extract_u64_literal(right) {
-                                upper = Some(upper.map_or(v, |cur| cur.min(v)));
-                            }
-                        }
-                        Operator::Lt => {
-                            if let Some(v) = extract_u64_literal(right) {
-                                upper = Some(upper.map_or_else(
-                                    || v.saturating_sub(1),
-                                    |cur| cur.min(v.saturating_sub(1)),
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
-                } else if is_block_number_col(right) {
-                    match op {
-                        Operator::LtEq => {
-                            if let Some(v) = extract_u64_literal(left) {
-                                lower = Some(lower.map_or(v, |cur| cur.max(v)));
-                            }
-                        }
-                        Operator::Lt => {
-                            if let Some(v) = extract_u64_literal(left) {
-                                lower = Some(lower.map_or(v + 1, |cur| cur.max(v + 1)));
-                            }
-                        }
-                        Operator::GtEq => {
-                            if let Some(v) = extract_u64_literal(left) {
-                                upper = Some(upper.map_or(v, |cur| cur.min(v)));
-                            }
-                        }
-                        Operator::Gt => {
-                            if let Some(v) = extract_u64_literal(left) {
-                                upper = Some(upper.map_or_else(
-                                    || v.saturating_sub(1),
-                                    |cur| cur.min(v.saturating_sub(1)),
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
+                } else if let Some((col_side_op, literal)) = normalize_comparison(left, *op, right)
+                {
+                    apply_bound(col_side_op, literal, &mut lower, &mut upper);
                 }
             }
             Expr::Between(between) if is_block_number_col(&between.expr) => {
@@ -134,6 +95,62 @@ pub fn extract_block_range(filters: &[Expr]) -> Option<(u64, u64)> {
     match (lower, upper) {
         (Some(l), Some(u)) => Some((l, u)),
         _ => None,
+    }
+}
+
+/// Normalize a binary comparison so `block_number` is always on the left.
+/// Returns `(normalized_op, literal_value)` where `normalized_op` is the operator
+/// as if `block_number` were on the left side.
+fn normalize_comparison(
+    left: &Expr,
+    op: datafusion::logical_expr::Operator,
+    right: &Expr,
+) -> Option<(datafusion::logical_expr::Operator, u64)> {
+    use datafusion::logical_expr::Operator;
+
+    if is_block_number_col(left) {
+        extract_u64_literal(right).map(|v| (op, v))
+    } else if is_block_number_col(right) {
+        let flipped = match op {
+            Operator::Lt => Operator::Gt,
+            Operator::LtEq => Operator::GtEq,
+            Operator::Gt => Operator::Lt,
+            Operator::GtEq => Operator::LtEq,
+            other => other,
+        };
+        extract_u64_literal(left).map(|v| (flipped, v))
+    } else {
+        None
+    }
+}
+
+fn apply_bound(
+    op: datafusion::logical_expr::Operator,
+    v: u64,
+    lower: &mut Option<u64>,
+    upper: &mut Option<u64>,
+) {
+    use datafusion::logical_expr::Operator;
+
+    match op {
+        Operator::Eq => {
+            *lower = Some(lower.map_or(v, |cur| cur.max(v)));
+            *upper = Some(upper.map_or(v, |cur| cur.min(v)));
+        }
+        Operator::GtEq => {
+            *lower = Some(lower.map_or(v, |cur| cur.max(v)));
+        }
+        Operator::Gt => {
+            *lower = Some(lower.map_or(v + 1, |cur| cur.max(v + 1)));
+        }
+        Operator::LtEq => {
+            *upper = Some(upper.map_or(v, |cur| cur.min(v)));
+        }
+        Operator::Lt => {
+            let bound = v.saturating_sub(1);
+            *upper = Some(upper.map_or(bound, |cur| cur.min(bound)));
+        }
+        _ => {}
     }
 }
 
@@ -162,6 +179,8 @@ fn references_block_number(expr: &Expr) -> bool {
         _ => false,
     }
 }
+
+// --- TableProvider implementation ---
 
 #[async_trait]
 impl TableProvider for HistoricalTableProvider {
@@ -219,7 +238,7 @@ impl TableProvider for HistoricalTableProvider {
             query_block_range(&conn, range.0, range.1, &schema)
         })
         .await
-        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))??;
+        .df_err()??;
 
         let source = MemorySourceConfig::try_new(&[vec![batch]], out_schema, projection)?;
         let exec = DataSourceExec::new(Arc::new(source));
@@ -227,7 +246,7 @@ impl TableProvider for HistoricalTableProvider {
     }
 }
 
-use glint_primitives::exex_schema::{columns, map_field_names};
+// --- SQLite query → Arrow batch conversion ---
 
 #[allow(
     clippy::cast_sign_loss,
@@ -249,125 +268,134 @@ fn query_block_range(
              WHERE block_number >= ?1 AND block_number <= ?2
              ORDER BY block_number, log_index",
         )
-        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        .df_err()?;
 
-    let rows = stmt
-        .query_map([from_block as i64, to_block as i64], |row| {
-            Ok(EventSqlRow {
-                block_number: row.get::<_, i64>(0)? as u64,
-                event_type: row.get::<_, i64>(1)? as u8,
-                entity_key: row.get::<_, Vec<u8>>(2)?,
-                owner: row.get::<_, Option<Vec<u8>>>(3)?,
-                expires_at_block: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                content_type: row.get::<_, Option<String>>(5)?,
-                payload: row.get::<_, Option<Vec<u8>>>(6)?,
-                string_annotations: row.get::<_, Option<String>>(7)?,
-                numeric_annotations: row.get::<_, Option<String>>(8)?,
-                extend_policy: row.get::<_, Option<i64>>(9)?.map(|v| v as u8),
-                operator: row.get::<_, Option<Vec<u8>>>(10)?,
-            })
-        })
-        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+    let mut builders = BatchBuilders::new();
 
-    let collected: Vec<_> = rows
-        .map(|r| r.map_err(|e| datafusion::error::DataFusionError::External(Box::new(e))))
-        .collect::<DfResult<_>>()?;
+    let mut rows = stmt.query([from_block as i64, to_block as i64]).df_err()?;
 
-    build_result_batch(&collected, schema)
+    while let Some(row) = rows.next().df_err()? {
+        builders.append_row(row)?;
+    }
+
+    builders.finish(schema)
 }
 
-struct EventSqlRow {
-    block_number: u64,
-    event_type: u8,
-    entity_key: Vec<u8>,
-    owner: Option<Vec<u8>>,
-    expires_at_block: Option<u64>,
-    content_type: Option<String>,
-    payload: Option<Vec<u8>>,
-    string_annotations: Option<String>,
-    numeric_annotations: Option<String>,
-    extend_policy: Option<u8>,
-    operator: Option<Vec<u8>>,
+struct BatchBuilders {
+    block_number: UInt64Builder,
+    event_type: UInt8Builder,
+    entity_key: FixedSizeBinaryBuilder,
+    owner: FixedSizeBinaryBuilder,
+    expires_at: UInt64Builder,
+    content_type: StringBuilder,
+    payload: BinaryBuilder,
+    str_ann: MapBuilder<StringBuilder, StringBuilder>,
+    num_ann: MapBuilder<StringBuilder, UInt64Builder>,
+    extend_policy: UInt8Builder,
+    operator: FixedSizeBinaryBuilder,
 }
 
-fn arrow_err(e: arrow::error::ArrowError) -> datafusion::error::DataFusionError {
-    datafusion::error::DataFusionError::ArrowError(Box::new(e), None)
-}
+impl BatchBuilders {
+    fn new() -> Self {
+        Self {
+            block_number: UInt64Builder::new(),
+            event_type: UInt8Builder::new(),
+            entity_key: FixedSizeBinaryBuilder::new(32),
+            owner: FixedSizeBinaryBuilder::new(20),
+            expires_at: UInt64Builder::new(),
+            content_type: StringBuilder::new(),
+            payload: BinaryBuilder::new(),
+            str_ann: MapBuilder::new(
+                Some(map_field_names()),
+                StringBuilder::new(),
+                StringBuilder::new(),
+            ),
+            num_ann: MapBuilder::new(
+                Some(map_field_names()),
+                StringBuilder::new(),
+                UInt64Builder::new(),
+            ),
+            extend_policy: UInt8Builder::new(),
+            operator: FixedSizeBinaryBuilder::new(20),
+        }
+    }
 
-fn build_result_batch(rows: &[EventSqlRow], schema: &SchemaRef) -> DfResult<RecordBatch> {
-    let n = rows.len();
-
-    let mut block_number_b = UInt64Builder::with_capacity(n);
-    let mut event_type_b = UInt8Builder::with_capacity(n);
-    let mut entity_key_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
-    let mut owner_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
-    let mut expires_b = UInt64Builder::with_capacity(n);
-    let mut content_type_b = StringBuilder::with_capacity(n, n * 16);
-    let mut payload_b = BinaryBuilder::with_capacity(n, n * 64);
-    let mut str_ann_b = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        StringBuilder::new(),
-    );
-    let mut num_ann_b = MapBuilder::new(
-        Some(map_field_names()),
-        StringBuilder::new(),
-        UInt64Builder::new(),
-    );
-    let mut extend_policy_b = UInt8Builder::with_capacity(n);
-    let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
-
-    for row in rows {
-        block_number_b.append_value(row.block_number);
-        event_type_b.append_value(row.event_type);
-        entity_key_b
-            .append_value(&row.entity_key)
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::needless_pass_by_value
+    )]
+    fn append_row(&mut self, row: &rusqlite::Row<'_>) -> DfResult<()> {
+        self.block_number
+            .append_value(row.get::<_, i64>(0).df_err()? as u64);
+        self.event_type
+            .append_value(row.get::<_, i64>(1).df_err()? as u8);
+        self.entity_key
+            .append_value(row.get_ref(2).df_err()?.as_blob().df_err()?)
             .map_err(arrow_err)?;
 
-        match &row.owner {
-            Some(v) => owner_b.append_value(v).map_err(arrow_err)?,
-            None => owner_b.append_null(),
+        match row.get_ref(3).df_err()?.as_blob_or_null() {
+            Ok(Some(v)) => self.owner.append_value(v).map_err(arrow_err)?,
+            _ => self.owner.append_null(),
         }
 
-        match row.expires_at_block {
-            Some(v) => expires_b.append_value(v),
-            None => expires_b.append_null(),
+        match row.get::<_, Option<i64>>(4).df_err()? {
+            Some(v) => self.expires_at.append_value(v as u64),
+            None => self.expires_at.append_null(),
         }
 
-        match &row.content_type {
-            Some(v) => content_type_b.append_value(v),
-            None => content_type_b.append_null(),
+        match row.get_ref(5).df_err()?.as_str_or_null() {
+            Ok(Some(v)) => self.content_type.append_value(v),
+            _ => self.content_type.append_null(),
         }
 
-        match &row.payload {
-            Some(v) => payload_b.append_value(v),
-            None => payload_b.append_null(),
+        match row.get_ref(6).df_err()?.as_blob_or_null() {
+            Ok(Some(v)) => self.payload.append_value(v),
+            _ => self.payload.append_null(),
         }
 
-        match &row.string_annotations {
-            Some(json_str) => {
-                let pairs: Vec<Vec<String>> = serde_json::from_str(json_str)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        self.append_string_annotations(row.get_ref(7).df_err()?)?;
+        self.append_numeric_annotations(row.get_ref(8).df_err()?)?;
+
+        match row.get::<_, Option<i64>>(9).df_err()? {
+            Some(v) => self.extend_policy.append_value(v as u8),
+            None => self.extend_policy.append_null(),
+        }
+
+        match row.get_ref(10).df_err()?.as_blob_or_null() {
+            Ok(Some(v)) => self.operator.append_value(v).map_err(arrow_err)?,
+            _ => self.operator.append_null(),
+        }
+
+        Ok(())
+    }
+
+    fn append_string_annotations(&mut self, value: rusqlite::types::ValueRef<'_>) -> DfResult<()> {
+        match value.as_str_or_null() {
+            Ok(Some(json_str)) => {
+                let pairs: Vec<Vec<String>> = serde_json::from_str(json_str).df_err()?;
                 for pair in &pairs {
                     if pair.len() != 2 {
                         return Err(datafusion::error::DataFusionError::Internal(format!(
                             "malformed string annotation pair in DB: expected [key, value], got {pair:?}"
                         )));
                     }
-                    str_ann_b.keys().append_value(&pair[0]);
-                    str_ann_b.values().append_value(&pair[1]);
+                    self.str_ann.keys().append_value(&pair[0]);
+                    self.str_ann.values().append_value(&pair[1]);
                 }
-                str_ann_b.append(true).map_err(arrow_err)?;
+                self.str_ann.append(true).map_err(arrow_err)?;
             }
-            None => {
-                str_ann_b.append(false).map_err(arrow_err)?;
+            _ => {
+                self.str_ann.append(false).map_err(arrow_err)?;
             }
         }
+        Ok(())
+    }
 
-        match &row.numeric_annotations {
-            Some(json_str) => {
-                let pairs: Vec<serde_json::Value> = serde_json::from_str(json_str)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+    fn append_numeric_annotations(&mut self, value: rusqlite::types::ValueRef<'_>) -> DfResult<()> {
+        match value.as_str_or_null() {
+            Ok(Some(json_str)) => {
+                let pairs: Vec<serde_json::Value> = serde_json::from_str(json_str).df_err()?;
                 for pair in &pairs {
                     let (Some(k), Some(v)) = (
                         pair.get(0).and_then(|v| v.as_str()),
@@ -377,42 +405,35 @@ fn build_result_batch(rows: &[EventSqlRow], schema: &SchemaRef) -> DfResult<Reco
                             "malformed numeric annotation pair in DB: expected [key, value], got {pair}"
                         )));
                     };
-                    num_ann_b.keys().append_value(k);
-                    num_ann_b.values().append_value(v);
+                    self.num_ann.keys().append_value(k);
+                    self.num_ann.values().append_value(v);
                 }
-                num_ann_b.append(true).map_err(arrow_err)?;
+                self.num_ann.append(true).map_err(arrow_err)?;
             }
-            None => {
-                num_ann_b.append(false).map_err(arrow_err)?;
+            _ => {
+                self.num_ann.append(false).map_err(arrow_err)?;
             }
         }
-
-        match row.extend_policy {
-            Some(v) => extend_policy_b.append_value(v),
-            None => extend_policy_b.append_null(),
-        }
-
-        match &row.operator {
-            Some(v) => operator_b.append_value(v).map_err(arrow_err)?,
-            None => operator_b.append_null(),
-        }
+        Ok(())
     }
 
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(block_number_b.finish()),
-        Arc::new(event_type_b.finish()),
-        Arc::new(entity_key_b.finish()),
-        Arc::new(owner_b.finish()),
-        Arc::new(expires_b.finish()),
-        Arc::new(content_type_b.finish()),
-        Arc::new(payload_b.finish()),
-        Arc::new(str_ann_b.finish()),
-        Arc::new(num_ann_b.finish()),
-        Arc::new(extend_policy_b.finish()),
-        Arc::new(operator_b.finish()),
-    ];
+    fn finish(mut self, schema: &SchemaRef) -> DfResult<RecordBatch> {
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(self.block_number.finish()),
+            Arc::new(self.event_type.finish()),
+            Arc::new(self.entity_key.finish()),
+            Arc::new(self.owner.finish()),
+            Arc::new(self.expires_at.finish()),
+            Arc::new(self.content_type.finish()),
+            Arc::new(self.payload.finish()),
+            Arc::new(self.str_ann.finish()),
+            Arc::new(self.num_ann.finish()),
+            Arc::new(self.extend_policy.finish()),
+            Arc::new(self.operator.finish()),
+        ];
 
-    RecordBatch::try_new(Arc::clone(schema), columns).map_err(arrow_err)
+        RecordBatch::try_new(Arc::clone(schema), columns).map_err(arrow_err)
+    }
 }
 
 #[cfg(test)]

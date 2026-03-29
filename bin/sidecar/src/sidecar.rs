@@ -28,14 +28,23 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         db_path,
     } = args;
 
-    let sqlite_conn = Connection::open(&db_path)?;
-    schema::create_tables(&sqlite_conn)?;
-    schema::check_schema_version(&sqlite_conn)?;
+    let write_conn = Connection::open(&db_path)?;
+    schema::create_tables(&write_conn)?;
+    schema::check_schema_version(&write_conn)?;
 
-    let last_processed = schema::get_last_processed_block(&sqlite_conn)?;
+    let last_processed = schema::get_last_processed_block(&write_conn)?;
     info!(last_processed_block = ?last_processed, "SQLite state loaded");
 
-    let sqlite_conn = Arc::new(Mutex::new(sqlite_conn));
+    let write_conn = Arc::new(Mutex::new(write_conn));
+
+    let read_conn = Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    read_conn.pragma_update(None, "mmap_size", 256 * 1024 * 1024)?;
+    read_conn.pragma_update(None, "cache_size", -64000)?;
+    read_conn.pragma_update(None, "temp_store", "MEMORY")?;
+    let read_conn = Arc::new(Mutex::new(read_conn));
 
     let mut store = EntityStore::new();
     let mut resume_block: u64 = last_processed.unwrap_or(0);
@@ -56,7 +65,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         }
     });
 
-    let historical_provider = Arc::new(HistoricalTableProvider::new(Arc::clone(&sqlite_conn)));
+    let historical_provider = Arc::new(HistoricalTableProvider::new(Arc::clone(&read_conn)));
     let live_provider = Arc::new(table_provider::IndexedTableProvider::new(
         snapshot_rx.clone(),
     ));
@@ -94,7 +103,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             result = run_connection(
                 &exex_socket,
                 &mut store,
-                &sqlite_conn,
+                &write_conn,
                 &snapshot_tx,
                 &ready_tx,
                 resume_block,
