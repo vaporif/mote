@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
 use columns::{
-    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u64, col_u8,
+    addr_from_fsb, b256_from_fsb, col_binary, col_fsb, col_map, col_string, col_u8, col_u64,
     decode_numeric_map, decode_string_map,
 };
 
@@ -213,9 +213,9 @@ pub fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
     use glint_primitives::exex_types::BatchOp;
-    use glint_primitives::test_utils::{build_batch, EventBuilder};
+    use glint_primitives::test_utils::{EventBuilder, build_batch};
 
     use super::*;
     use crate::entity_store::EntityStore;

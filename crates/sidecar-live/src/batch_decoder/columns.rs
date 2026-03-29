@@ -1,8 +1,8 @@
 use alloy_primitives::{Address, B256};
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt64Array,
-        UInt8Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
+        UInt64Array,
     },
     record_batch::RecordBatch,
 };
