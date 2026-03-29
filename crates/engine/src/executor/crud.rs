@@ -102,9 +102,7 @@ where
             entity_counter_delta: 0,
         };
 
-        // Execution order: Creates → Updates → Deletes → Extends → ChangeOwners.
-        // This differs from Arkiv (Creates → Deletes → Updates → Extends → ChangeOwners)
-        // but is safe because validation rejects duplicate entity keys across operations
+        // Safe because validation rejects duplicate entity keys across operations
         // within a single transaction (see primitives/src/validation.rs).
         Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block)?;
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
