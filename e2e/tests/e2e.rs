@@ -4,7 +4,6 @@ use arrow::array::RecordBatch;
 
 use glint_e2e::eth_node_handle::EthNodeHandle;
 use glint_e2e::sidecar_handle::SidecarHandle;
-use glint_primitives::entity::derive_entity_key;
 use glint_primitives::transaction::{Create, GlintTransaction};
 use glint_sdk::Glint;
 
@@ -42,15 +41,14 @@ async fn test_create_entity() -> eyre::Result<()> {
     let tx = GlintTransaction::new()
         .create(Create::new("text/plain", payload, btl).string_annotation("app", "e2e-test"));
 
-    let receipt = client.send(&tx).await?;
-    assert!(receipt.status(), "glint tx should succeed");
+    let result = client.send(&tx).await?;
+    assert!(result.receipt.status(), "glint tx should succeed");
 
-    let tx_hash = receipt.transaction_hash;
-    let block_number = receipt
-        .block_number
+    let block_number = result
+        .block_number()
         .expect("receipt should have block number");
 
-    let entity_key = derive_entity_key(&tx_hash, payload, 0);
+    let entity_key = result.created_entity_keys[0];
 
     let entity = client
         .get_entity(entity_key)
@@ -91,8 +89,8 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     let tx = GlintTransaction::new()
         .create(Create::new("text/plain", b"flight-sql-test", 100).string_annotation("app", "e2e"));
 
-    let receipt = client.send(&tx).await?;
-    assert!(receipt.status(), "glint tx should succeed");
+    let result = client.send(&tx).await?;
+    assert!(result.receipt.status(), "glint tx should succeed");
 
     wait_for_sidecar_ready(&sidecar).await?;
 
@@ -133,11 +131,10 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
             .numeric_annotation("version", 1),
     );
 
-    let receipt = client.send(&tx).await?;
-    assert!(receipt.status(), "glint tx should succeed");
+    let result = client.send(&tx).await?;
+    assert!(result.receipt.status(), "glint tx should succeed");
 
-    let tx_hash = receipt.transaction_hash;
-    let entity_key = derive_entity_key(&tx_hash, payload, 0);
+    let entity_key = result.created_entity_keys[0];
 
     wait_for_sidecar_ready(&sidecar).await?;
 
@@ -188,8 +185,8 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     assert_eq!(version_col.value(0), 1);
 
     let expires_col: &arrow::array::UInt64Array = col(batch, "expires_at_block");
-    let block_number = receipt
-        .block_number
+    let block_number = result
+        .block_number()
         .expect("receipt should have block number");
     assert_eq!(expires_col.value(0), block_number + btl);
 
@@ -222,9 +219,9 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
                 .string_annotation("category", category)
                 .numeric_annotation("rank", (i + 1) as u64),
         );
-        let receipt = client.send(&tx).await?;
-        assert!(receipt.status(), "tx {i} should succeed");
-        entity_keys.push(derive_entity_key(&receipt.transaction_hash, *payload, 0));
+        let result = client.send(&tx).await?;
+        assert!(result.receipt.status(), "tx {i} should succeed");
+        entity_keys.push(result.created_entity_keys[0]);
     }
 
     wait_for_sidecar_ready(&sidecar).await?;
@@ -311,16 +308,16 @@ async fn test_historical_query() -> eyre::Result<()> {
     let tx1 = GlintTransaction::new().create(
         Create::new("text/plain", b"entity-one", 200).string_annotation("app", "hist-test"),
     );
-    let receipt1 = client.send(&tx1).await?;
-    assert!(receipt1.status());
-    let block1 = receipt1.block_number.expect("should have block number");
+    let result1 = client.send(&tx1).await?;
+    assert!(result1.receipt.status());
+    let block1 = result1.block_number().expect("should have block number");
 
     let tx2 = GlintTransaction::new().create(
         Create::new("text/plain", b"entity-two", 200).string_annotation("app", "hist-test"),
     );
-    let receipt2 = client.send(&tx2).await?;
-    assert!(receipt2.status());
-    let block2 = receipt2.block_number.expect("should have block number");
+    let result2 = client.send(&tx2).await?;
+    assert!(result2.receipt.status());
+    let block2 = result2.block_number().expect("should have block number");
 
     wait_for_sidecar_ready(&sidecar).await?;
 

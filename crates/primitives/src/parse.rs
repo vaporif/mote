@@ -66,6 +66,19 @@ pub enum EntityEvent {
     },
 }
 
+/// Extract entity keys from `EntityCreated` event logs.
+pub fn created_entity_keys(logs: &[Log]) -> Vec<B256> {
+    logs.iter()
+        .filter(|log| log.address == PROCESSOR_ADDRESS)
+        .filter(|log| {
+            log.topics()
+                .first()
+                .is_some_and(|t| *t == EntityCreated::SIGNATURE_HASH)
+        })
+        .filter_map(|log| log.topics().get(1).copied())
+        .collect()
+}
+
 pub fn parse_log(log: &Log) -> eyre::Result<Option<EntityEvent>> {
     if log.address != PROCESSOR_ADDRESS {
         return Ok(None);
