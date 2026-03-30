@@ -221,26 +221,18 @@ mod tests {
     use super::*;
     use crate::entity_store::EntityStore;
 
-    fn default_key() -> B256 {
-        B256::repeat_byte(0x01)
-    }
-
-    fn default_owner() -> Address {
-        Address::repeat_byte(0x02)
-    }
-
-    fn default_tx() -> B256 {
-        B256::repeat_byte(0xAA)
-    }
+    const KEY: B256 = B256::repeat_byte(0x01);
+    const OWNER: Address = Address::repeat_byte(0x02);
+    const TX: B256 = B256::repeat_byte(0xAA);
 
     fn created_event(expires_at: u64) -> EventBuilder {
         EventBuilder::created(0, 0x01)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_expires_at(expires_at)
             .with_string_annotations(vec![("sk".into(), "sv".into())])
             .with_numeric_annotations(vec![("nk".into(), 99)])
-            .with_tx_hash(default_tx())
+            .with_tx_hash(TX)
     }
 
     #[test]
@@ -252,12 +244,12 @@ mod tests {
         assert_eq!(result, ApplyResult::Applied);
         assert_eq!(store.len(), 1);
 
-        let row = store.get(&default_key()).unwrap();
-        assert_eq!(row.owner, default_owner());
+        let row = store.get(&KEY).unwrap();
+        assert_eq!(row.owner, OWNER);
         assert_eq!(row.expires_at_block, 200);
         assert_eq!(row.content_type, "text/plain");
         assert_eq!(row.payload, Bytes::from_static(b"hello"));
-        assert_eq!(row.tx_hash, default_tx());
+        assert_eq!(row.tx_hash, TX);
         assert_eq!(
             row.string_annotations,
             vec![("sk".to_owned(), "sv".to_owned())]
@@ -276,9 +268,9 @@ mod tests {
         assert_eq!(store.len(), 1);
 
         let delete_batch = build_batch(&[EventBuilder::deleted(11, 0x01)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
-            .with_tx_hash(default_tx())]);
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
+            .with_tx_hash(TX)]);
         let result = apply_batch(&mut store, &delete_batch).unwrap();
 
         assert_eq!(result, ApplyResult::Applied);
@@ -294,13 +286,13 @@ mod tests {
 
         let new_tx = B256::repeat_byte(0xBB);
         let extend_batch = build_batch(&[EventBuilder::extended(11, 0x01, 200, 500)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_tx_hash(new_tx)]);
         let result = apply_batch(&mut store, &extend_batch).unwrap();
 
         assert_eq!(result, ApplyResult::Applied);
-        let row = store.get(&default_key()).unwrap();
+        let row = store.get(&KEY).unwrap();
         assert_eq!(row.expires_at_block, 500);
         assert_eq!(row.tx_hash, new_tx);
     }
@@ -329,21 +321,21 @@ mod tests {
 
         let new_tx = B256::repeat_byte(0xBB);
         let extend_batch = build_batch(&[EventBuilder::extended(11, 0x01, 200, 500)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_tx_hash(new_tx)]);
         apply_batch(&mut store, &extend_batch).unwrap();
-        assert_eq!(store.get(&default_key()).unwrap().expires_at_block, 500);
+        assert_eq!(store.get(&KEY).unwrap().expires_at_block, 500);
 
         let revert_extend_batch = build_batch(&[EventBuilder::extended(11, 0x01, 200, 500)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_tx_hash(new_tx)
             .with_op(BatchOp::Revert)]);
         let result = apply_batch(&mut store, &revert_extend_batch).unwrap();
 
         assert_eq!(result, ApplyResult::Applied);
-        assert_eq!(store.get(&default_key()).unwrap().expires_at_block, 200);
+        assert_eq!(store.get(&KEY).unwrap().expires_at_block, 200);
     }
 
     #[test]
@@ -354,9 +346,9 @@ mod tests {
         apply_batch(&mut store, &create_batch).unwrap();
 
         let revert_batch = build_batch(&[EventBuilder::updated(11, 0x01, 200, 300)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
-            .with_tx_hash(default_tx())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
+            .with_tx_hash(TX)
             .with_payload(b"updated")
             .with_string_annotations(vec![])
             .with_numeric_annotations(vec![])
@@ -381,12 +373,12 @@ mod tests {
             1,
             Address::repeat_byte(0x99),
         )
-        .with_entity_key(default_key())
-        .with_tx_hash(default_tx())]);
+        .with_entity_key(KEY)
+        .with_tx_hash(TX)]);
         let result = apply_batch(&mut store, &pc_batch).unwrap();
         assert_eq!(result, ApplyResult::Applied);
 
-        let row = store.get(&default_key()).unwrap();
+        let row = store.get(&KEY).unwrap();
         assert_eq!(row.owner, new_owner);
         assert_eq!(row.extend_policy, 1);
         assert_eq!(row.operator, Some(Address::repeat_byte(0x99)));
@@ -406,8 +398,8 @@ mod tests {
             1,
             Address::ZERO,
         )
-        .with_entity_key(default_key())
-        .with_tx_hash(default_tx())
+        .with_entity_key(KEY)
+        .with_tx_hash(TX)
         .with_op(BatchOp::Revert)]);
         let result = apply_batch(&mut store, &revert_batch).unwrap();
         assert_eq!(result, ApplyResult::NeedsReplay);
@@ -428,10 +420,10 @@ mod tests {
         let mut store = EntityStore::new();
 
         let batch = build_batch(&[EventBuilder::created(10, 0x01)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_expires_at(200)
-            .with_tx_hash(default_tx())]);
+            .with_tx_hash(TX)]);
         apply_batch(&mut store, &batch).unwrap();
         assert_eq!(store.current_block(), 10);
     }
@@ -441,18 +433,18 @@ mod tests {
         let mut store = EntityStore::new();
 
         let create = build_batch(&[EventBuilder::created(10, 0x01)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_expires_at(200)
-            .with_tx_hash(default_tx())]);
+            .with_tx_hash(TX)]);
         apply_batch(&mut store, &create).unwrap();
         assert_eq!(store.current_block(), 10);
 
         let revert = build_batch(&[EventBuilder::created(10, 0x01)
-            .with_entity_key(default_key())
-            .with_owner(default_owner())
+            .with_entity_key(KEY)
+            .with_owner(OWNER)
             .with_expires_at(200)
-            .with_tx_hash(default_tx())
+            .with_tx_hash(TX)
             .with_op(BatchOp::Revert)]);
         apply_batch(&mut store, &revert).unwrap();
         assert_eq!(store.current_block(), 9);

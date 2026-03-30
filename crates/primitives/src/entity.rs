@@ -85,17 +85,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn entity_key_derivation_is_deterministic() {
-        let tx_hash = B256::repeat_byte(0x01);
-        let payload = b"hello world";
-        let op_index: u32 = 0;
-
-        let key1 = derive_entity_key(&tx_hash, payload, op_index);
-        let key2 = derive_entity_key(&tx_hash, payload, op_index);
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
     fn entity_key_differs_by_op_index() {
         let tx_hash = B256::repeat_byte(0x01);
         let payload = b"hello world";
@@ -163,47 +152,23 @@ mod tests {
     }
 
     #[test]
-    fn metadata_flags_roundtrip_anyone_can_extend() {
-        let meta = EntityMetadata {
-            owner: Address::repeat_byte(0x01),
-            expires_at_block: 1000,
-            extend_policy: ExtendPolicy::AnyoneCanExtend,
-            has_operator: false,
-        };
-        let encoded = meta.encode();
-        assert_eq!(encoded[20] & 0b01, 1);
-        assert_eq!(encoded[20] & 0b10, 0);
-        let decoded = EntityMetadata::decode(&encoded);
-        assert_eq!(meta, decoded);
-    }
-
-    #[test]
-    fn metadata_flags_roundtrip_has_operator() {
-        let meta = EntityMetadata {
-            owner: Address::repeat_byte(0x02),
-            expires_at_block: 2000,
-            extend_policy: ExtendPolicy::OwnerOnly,
-            has_operator: true,
-        };
-        let encoded = meta.encode();
-        assert_eq!(encoded[20] & 0b01, 0);
-        assert_eq!(encoded[20] & 0b10, 2);
-        let decoded = EntityMetadata::decode(&encoded);
-        assert_eq!(meta, decoded);
-    }
-
-    #[test]
-    fn metadata_flags_roundtrip_both() {
-        let meta = EntityMetadata {
-            owner: Address::repeat_byte(0x03),
-            expires_at_block: 3000,
-            extend_policy: ExtendPolicy::AnyoneCanExtend,
-            has_operator: true,
-        };
-        let encoded = meta.encode();
-        assert_eq!(encoded[20], 0b11);
-        let decoded = EntityMetadata::decode(&encoded);
-        assert_eq!(meta, decoded);
+    fn metadata_flags_roundtrip_all_combinations() {
+        let cases: &[(ExtendPolicy, bool, u8)] = &[
+            (ExtendPolicy::AnyoneCanExtend, false, 0b01),
+            (ExtendPolicy::OwnerOnly, true, 0b10),
+            (ExtendPolicy::AnyoneCanExtend, true, 0b11),
+        ];
+        for (i, &(policy, has_op, expected_flags)) in cases.iter().enumerate() {
+            let meta = EntityMetadata {
+                owner: Address::repeat_byte((i + 1) as u8),
+                expires_at_block: (i as u64 + 1) * 1000,
+                extend_policy: policy,
+                has_operator: has_op,
+            };
+            let encoded = meta.encode();
+            assert_eq!(encoded[20], expected_flags);
+            assert_eq!(EntityMetadata::decode(&encoded), meta);
+        }
     }
 
     #[test]

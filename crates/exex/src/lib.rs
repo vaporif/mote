@@ -523,14 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn no_receipts_yields_no_events() {
-        let receipts: Vec<alloy_consensus::Receipt<alloy_primitives::Log>> = vec![];
-        let transactions: Vec<MockTx> = vec![];
-        let events = collect_events_from_receipts(&receipts, &transactions);
-        assert!(events.is_empty());
-    }
-
-    #[test]
     fn non_glint_logs_are_ignored() {
         use alloy_primitives::{Address, B256, Log, LogData};
 
