@@ -14,7 +14,7 @@ eyre.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
-testcontainers = "0.24"
+testcontainers = "0.27"
 tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
