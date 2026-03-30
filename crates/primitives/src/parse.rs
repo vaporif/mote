@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, Bytes, Log, B256};
 use alloy_sol_types::SolEvent;
 use tracing::warn;
 
@@ -66,7 +66,6 @@ pub enum EntityEvent {
     },
 }
 
-/// Extract entity keys from `EntityCreated` event logs.
 pub fn created_entity_keys(logs: &[Log]) -> Vec<B256> {
     logs.iter()
         .filter(|log| log.address == PROCESSOR_ADDRESS)
@@ -202,7 +201,7 @@ fn validate_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
 
     use crate::constants::PROCESSOR_ADDRESS;
     use crate::events::{
