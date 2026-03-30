@@ -5,13 +5,13 @@ use alloy_primitives::{B256, U256};
 use alloy_provider::{DynProvider, Provider, ProviderBuilder};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::TransactionReceipt;
+use glint_primitives::constants::PROCESSOR_ADDRESS;
+use glint_primitives::entity::{EntityInfo, EntityKey};
+use glint_primitives::parse::created_entity_keys;
+use glint_primitives::rpc::{BlockTiming, GlintApiClient};
 use glint_primitives::transaction::GlintTransaction;
 use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use tokio::sync::Mutex;
-
-use glint_primitives::constants::PROCESSOR_ADDRESS;
-use glint_primitives::entity::EntityInfo;
-use glint_primitives::rpc::{BlockTiming, GlintApiClient};
 
 use crate::error::Error;
 
@@ -105,7 +105,7 @@ impl<S: sealed::State> Glint<S> {
 }
 
 impl Glint<ReadWrite> {
-    pub async fn send(&self, tx: &GlintTransaction) -> Result<TransactionReceipt, Error> {
+    pub async fn send(&self, tx: &GlintTransaction) -> Result<GlintReceipt, Error> {
         tx.validate()?;
 
         let mut calldata = Vec::new();
@@ -122,7 +122,38 @@ impl Glint<ReadWrite> {
         if !receipt.status() {
             return Err(Error::Reverted(receipt.transaction_hash));
         }
-        Ok(receipt)
+        Ok(GlintReceipt::from(receipt))
+    }
+}
+
+pub struct GlintReceipt {
+    pub receipt: TransactionReceipt,
+    pub created_entity_keys: Vec<EntityKey>,
+}
+
+impl From<TransactionReceipt> for GlintReceipt {
+    fn from(receipt: TransactionReceipt) -> Self {
+        let inner_logs: Vec<_> = receipt
+            .inner
+            .logs()
+            .iter()
+            .map(|l| l.inner.clone())
+            .collect();
+        let created_entity_keys = created_entity_keys(&inner_logs);
+        Self {
+            receipt,
+            created_entity_keys,
+        }
+    }
+}
+
+impl GlintReceipt {
+    pub const fn tx_hash(&self) -> B256 {
+        self.receipt.transaction_hash
+    }
+
+    pub const fn block_number(&self) -> Option<u64> {
+        self.receipt.block_number
     }
 }
 
