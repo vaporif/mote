@@ -73,15 +73,14 @@ pub fn compute_content_hash_from_raw(
             + string_annotations_rlp.len()
             + numeric_annotations_rlp.len(),
     );
-    // Field lengths are bounded by MAX_PAYLOAD_SIZE (128 KB), well within u32.
-    #[allow(clippy::cast_possible_truncation)]
     for field in [
         payload_rlp,
         content_type_rlp,
         string_annotations_rlp,
         numeric_annotations_rlp,
     ] {
-        preimage.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        let len = u32::try_from(field.len()).expect("field bounded by MAX_PAYLOAD_SIZE");
+        preimage.extend_from_slice(&len.to_be_bytes());
         preimage.extend_from_slice(field);
     }
     keccak256(&preimage)
@@ -132,8 +131,8 @@ mod tests {
             string_annotations_rlp.as_slice(),
             numeric_annotations_rlp.as_slice(),
         ] {
-            #[allow(clippy::cast_possible_truncation)]
-            expected_preimage.extend_from_slice(&(field.len() as u32).to_be_bytes());
+            let len = u32::try_from(field.len()).expect("test field fits in u32");
+            expected_preimage.extend_from_slice(&len.to_be_bytes());
             expected_preimage.extend_from_slice(field);
         }
         assert_eq!(hash, keccak256(&expected_preimage));

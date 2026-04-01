@@ -93,19 +93,16 @@ impl TableProvider for SqliteLatestTableProvider {
     }
 }
 
-#[allow(
-    clippy::cast_sign_loss,
-    clippy::significant_drop_tightening,
-    clippy::option_if_let_else,
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
-)]
+#[allow(clippy::significant_drop_tightening, clippy::option_if_let_else)]
 fn query_entities_latest(
     conn: &Arc<Mutex<Connection>>,
     current_block: u64,
     owner_filter: Option<&[u8]>,
 ) -> eyre::Result<RecordBatch> {
     let guard = conn.lock();
+
+    let current_block_i64 =
+        i64::try_from(current_block).map_err(|e| eyre::eyre!("block number overflow: {e}"))?;
 
     let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match owner_filter {
         Some(owner) => (
@@ -115,7 +112,7 @@ fn query_entities_latest(
              FROM entities_latest \
              WHERE expires_at_block > ?1 AND owner = ?2"
                 .to_owned(),
-            vec![Box::new(current_block as i64), Box::new(owner.to_vec())],
+            vec![Box::new(current_block_i64), Box::new(owner.to_vec())],
         ),
         None => (
             "SELECT entity_key, owner, expires_at_block, content_type, payload, \
@@ -124,7 +121,7 @@ fn query_entities_latest(
              FROM entities_latest \
              WHERE expires_at_block > ?1"
                 .to_owned(),
-            vec![Box::new(current_block as i64)],
+            vec![Box::new(current_block_i64)],
         ),
     };
 
@@ -165,7 +162,7 @@ fn query_entities_latest(
 
         entity_key_builder.append_value(&entity_key)?;
         owner_builder.append_value(&owner)?;
-        expires_builder.append_value(expires as u64);
+        expires_builder.append_value(u64::try_from(expires)?);
         content_type_builder.append_value(&content_type);
         payload_builder.append_value(&payload);
 
@@ -191,9 +188,9 @@ fn query_entities_latest(
         }
         num_ann_builder.append(true)?;
 
-        created_at_builder.append_value(created_at as u64);
+        created_at_builder.append_value(u64::try_from(created_at)?);
         tx_hash_builder.append_value(&tx_hash)?;
-        extend_policy_builder.append_value(extend_policy as u8);
+        extend_policy_builder.append_value(u8::try_from(extend_policy)?);
 
         match operator {
             Some(op) => operator_builder.append_value(&op)?,

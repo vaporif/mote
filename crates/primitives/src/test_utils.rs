@@ -236,7 +236,6 @@ impl EventBuilder {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
     let schema = entity_events_schema();
     let n = events.len();
@@ -272,7 +271,7 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
     for ev in events {
         block_number_b.append_value(ev.block_number);
         block_hash_b
-            .append_value(B256::repeat_byte(ev.block_number as u8).as_slice())
+            .append_value(B256::repeat_byte(ev.block_number.to_le_bytes()[0]).as_slice())
             .unwrap();
         tx_index_b.append_value(ev.tx_index);
         tx_hash_b.append_value(ev.tx_hash.as_slice()).unwrap();
@@ -353,7 +352,6 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
 }
 
 /// Watermark batch (`op = 0xFF`).
-#[allow(clippy::cast_possible_truncation)]
 pub fn build_watermark_batch() -> RecordBatch {
     let schema = entity_events_schema();
 

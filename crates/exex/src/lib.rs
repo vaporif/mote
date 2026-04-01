@@ -277,7 +277,6 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     }
 }
 
-#[allow(clippy::cast_possible_truncation)] // tx/log indices are bounded by block gas limits
 fn collect_events_from_receipts<R, T>(receipts: &[R], transactions: &[T]) -> Vec<EventRow>
 where
     R: alloy_consensus::TxReceipt<Log = alloy_primitives::Log>,
@@ -298,7 +297,8 @@ where
                 Ok(Some(entity_event)) => {
                     events.push(EventRow {
                         event: entity_event,
-                        tx_index: tx_idx as u32,
+                        tx_index: u32::try_from(tx_idx)
+                            .expect("tx index bounded by block gas limit"),
                         tx_hash,
                         log_index: global_log_index,
                     });

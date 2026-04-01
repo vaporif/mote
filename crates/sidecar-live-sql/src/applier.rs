@@ -57,7 +57,7 @@ pub fn apply_batch(
     }
 }
 
-#[allow(clippy::cast_possible_wrap, clippy::significant_drop_tightening)]
+#[allow(clippy::significant_drop_tightening)]
 fn apply_commit(
     conn: &Arc<Mutex<Connection>>,
     batch: &RecordBatch,
@@ -130,9 +130,9 @@ fn apply_commit(
 
             match event_type {
                 EntityEventType::Created | EntityEventType::Updated => {
-                    let block_number = block_number_col.value(i) as i64;
+                    let block_number = i64::try_from(block_number_col.value(i))?;
                     let owner = owner_col.value(i);
-                    let expires = expires_col.value(i) as i64;
+                    let expires = i64::try_from(expires_col.value(i))?;
                     let content_type =
                         (!content_type_col.is_null(i)).then(|| content_type_col.value(i));
                     let payload: Option<&[u8]> =
@@ -168,7 +168,7 @@ fn apply_commit(
                     delete_stmt.execute([entity_key])?;
                 }
                 EntityEventType::Extended => {
-                    let new_expires = expires_col.value(i) as i64;
+                    let new_expires = i64::try_from(expires_col.value(i))?;
                     let tx_hash = tx_hash_col.value(i);
                     extend_stmt.execute(rusqlite::params![new_expires, tx_hash, entity_key])?;
                 }
@@ -193,7 +193,7 @@ fn apply_commit(
     Ok(())
 }
 
-#[allow(clippy::cast_possible_wrap, clippy::significant_drop_tightening)]
+#[allow(clippy::significant_drop_tightening)]
 fn apply_revert(
     conn: &Arc<Mutex<Connection>>,
     batch: &RecordBatch,
@@ -223,7 +223,7 @@ fn apply_revert(
                 )?;
             }
             EntityEventType::Extended => {
-                let old_expires = old_expires_col.value(i) as i64;
+                let old_expires = i64::try_from(old_expires_col.value(i))?;
                 tx.execute(
                     "UPDATE entities_latest SET expires_at_block = ?1 WHERE entity_key = ?2",
                     rusqlite::params![old_expires, entity_key],
@@ -295,14 +295,13 @@ fn col_map<'a>(batch: &'a RecordBatch, name: &str) -> eyre::Result<&'a MapArray>
         .ok_or_else(|| eyre::eyre!("column {name} is not MapArray"))
 }
 
-#[allow(clippy::cast_sign_loss)]
 fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<String> {
     if col.is_null(i) {
         return Ok("[]".to_owned());
     }
     let offsets = col.value_offsets();
-    let start = offsets[i] as usize;
-    let end = offsets[i + 1] as usize;
+    let start = usize::try_from(offsets[i])?;
+    let end = usize::try_from(offsets[i + 1])?;
     if start == end {
         return Ok("[]".to_owned());
     }
@@ -314,14 +313,13 @@ fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<String> {
     Ok(serde_json::to_string(&pairs)?)
 }
 
-#[allow(clippy::cast_sign_loss)]
 fn encode_numeric_map(col: &MapArray, i: usize) -> eyre::Result<String> {
     if col.is_null(i) {
         return Ok("[]".to_owned());
     }
     let offsets = col.value_offsets();
-    let start = offsets[i] as usize;
-    let end = offsets[i + 1] as usize;
+    let start = usize::try_from(offsets[i])?;
+    let end = usize::try_from(offsets[i + 1])?;
     if start == end {
         return Ok("[]".to_owned());
     }

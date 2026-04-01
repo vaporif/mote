@@ -59,9 +59,7 @@ impl EntityMetadata {
 pub fn derive_entity_key(tx_hash: &B256, payload: &[u8], operation_index: u32) -> EntityKey {
     let mut preimage = Vec::with_capacity(32 + 4 + payload.len() + 32);
     preimage.extend_from_slice(tx_hash.as_slice());
-    // Payload length is bounded by MAX_PAYLOAD_SIZE (128 KB), well within u32.
-    #[allow(clippy::cast_possible_truncation)]
-    let payload_len = payload.len() as u32;
+    let payload_len = u32::try_from(payload.len()).expect("payload bounded by MAX_PAYLOAD_SIZE");
     preimage.extend_from_slice(&payload_len.to_be_bytes());
     preimage.extend_from_slice(payload);
     let mut padded_index = [0u8; 32];
