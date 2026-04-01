@@ -14,6 +14,7 @@ categories.workspace = true
 glint-analytics.workspace = true
 glint-historical.workspace = true
 glint-primitives.workspace = true
+glint-sidecar-live-sql.workspace = true
 
 arrow.workspace = true
 datafusion.workspace = true

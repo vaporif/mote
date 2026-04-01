@@ -211,6 +211,29 @@ impl EventBuilder {
         self.expires_at = Some(expires_at);
         self
     }
+
+    #[must_use]
+    pub const fn expired(block_number: u64, entity_byte: u8) -> Self {
+        Self {
+            block_number,
+            entity_key: B256::repeat_byte(entity_byte),
+            owner: Address::repeat_byte(entity_byte),
+            event_type: EntityEventType::Expired,
+            expires_at: None,
+            old_expires_at: None,
+            content_type: None,
+            payload: None,
+            string_annotations: vec![],
+            numeric_annotations: vec![],
+            extend_policy: None,
+            operator: None,
+            gas_cost: Some(10_000),
+            tx_index: 0,
+            tx_hash: B256::repeat_byte(0xAA),
+            log_index: 0,
+            op: BatchOp::Commit,
+        }
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -304,6 +327,83 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
         tip_block_b.append_value(ev.block_number);
         op_b.append_value(ev.op as u8);
     }
+
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(block_number_b.finish()),
+        Arc::new(block_hash_b.finish()),
+        Arc::new(tx_index_b.finish()),
+        Arc::new(tx_hash_b.finish()),
+        Arc::new(log_index_b.finish()),
+        Arc::new(event_type_b.finish()),
+        Arc::new(entity_key_b.finish()),
+        Arc::new(owner_b.finish()),
+        Arc::new(expires_b.finish()),
+        Arc::new(old_expires_b.finish()),
+        Arc::new(content_type_b.finish()),
+        Arc::new(payload_b.finish()),
+        Arc::new(str_ann_b.finish()),
+        Arc::new(num_ann_b.finish()),
+        Arc::new(extend_policy_b.finish()),
+        Arc::new(operator_b.finish()),
+        Arc::new(gas_cost_b.finish()),
+        Arc::new(tip_block_b.finish()),
+        Arc::new(op_b.finish()),
+    ];
+    RecordBatch::try_new(schema, columns).unwrap()
+}
+
+/// Watermark batch (`op = 0xFF`).
+#[allow(clippy::cast_possible_truncation)]
+pub fn build_watermark_batch() -> RecordBatch {
+    let schema = entity_events_schema();
+
+    let mut block_number_b = UInt64Builder::with_capacity(1);
+    let mut block_hash_b = FixedSizeBinaryBuilder::with_capacity(1, 32);
+    let mut tx_index_b = UInt32Builder::with_capacity(1);
+    let mut tx_hash_b = FixedSizeBinaryBuilder::with_capacity(1, 32);
+    let mut log_index_b = UInt32Builder::with_capacity(1);
+    let mut event_type_b = UInt8Builder::with_capacity(1);
+    let mut entity_key_b = FixedSizeBinaryBuilder::with_capacity(1, 32);
+    let mut owner_b = FixedSizeBinaryBuilder::with_capacity(1, 20);
+    let mut expires_b = UInt64Builder::with_capacity(1);
+    let mut old_expires_b = UInt64Builder::with_capacity(1);
+    let mut content_type_b = StringBuilder::with_capacity(1, 0);
+    let mut payload_b = BinaryBuilder::with_capacity(1, 0);
+    let mut str_ann_b = MapBuilder::new(
+        Some(map_field_names()),
+        StringBuilder::new(),
+        StringBuilder::new(),
+    );
+    let mut num_ann_b = MapBuilder::new(
+        Some(map_field_names()),
+        StringBuilder::new(),
+        UInt64Builder::new(),
+    );
+    let mut extend_policy_b = UInt8Builder::with_capacity(1);
+    let mut operator_b = FixedSizeBinaryBuilder::with_capacity(1, 20);
+    let mut gas_cost_b = UInt64Builder::with_capacity(1);
+    let mut tip_block_b = UInt64Builder::with_capacity(1);
+    let mut op_b = UInt8Builder::with_capacity(1);
+
+    block_number_b.append_value(0);
+    block_hash_b.append_value([0u8; 32]).unwrap();
+    tx_index_b.append_value(0);
+    tx_hash_b.append_value([0u8; 32]).unwrap();
+    log_index_b.append_value(0);
+    event_type_b.append_value(0);
+    entity_key_b.append_value([0u8; 32]).unwrap();
+    owner_b.append_value([0u8; 20]).unwrap();
+    expires_b.append_null();
+    old_expires_b.append_null();
+    content_type_b.append_null();
+    payload_b.append_null();
+    str_ann_b.append(false).unwrap();
+    num_ann_b.append(false).unwrap();
+    extend_policy_b.append_null();
+    operator_b.append_null();
+    gas_cost_b.append_null();
+    tip_block_b.append_value(0);
+    op_b.append_value(0xFF);
 
     let columns: Vec<ArrayRef> = vec![
         Arc::new(block_number_b.finish()),
