@@ -155,7 +155,7 @@ fn is_block_number_col(expr: &Expr) -> bool {
 
 const fn extract_u64_literal(expr: &Expr) -> Option<u64> {
     match expr {
-        #[allow(clippy::cast_sign_loss)]
+        #[allow(clippy::cast_sign_loss)] // guarded by *v >= 0
         Expr::Literal(datafusion::common::ScalarValue::Int64(Some(v)), _) if *v >= 0 => {
             Some(*v as u64)
         }
@@ -246,11 +246,6 @@ impl TableProvider for HistoricalTableProvider {
     }
 }
 
-#[allow(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
-)]
 fn query_block_range(
     conn: &Connection,
     from_block: u64,
@@ -270,7 +265,9 @@ fn query_block_range(
 
     let mut builders = BatchBuilders::new();
 
-    let mut rows = stmt.query([from_block as i64, to_block as i64]).df_err()?;
+    let from_i64 = i64::try_from(from_block).df_err()?;
+    let to_i64 = i64::try_from(to_block).df_err()?;
+    let mut rows = stmt.query([from_i64, to_i64]).df_err()?;
 
     while let Some(row) = rows.next().df_err()? {
         builders.append_row(row)?;
@@ -320,16 +317,12 @@ impl BatchBuilders {
         }
     }
 
-    #[allow(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        clippy::needless_pass_by_value
-    )]
+    #[allow(clippy::needless_pass_by_value)]
     fn append_row(&mut self, row: &rusqlite::Row<'_>) -> DfResult<()> {
         self.block_number
-            .append_value(row.get::<_, i64>(0).df_err()? as u64);
+            .append_value(u64::try_from(row.get::<_, i64>(0).df_err()?).df_err()?);
         self.event_type
-            .append_value(row.get::<_, i64>(1).df_err()? as u8);
+            .append_value(u8::try_from(row.get::<_, i64>(1).df_err()?).df_err()?);
         self.entity_key
             .append_value(row.get_ref(2).df_err()?.as_blob().df_err()?)
             .map_err(arrow_err)?;
@@ -340,7 +333,7 @@ impl BatchBuilders {
         }
 
         match row.get::<_, Option<i64>>(4).df_err()? {
-            Some(v) => self.expires_at.append_value(v as u64),
+            Some(v) => self.expires_at.append_value(u64::try_from(v).df_err()?),
             None => self.expires_at.append_null(),
         }
 
@@ -358,7 +351,7 @@ impl BatchBuilders {
         self.append_numeric_annotations(row.get_ref(8).df_err()?)?;
 
         match row.get::<_, Option<i64>>(9).df_err()? {
-            Some(v) => self.extend_policy.append_value(v as u8),
+            Some(v) => self.extend_policy.append_value(u8::try_from(v).df_err()?),
             None => self.extend_policy.append_null(),
         }
 
@@ -368,7 +361,7 @@ impl BatchBuilders {
         }
 
         match row.get::<_, Option<i64>>(11).df_err()? {
-            Some(v) => self.gas_cost.append_value(v as u64),
+            Some(v) => self.gas_cost.append_value(u64::try_from(v).df_err()?),
             None => self.gas_cost.append_null(),
         }
 

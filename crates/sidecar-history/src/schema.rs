@@ -104,6 +104,7 @@ pub fn set_last_processed_block(conn: &Connection, block: u64) -> eyre::Result<(
 pub fn drop_and_recreate(conn: &Connection) -> eyre::Result<()> {
     conn.execute_batch(
         "
+        DROP TABLE IF EXISTS entities_latest;
         DROP TABLE IF EXISTS entity_events;
         DROP TABLE IF EXISTS sidecar_meta;
         ",
@@ -172,6 +173,31 @@ mod tests {
         )
         .unwrap();
         assert!(check_schema_version(&conn).is_err());
+    }
+
+    #[test]
+    fn drop_and_recreate_also_drops_entities_latest() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+
+        conn.execute_batch("CREATE TABLE entities_latest (entity_key BLOB PRIMARY KEY) STRICT;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO entities_latest (entity_key) VALUES (X'01')",
+            [],
+        )
+        .unwrap();
+
+        drop_and_recreate(&conn).unwrap();
+
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='entities_latest'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!table_exists);
     }
 
     #[test]

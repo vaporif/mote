@@ -34,6 +34,16 @@ pub struct RunArgs {
 
     #[arg(long, default_value = "glint-sidecar.db")]
     pub db_path: PathBuf,
+
+    #[arg(long, default_value = "memory", value_enum)]
+    pub entities_backend: EntitiesBackend,
+}
+
+#[derive(Clone, Debug, Default, clap::ValueEnum)]
+pub enum EntitiesBackend {
+    #[default]
+    Memory,
+    Sqlite,
 }
 
 #[derive(Subcommand)]

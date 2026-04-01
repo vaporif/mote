@@ -40,6 +40,7 @@ glint-primitives = { path = "crates/primitives" }
 glint-sdk = { path = "crates/sdk" }
 glint-analytics = { path = "crates/sidecar-live" }
 glint-historical = { path = "crates/sidecar-history" }
+glint-sidecar-live-sql = { path = "crates/sidecar-live-sql" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }

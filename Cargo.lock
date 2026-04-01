@@ -4786,6 +4786,7 @@ dependencies = [
  "glint-analytics",
  "glint-historical",
  "glint-primitives",
+ "glint-sidecar-live-sql",
  "parking_lot",
  "prost",
  "rusqlite",
@@ -4796,6 +4797,24 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber 0.3.23",
+]
+
+[[package]]
+name = "glint-sidecar-live-sql"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "arrow",
+ "async-trait",
+ "datafusion",
+ "eyre",
+ "glint-analytics",
+ "glint-primitives",
+ "parking_lot",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

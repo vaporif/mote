@@ -11,7 +11,6 @@ use rusqlite::Connection;
 
 use crate::schema;
 
-#[allow(clippy::cast_possible_wrap)]
 pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> {
     if batch.num_rows() == 0 {
         return Ok(());
@@ -78,8 +77,8 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
             validate_blob_len(entity_key, 32, "entity_key")?;
 
             let owner: Option<&[u8]> = nullable_blob(owner_col, i, 20, "owner")?;
-            let expires_at: Option<i64> = nullable_u64_as_i64(expires_col, i);
-            let old_expires_at: Option<i64> = nullable_u64_as_i64(old_expires_col, i);
+            let expires_at: Option<i64> = nullable_u64_as_i64(expires_col, i)?;
+            let old_expires_at: Option<i64> = nullable_u64_as_i64(old_expires_col, i)?;
             let content_type: Option<&str> = nullable_str(content_type_col, i);
             let payload: Option<&[u8]> = nullable_bytes(payload_col, i);
 
@@ -88,10 +87,10 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
 
             let extend_policy: Option<i64> = nullable_u8_as_i64(extend_policy_col, i);
             let operator: Option<&[u8]> = nullable_blob(operator_col, i, 20, "operator")?;
-            let gas_cost: Option<i64> = nullable_u64_as_i64(gas_cost_col, i);
+            let gas_cost: Option<i64> = nullable_u64_as_i64(gas_cost_col, i)?;
 
             stmt.execute(rusqlite::params![
-                (block_number as i64),
+                i64::try_from(block_number)?,
                 block_hash,
                 tx_index,
                 tx_hash,
@@ -151,9 +150,11 @@ fn nullable_blob<'a>(
     Ok(Some(v))
 }
 
-#[allow(clippy::cast_possible_wrap)]
-fn nullable_u64_as_i64(col: &UInt64Array, i: usize) -> Option<i64> {
-    (!col.is_null(i)).then(|| col.value(i) as i64)
+fn nullable_u64_as_i64(col: &UInt64Array, i: usize) -> eyre::Result<Option<i64>> {
+    if col.is_null(i) {
+        return Ok(None);
+    }
+    Ok(Some(i64::try_from(col.value(i))?))
 }
 
 fn nullable_u8_as_i64(col: &UInt8Array, i: usize) -> Option<i64> {
@@ -203,14 +204,13 @@ fn col_map<'a>(batch: &'a RecordBatch, name: &str) -> eyre::Result<&'a MapArray>
         .ok_or_else(|| eyre::eyre!("column {name} is not MapArray"))
 }
 
-#[allow(clippy::cast_sign_loss)]
 fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<Option<String>> {
     if col.is_null(i) {
         return Ok(None);
     }
     let offsets = col.value_offsets();
-    let start = offsets[i] as usize;
-    let end = offsets[i + 1] as usize;
+    let start = usize::try_from(offsets[i])?;
+    let end = usize::try_from(offsets[i + 1])?;
     if start == end {
         return Ok(Some("[]".to_owned()));
     }
@@ -222,14 +222,13 @@ fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<Option<String>> {
     Ok(Some(serde_json::to_string(&pairs)?))
 }
 
-#[allow(clippy::cast_sign_loss)]
 fn encode_numeric_map(col: &MapArray, i: usize) -> eyre::Result<Option<String>> {
     if col.is_null(i) {
         return Ok(None);
     }
     let offsets = col.value_offsets();
-    let start = offsets[i] as usize;
-    let end = offsets[i + 1] as usize;
+    let start = usize::try_from(offsets[i])?;
+    let end = usize::try_from(offsets[i + 1])?;
     if start == end {
         return Ok(Some("[]".to_owned()));
     }

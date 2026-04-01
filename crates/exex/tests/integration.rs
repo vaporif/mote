@@ -48,9 +48,8 @@ fn sample_created_event() -> EntityEvent {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)] // test values are small
 fn make_test_batch(block_number: u64) -> RecordBatch {
-    let block_hash = B256::repeat_byte(block_number as u8);
+    let block_hash = B256::repeat_byte(block_number.to_le_bytes()[0]);
     let events = vec![EventRow {
         event: sample_created_event(),
         tx_index: 0,

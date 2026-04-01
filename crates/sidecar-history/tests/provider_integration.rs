@@ -1,6 +1,4 @@
 #![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     clippy::missing_const_for_fn,
     clippy::redundant_closure_for_method_calls
 )]
@@ -69,7 +67,7 @@ async fn query_u8_column(ctx: &SessionContext, sql: &str) -> Vec<u8> {
 #[tokio::test]
 async fn e2e_write_multiple_blocks_query_range() {
     let events: Vec<_> = (1..=10)
-        .map(|i| EventBuilder::created(i * 10, i as u8))
+        .map(|i| EventBuilder::created(i * 10, u8::try_from(i).unwrap()))
         .collect();
 
     let conn = setup_db_with_events(&events);
@@ -86,7 +84,7 @@ async fn e2e_write_multiple_blocks_query_range() {
 #[tokio::test]
 async fn e2e_block_range_with_gt_lt_operators() {
     let events: Vec<_> = (1..=5)
-        .map(|i| EventBuilder::created(i * 100, i as u8))
+        .map(|i| EventBuilder::created(i * 100, u8::try_from(i).unwrap()))
         .collect();
 
     let conn = setup_db_with_events(&events);
@@ -194,8 +192,8 @@ async fn e2e_annotations_survive_roundtrip() {
     let keys = str_map.keys().as_string::<i32>();
     let values = str_map.values().as_string::<i32>();
     let offsets = str_map.value_offsets();
-    let start = offsets[0] as usize;
-    let end = offsets[1] as usize;
+    let start = usize::try_from(offsets[0]).unwrap();
+    let end = usize::try_from(offsets[1]).unwrap();
 
     let pairs: Vec<_> = (start..end)
         .map(|j| (keys.value(j).to_owned(), values.value(j).to_owned()))
@@ -217,8 +215,8 @@ async fn e2e_annotations_survive_roundtrip() {
         .values()
         .as_primitive::<arrow::datatypes::UInt64Type>();
     let offsets = num_map.value_offsets();
-    let start = offsets[0] as usize;
-    let end = offsets[1] as usize;
+    let start = usize::try_from(offsets[0]).unwrap();
+    let end = usize::try_from(offsets[1]).unwrap();
 
     let pairs: Vec<_> = (start..end)
         .map(|j| (keys.value(j).to_owned(), values.value(j)))
@@ -285,7 +283,10 @@ async fn e2e_query_without_block_range_fails() {
 #[tokio::test]
 async fn e2e_large_batch_insert_and_query() {
     let events: Vec<_> = (0..100)
-        .map(|i| EventBuilder::created(i + 1, ((i % 255) + 1) as u8).with_log_index(i as u32))
+        .map(|i| {
+            EventBuilder::created(i + 1, u8::try_from((i % 255) + 1).unwrap())
+                .with_log_index(u32::try_from(i).unwrap())
+        })
         .collect();
 
     let conn = setup_db_with_events(&events);

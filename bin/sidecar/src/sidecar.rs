@@ -1,4 +1,8 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
 
 use glint_analytics::{
     batch_decoder::{self, ApplyResult},
@@ -6,18 +10,42 @@ use glint_analytics::{
     table_provider::{self, NumAnnUdf, StrAnnUdf},
 };
 
-use crate::{flight_sql, health, ipc_client};
+use crate::{cli::EntitiesBackend, flight_sql, health, ipc_client};
 use glint_historical::{provider::HistoricalTableProvider, schema, writer};
 use glint_primitives::exex_schema::columns;
+use glint_sidecar_live_sql::{
+    applier as sql_applier, provider::SqliteLatestTableProvider, schema as sql_schema,
+};
 use rusqlite::Connection;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use parking_lot::Mutex;
 
+fn open_read_connection(db_path: &Path) -> eyre::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.pragma_update(None, "mmap_size", 256 * 1024 * 1024)?;
+    conn.pragma_update(None, "cache_size", -64000)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    Ok(conn)
+}
+
 enum ConnectionOutcome {
     Closed { last_block: u64 },
     NeedsReplay,
+}
+
+enum Backend {
+    Memory {
+        store: Box<EntityStore>,
+        snapshot_tx: watch::Sender<Arc<glint_analytics::entity_store::Snapshot>>,
+    },
+    Sqlite {
+        current_block: Arc<AtomicU64>,
+    },
 }
 
 pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
@@ -26,6 +54,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         flight_port,
         health_port,
         db_path,
+        entities_backend,
     } = args;
 
     let write_conn = Connection::open(&db_path)?;
@@ -37,23 +66,12 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
 
     let write_conn = Arc::new(Mutex::new(write_conn));
 
-    let read_conn = Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    read_conn.pragma_update(None, "mmap_size", 256 * 1024 * 1024)?;
-    read_conn.pragma_update(None, "cache_size", -64000)?;
-    read_conn.pragma_update(None, "temp_store", "MEMORY")?;
-    let read_conn = Arc::new(Mutex::new(read_conn));
+    let read_conn = Arc::new(Mutex::new(open_read_connection(&db_path)?));
 
-    let mut store = EntityStore::new();
     let mut resume_block: u64 = last_processed.unwrap_or(0);
 
     let (shutdown_tx, _) = watch::channel(false);
     let (ready_tx, ready_rx) = watch::channel(false);
-
-    let initial_snapshot = Arc::new(store.snapshot()?);
-    let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
     let mut health_handle = tokio::spawn({
         let ready_rx = ready_rx.clone();
@@ -66,15 +84,42 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
     });
 
     let historical_provider = Arc::new(HistoricalTableProvider::new(Arc::clone(&read_conn)));
-    let live_provider = Arc::new(table_provider::IndexedTableProvider::new(
-        snapshot_rx.clone(),
-    ));
 
     let ctx = Arc::new(datafusion::prelude::SessionContext::new());
-    ctx.register_table("entities", live_provider)?;
     ctx.register_table("entity_events", historical_provider)?;
     ctx.register_udf(datafusion::logical_expr::ScalarUDF::from(StrAnnUdf::new()));
     ctx.register_udf(datafusion::logical_expr::ScalarUDF::from(NumAnnUdf::new()));
+
+    let mut backend = match entities_backend {
+        EntitiesBackend::Memory => {
+            let store = EntityStore::new();
+            let initial_snapshot = Arc::new(store.snapshot()?);
+            let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+
+            let live_provider = Arc::new(table_provider::IndexedTableProvider::new(snapshot_rx));
+            ctx.register_table("entities", live_provider)?;
+
+            Backend::Memory {
+                store: Box::new(store),
+                snapshot_tx,
+            }
+        }
+        EntitiesBackend::Sqlite => {
+            sql_schema::check_and_init_schema(&write_conn.lock())?;
+
+            let current_block = Arc::new(AtomicU64::new(resume_block));
+
+            let entities_read_conn = Arc::new(Mutex::new(open_read_connection(&db_path)?));
+
+            let live_provider = Arc::new(SqliteLatestTableProvider::new(
+                entities_read_conn,
+                Arc::clone(&current_block),
+            ));
+            ctx.register_table("entities", live_provider)?;
+
+            Backend::Sqlite { current_block }
+        }
+    };
 
     let mut flight_handle = tokio::spawn({
         let ctx = Arc::clone(&ctx);
@@ -102,9 +147,8 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             }
             result = run_connection(
                 &exex_socket,
-                &mut store,
+                &mut backend,
                 &write_conn,
-                &snapshot_tx,
                 &ready_tx,
                 resume_block,
             ) => {
@@ -116,6 +160,9 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                     Ok(ConnectionOutcome::NeedsReplay) => {
                         warn!("non-reversible revert, full replay needed");
                         resume_block = 0;
+                        if let Backend::Sqlite { .. } = &backend {
+                            sql_schema::clear_entities_latest(&write_conn.lock())?;
+                        }
                     }
                     Err(e) => {
                         resume_block = last_processed_resume_block(&write_conn);
@@ -125,9 +172,16 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             }
         }
 
-        store.clear();
+        match &mut backend {
+            Backend::Memory {
+                store, snapshot_tx, ..
+            } => {
+                store.clear();
+                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+            }
+            Backend::Sqlite { .. } => {}
+        }
         let _ = ready_tx.send(false);
-        let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
@@ -155,16 +209,26 @@ impl BatchOutcome {
 }
 
 fn process_batch(
-    store: &mut EntityStore,
+    backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
     batch: &arrow::record_batch::RecordBatch,
     last_block: &mut u64,
 ) -> eyre::Result<BatchOutcome> {
     let is_revert = is_revert_batch(batch);
-
     let block = batch_decoder::batch_block_number(batch);
 
-    match batch_decoder::apply_batch(store, batch)? {
+    let result = match backend {
+        Backend::Memory { store, .. } => batch_decoder::apply_batch(store, batch)?,
+        Backend::Sqlite { current_block } => {
+            match sql_applier::apply_batch(sqlite_conn, current_block, batch)? {
+                sql_applier::ApplyResult::Applied => ApplyResult::Applied,
+                sql_applier::ApplyResult::Watermark => ApplyResult::Watermark,
+                sql_applier::ApplyResult::NeedsReplay => ApplyResult::NeedsReplay,
+            }
+        }
+    };
+
+    match result {
         ApplyResult::Watermark => return Ok(BatchOutcome::EnterLive),
         ApplyResult::Applied => {
             if let Some(b) = block {
@@ -190,9 +254,8 @@ fn process_batch(
 
 async fn run_connection(
     socket_path: &Path,
-    store: &mut EntityStore,
+    backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
-    snapshot_tx: &watch::Sender<Arc<glint_analytics::entity_store::Snapshot>>,
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
 ) -> eyre::Result<ConnectionOutcome> {
@@ -223,12 +286,14 @@ async fn run_connection(
     let mut last_block: u64 = resume_block;
 
     while let Some(batch) = batch_rx.recv().await {
-        match process_batch(store, sqlite_conn, &batch, &mut last_block)? {
+        match process_batch(backend, sqlite_conn, &batch, &mut last_block)? {
             BatchOutcome::EnterLive => {
                 info!("watermark received, entering live mode");
                 is_live = true;
                 let _ = ready_tx.send(true);
-                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+                if let Backend::Memory { store, snapshot_tx } = backend {
+                    let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+                }
                 continue;
             }
             BatchOutcome::NeedsReplay => return Ok(ConnectionOutcome::NeedsReplay),
@@ -237,11 +302,14 @@ async fn run_connection(
 
         if is_live {
             while let Ok(queued) = batch_rx.try_recv() {
-                if process_batch(store, sqlite_conn, &queued, &mut last_block)?.is_needs_replay() {
+                if process_batch(backend, sqlite_conn, &queued, &mut last_block)?.is_needs_replay()
+                {
                     return Ok(ConnectionOutcome::NeedsReplay);
                 }
             }
-            let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+            if let Backend::Memory { store, snapshot_tx } = backend {
+                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+            }
         }
     }
 
