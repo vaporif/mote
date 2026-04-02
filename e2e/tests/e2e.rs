@@ -140,7 +140,6 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
 
     let owner_hex = format!("{:x}", expected_owner);
 
-    // Query entity with JOINed annotations
     let sql = format!(
         "SELECT e.entity_key, e.owner, e.expires_at_block, e.content_type, e.payload, \
                 sa.ann_value AS app_ann, se.ann_value AS env_ann \
