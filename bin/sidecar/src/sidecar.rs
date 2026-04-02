@@ -7,14 +7,23 @@ use std::{
 use glint_analytics::{
     batch_decoder::{self, ApplyResult},
     entity_store::EntityStore,
-    table_provider::{self, NumAnnUdf, StrAnnUdf},
+    table_provider,
 };
 
 use crate::{cli::EntitiesBackend, flight_sql, health, ipc_client};
-use glint_historical::{provider::HistoricalTableProvider, schema, writer};
+use glint_historical::{
+    provider::{
+        EventNumericAnnotationsProvider, EventStringAnnotationsProvider, HistoricalEventsProvider,
+    },
+    schema, writer,
+};
 use glint_primitives::exex_schema::columns;
 use glint_sidecar_live_sql::{
-    applier as sql_applier, provider::SqliteLatestTableProvider, schema as sql_schema,
+    applier as sql_applier,
+    provider::{
+        SqliteEntitiesProvider, SqliteNumericAnnotationsProvider, SqliteStringAnnotationsProvider,
+    },
+    schema as sql_schema,
 };
 use rusqlite::Connection;
 use tokio::sync::watch;
@@ -96,12 +105,19 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         }
     });
 
-    let historical_provider = Arc::new(HistoricalTableProvider::new(Arc::clone(&read_conn)));
-
     let ctx = Arc::new(datafusion::prelude::SessionContext::new());
-    ctx.register_table("entity_events", historical_provider)?;
-    ctx.register_udf(datafusion::logical_expr::ScalarUDF::from(StrAnnUdf::new()));
-    ctx.register_udf(datafusion::logical_expr::ScalarUDF::from(NumAnnUdf::new()));
+    ctx.register_table(
+        "entity_events",
+        Arc::new(HistoricalEventsProvider::new(Arc::clone(&read_conn))),
+    )?;
+    ctx.register_table(
+        "event_string_annotations",
+        Arc::new(EventStringAnnotationsProvider::new(Arc::clone(&read_conn))),
+    )?;
+    ctx.register_table(
+        "event_numeric_annotations",
+        Arc::new(EventNumericAnnotationsProvider::new(Arc::clone(&read_conn))),
+    )?;
 
     let mut backend = match entities_backend {
         EntitiesBackend::Memory => {
@@ -109,8 +125,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             let initial_snapshot = Arc::new(store.snapshot()?);
             let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
-            let live_provider = Arc::new(table_provider::IndexedTableProvider::new(snapshot_rx));
-            ctx.register_table("entities", live_provider)?;
+            table_provider::register_tables(&ctx, snapshot_rx)?;
 
             Backend::Memory {
                 store: Box::new(store),
@@ -124,11 +139,23 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
 
             let entities_read_conn = Arc::new(Mutex::new(open_read_connection(&db_path)?));
 
-            let live_provider = Arc::new(SqliteLatestTableProvider::new(
-                entities_read_conn,
-                Arc::clone(&current_block),
-            ));
-            ctx.register_table("entities", live_provider)?;
+            ctx.register_table(
+                "entities_latest",
+                Arc::new(SqliteEntitiesProvider::new(
+                    Arc::clone(&entities_read_conn),
+                    Arc::clone(&current_block),
+                )),
+            )?;
+            ctx.register_table(
+                "entity_string_annotations",
+                Arc::new(SqliteStringAnnotationsProvider::new(Arc::clone(
+                    &entities_read_conn,
+                ))),
+            )?;
+            ctx.register_table(
+                "entity_numeric_annotations",
+                Arc::new(SqliteNumericAnnotationsProvider::new(entities_read_conn)),
+            )?;
 
             Backend::Sqlite { current_block }
         }

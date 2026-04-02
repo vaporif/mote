@@ -12,12 +12,10 @@ categories.workspace = true
 
 [dependencies]
 glint-primitives = { workspace = true, features = ["arrow"] }
-glint-analytics.workspace = true
 rusqlite.workspace = true
 eyre.workspace = true
 arrow.workspace = true
 async-trait.workspace = true
-serde_json.workspace = true
 datafusion.workspace = true
 parking_lot.workspace = true
 tokio.workspace = true

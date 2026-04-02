@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use datafusion::prelude::*;
-use glint_historical::{provider::HistoricalTableProvider, schema, writer};
+use glint_historical::{provider::HistoricalEventsProvider, schema, writer};
 use glint_primitives::test_utils::{EventBuilder, build_batch};
 
 #[tokio::test]
@@ -16,7 +16,7 @@ async fn write_then_query_via_datafusion() {
     writer::insert_batch(&conn, &build_batch(&[EventBuilder::created(30, 0x03)])).unwrap();
 
     let conn = Arc::new(Mutex::new(conn));
-    let provider = HistoricalTableProvider::new(conn);
+    let provider = HistoricalEventsProvider::new(conn);
 
     let ctx = SessionContext::new();
     ctx.register_table("entities", Arc::new(provider)).unwrap();
@@ -40,7 +40,7 @@ async fn query_without_block_range_errors() {
     schema::create_tables(&conn).unwrap();
 
     let conn = Arc::new(Mutex::new(conn));
-    let provider = HistoricalTableProvider::new(conn);
+    let provider = HistoricalEventsProvider::new(conn);
 
     let ctx = SessionContext::new();
     ctx.register_table("entities", Arc::new(provider)).unwrap();
@@ -64,7 +64,7 @@ async fn query_with_inverted_block_range_errors() {
     schema::create_tables(&conn).unwrap();
 
     let conn = Arc::new(Mutex::new(conn));
-    let provider = HistoricalTableProvider::new(conn);
+    let provider = HistoricalEventsProvider::new(conn);
 
     let ctx = SessionContext::new();
     ctx.register_table("entities", Arc::new(provider)).unwrap();

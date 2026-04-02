@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256, Bytes};
 use glint_primitives::config::GlintChainConfig;
 
 #[test]
