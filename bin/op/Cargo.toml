@@ -18,7 +18,7 @@ path = "src/main.rs"
 glint-engine = { workspace = true, features = ["op"] }
 glint-exex.workspace = true
 glint-node.workspace = true
-glint-primitives.workspace = true
+glint-primitives = { workspace = true, features = ["genesis"] }
 
 reth-optimism-node.workspace = true
 reth-optimism-evm.workspace = true

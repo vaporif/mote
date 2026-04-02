@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Glint node shared library: CLI args and genesis config extraction"
+description = "Glint node shared library: CLI args and RPC"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -15,7 +15,7 @@ name = "glint_node"
 path = "src/lib.rs"
 
 [dependencies]
-glint-primitives = { workspace = true, features = ["rpc", "genesis"] }
+glint-primitives = { workspace = true, features = ["rpc"] }
 glint-engine.workspace = true
 
 alloy-consensus.workspace = true
@@ -25,13 +25,14 @@ reth-provider.workspace = true
 serde = { workspace = true }
 
 clap.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
 eyre.workspace = true
 
 [dev-dependencies]
 glint-engine = { workspace = true }
+glint-primitives = { workspace = true, features = ["genesis"] }
 alloy-primitives = { workspace = true }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
