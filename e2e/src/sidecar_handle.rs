@@ -32,6 +32,8 @@ impl SidecarHandle {
                 "8080",
                 "--db-path",
                 "/data/glint-sidecar.db",
+                "--genesis",
+                "/etc/glint/genesis.json",
             ]);
 
         let container = image.start().await?;

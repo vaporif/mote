@@ -7,17 +7,17 @@
 
 Ephemeral on-chain storage layer, built on reth.
 
-Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, carry queryable annotations, and disappear when their time is up.
+Glint adds a BTL (Blocks-to-Live) primitive to Ethereum. Entities have a TTL, carry queryable annotations, and disappear when their time is up. BTL limits, payload sizes, and annotation constraints are all set in genesis. You can turn off BTL entirely (`max_btl: 0`) if you want permanent storage.
 
 Runs as both a standalone Ethereum node (`eth-glint`) and an OP Stack L3 (`op-glint`).
 
-**The full flow - node startup, entity creation, ExEx streaming, and Flight SQL queries - is covered by e2e tests.**
+The full flow (node startup, entity creation, ExEx streaming, Flight SQL queries) is covered by e2e tests.
 
 ## Why
 
 Blockchains store data permanently. If you want to publish a limit order that's valid for the next 10 blocks, you pay to store it forever even though nobody needs it after that. There's no native TTL in Ethereum.
 
-Think CoW Swap orders valid for minutes, oracle price feeds stale after a few blocks, compute marketplace offers that expire when filled, ephemeral task boards for AI agents. Anywhere people publish short-lived structured records and others need to query them by metadata.
+Think CoW Swap orders valid for minutes, oracle price feeds stale after a few blocks, compute marketplace offers that expire when filled, ephemeral task boards for AI agents.
 
 ## Getting started
 
@@ -48,6 +48,7 @@ Terminal 2 - start the sidecar (connects to the node's ExEx socket, serves Fligh
 
 ```bash
 just run-sidecar
+# or with unlimited BTL: just run-sidecar --genesis etc/genesis.json --entities-backend sqlite
 ```
 
 The node listens on `localhost:8545` (JSON-RPC). The sidecar exposes Flight SQL on `localhost:50051` and health on `localhost:8080`.
@@ -80,6 +81,42 @@ The node exposes a few entity-specific RPC methods alongside the standard Ethere
 - `glint_getUsedSlots()` - storage slot count
 - `glint_getBlockTiming()` - current block number and timestamp
 
+## Configuration
+
+All Glint parameters are set in the genesis file under `config.glint`:
+
+```json
+{
+  "config": {
+    "glint": {
+      "max_btl": 302400,
+      "max_ops_per_tx": 100,
+      "max_payload_size": 131072,
+      "max_annotations_per_entity": 64,
+      "max_annotation_key_size": 256,
+      "max_annotation_value_size": 1024,
+      "max_content_type_size": 128,
+      "processor_address": "0x000000000000000000000000000000676c696e74"
+    }
+  }
+}
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_btl` | 302,400 (~7 days at 2s blocks) | Max entity lifetime in blocks. `0` = unlimited. |
+| `max_ops_per_tx` | 100 | Max operations per transaction. |
+| `max_payload_size` | 131,072 (128 KB) | Max entity payload in bytes. |
+| `max_annotations_per_entity` | 64 | Max string + numeric annotations per entity. |
+| `max_annotation_key_size` | 256 | Max annotation key length in bytes. |
+| `max_annotation_value_size` | 1,024 | Max string annotation value in bytes. |
+| `max_content_type_size` | 128 | Max content-type string length. |
+| `processor_address` | `0x...676c696e74` | Address that intercepts entity transactions. |
+
+Any omitted field uses the default. Partial overrides work: `{"max_btl": 0}` gives unlimited BTL with all other defaults.
+
+When `max_btl` is `0`, entities live until explicitly deleted. The sidecar reads genesis (`--genesis`) and forces `--entities-backend sqlite` since the in-memory store would grow forever. Node recovery scans from block 0 instead of a bounded window.
+
 ## Relationship to Arkiv
 
 Glint wouldn't exist without [Arkiv](https://github.com/Arkiv-Network/arkiv-op-geth) (formerly GolemBase). The Arkiv team designed the core model - magic address interception, BTL expiration, content-addressed keys, annotation model, atomic ops, owner-gated mutations.
@@ -95,8 +132,8 @@ I also revisited a few design tradeoffs along the way:
 | Content integrity | - | 32-byte content hash | Lets clients verify query results against the trie. |
 | Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | DataFusion (columnar, in-memory) with roaring bitmap indexes, separate process, Flight SQL | Process isolation, columnar scans for analytics. See [query engine](#query-engine). |
 | Compression | Brotli per-tx | None | OP batcher already compresses the batch. |
-| MAX_BTL | Uncapped | Enforced at txpool + execution | Bounds recovery time and index size. |
-| Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL | Creator chooses who can extend. |
+| MAX_BTL | Uncapped | Configurable via genesis, 0 = unlimited | Bounds recovery time and index size when set. |
+| Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL when set | Creator chooses who can extend. |
 | Operator delegation | - | Optional operator per entity | Backend can manage entities without owning them. |
 | ChangeOwner | Supported | Supported | Transfer ownership, change extend policy, set/remove operator in one atomic op. |
 
@@ -138,10 +175,9 @@ graph TB
     subgraph sidecar["glint-sidecar"]
         direction TB
 
-        subgraph live["Live path (glint-analytics)"]
-            store["In-memory EntityStore<br/>+ roaring bitmap indexes"]
-            df["DataFusion<br/>(filter pushdown)"]
-            store --> df
+        subgraph live["Live entities (one of, via --entities-backend)"]
+            mem_store["Memory: in-memory EntityStore<br/>+ roaring bitmap indexes<br/>+ DataFusion"]
+            sql_store["SQLite: entities_latest table<br/>(required when max_btl=0)"]
         end
 
         subgraph hist["Historical path (glint-historical)"]
@@ -153,11 +189,13 @@ graph TB
         flight["Flight SQL server<br/>(entities + entity_events)"]
         health["Health endpoint"]
 
-        df --> flight
+        mem_store --> flight
+        sql_store --> flight
         hist_prov --> flight
     end
 
-    ring -->|Arrow IPC<br/>unix socket| store
+    ring -->|Arrow IPC<br/>unix socket| mem_store
+    ring -->|Arrow IPC<br/>unix socket| sql_store
     ring -->|Arrow IPC<br/>unix socket| sqlite
 
     subgraph clients["Clients"]
@@ -182,7 +220,7 @@ graph TB
     style clients fill:#fff3e0,stroke:#e65100,color:#1a2a3a
 ```
 
-`glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations - create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
+`glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations: create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
 `glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket.
 
@@ -197,15 +235,11 @@ If the sidecar crashes or falls behind, the node keeps producing blocks. On reco
 
 ### Query engine
 
-Everything lives in memory. Glint entities expire, so the live set is bounded by creation rate times MAX_BTL. For realistic workloads - intent protocols, oracle feeds, compute marketplaces - that's tens of thousands to low hundreds of thousands of active entities, not millions. Orders expire in minutes, price feeds even faster. At 100K entities with 10 annotations each and ~500 byte payloads, you're looking at ~100MB. Even aggressive usage stays under a gigabyte.
+The sidecar has two backends for live entity queries (`--entities-backend`):
 
-Entity data is stored as Arrow RecordBatches - columnar, cache-friendly. DataFusion runs analytical queries (aggregations, GROUP BY, window functions) with vectorized execution directly on this data. Nothing gets serialized between formats - Arrow from ExEx through to query results.
+**Memory (default)** - keeps all live entities in RAM with roaring bitmap indexes on owner and annotations. DataFusion does vectorized queries directly on Arrow data - no format conversion from ExEx through to results. Hash indexes on annotation key/value pairs, B-tree for numeric ranges, all backed by roaring bitmaps. Indexed lookups resolve in microseconds; everything else falls through to columnar scan. Works well when entities expire and the live set stays bounded. 100K entities with 10 annotations each and ~500 byte payloads is about 100MB.
 
-Pure columnar has a problem though: annotation lookups ("find all USDC/WETH orders where price > 3500") hit every row. Arkiv used SQLite bitmap indexes for this - works well for point lookups, but SQLite is row-oriented so you lose columnar analytics.
-
-Secondary indexes sit alongside the Arrow data - hash indexes on annotation key/value pairs and owner, a B-tree for numeric range queries, all backed by roaring bitmaps. A custom DataFusion `TableProvider` checks incoming filters against these indexes. If a filter matches an indexed field, it resolves via bitmap lookup in microseconds. If not, DataFusion does a full columnar scan, which is still fast for analytics. One engine, one copy of the data.
-
-If we do need to support longer-lasting entities that won't fit in RAM, there's [datafusion-table-providers](https://github.com/datafusion-contrib/datafusion-table-providers). It can use SQLite (or others) as storage with DataFusion as the query layer. We'd lose OLAP performance though.
+**SQLite** - persists live entities to disk in an `entities_latest` table. Required when `max_btl=0` since entities never expire and RAM would grow forever. Queries still go through DataFusion via a SQLite-backed `TableProvider` that pushes filters down to SQL.
 
 Supported indexed operations: equality and inequality on `owner`, `str_ann()`, and `num_ann()`; range queries (`>`, `>=`, `<`, `<=`) on numeric annotations; `IN` lists on all indexed fields; `AND`/`OR` combinations. Unrecognized filters fall through to DataFusion's post-scan filtering.
 
@@ -232,21 +266,21 @@ Supported indexed operations: equality and inequality on `owner`, `str_ann()`, a
 
 2. **Update** (owner or operator) - Replace payload and annotations, reset the BTL. Same key, new content. The operator can update content and BTL but cannot change permissions (extend_policy or operator) - only the owner can do that.
 
-3. **Extend** (depends on policy) - Add blocks to remaining lifetime, capped at MAX_BTL. If `extend_policy` is `AnyoneCanExtend`, anyone can do this - so if you depend on someone's data, you can keep it alive. If `OwnerOnly`, only the owner or operator can extend.
+3. **Extend** (depends on policy) - Add blocks to remaining lifetime, capped at MAX_BTL when configured (no cap when `max_btl=0`). If `extend_policy` is `AnyoneCanExtend`, anyone can do this - so if you depend on someone's data, you can keep it alive. If `OwnerOnly`, only the owner or operator can extend.
 
 4. **ChangeOwner** (owner only) - Transfer ownership, change the extend policy, and/or set or remove the operator, all in one atomic operation. At least one field must change. Operators cannot call this - only the entity owner.
 
 5. **Delete** (owner or operator) - Immediate removal.
 
-6. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning MAX_BTL blocks of event logs.
+6. **Expire** (automatic) - At the start of each block, before any transactions execute, the engine checks an in-memory expiration index and removes everything whose TTL has elapsed. The index isn't stored on-chain - on cold start it rebuilds by scanning event logs (MAX_BTL blocks when capped, all blocks when `max_btl=0`).
 
 ### Recovery
 
 Everything in-memory rebuilds from the chain. No snapshots, no separate sync mode.
 
-On node restart, `glint-engine` scans MAX_BTL blocks of entity event logs from reth's database to reconstruct the expiration index. Log reading only, not EVM re-execution - at ~1 week of history (302,400 blocks at 2s) this takes seconds to a few minutes.
+On node restart, `glint-engine` scans entity event logs from reth's database to reconstruct the expiration index. When MAX_BTL is set, it only scans that many blocks back - at ~1 week of history (302,400 blocks at 2s) this takes seconds to a few minutes. When `max_btl=0` (unlimited), it scans from genesis.
 
-On sidecar restart, it connects to the ExEx IPC stream and rebuilds from empty. The ExEx replays from its ring buffer, and after MAX_BTL blocks from tip all live entities are reconstructed. Anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy - same path every time.
+On sidecar restart, it connects to the ExEx IPC stream and rebuilds from empty. The ExEx replays from its ring buffer. With bounded BTL, after MAX_BTL blocks from tip all live entities are reconstructed since anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy, same path.
 
 If the ExEx's IPC buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects the sidecar, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
 

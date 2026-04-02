@@ -35,8 +35,11 @@ impl Default for GlintChainConfig {
 }
 
 impl GlintChainConfig {
+    pub const fn btl_unlimited(&self) -> bool {
+        self.max_btl == 0
+    }
+
     pub fn validate(&self) -> eyre::Result<()> {
-        eyre::ensure!(self.max_btl > 0, "max_btl must be > 0");
         eyre::ensure!(self.max_ops_per_tx > 0, "max_ops_per_tx must be > 0");
         eyre::ensure!(self.max_payload_size > 0, "max_payload_size must be > 0");
         eyre::ensure!(
@@ -60,6 +63,18 @@ impl GlintChainConfig {
             "processor_address must not be zero"
         );
         Ok(())
+    }
+
+    #[cfg(feature = "genesis")]
+    pub fn from_genesis(genesis: &serde_json::Value) -> eyre::Result<Self> {
+        let config = if let Some(section) = genesis.get("config").and_then(|c| c.get("glint")) {
+            serde_json::from_value(section.clone())?
+        } else {
+            tracing::info!("no config.glint in genesis, using defaults");
+            Self::default()
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -90,12 +105,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_zero_max_btl_rejected() {
+    fn validate_zero_max_btl_means_unlimited() {
         let config = GlintChainConfig {
             max_btl: 0,
             ..GlintChainConfig::default()
         };
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
+        assert!(config.btl_unlimited());
+    }
+
+    #[test]
+    fn nonzero_max_btl_is_not_unlimited() {
+        let config = GlintChainConfig::default();
+        assert!(!config.btl_unlimited());
     }
 
     #[test]

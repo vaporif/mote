@@ -15,7 +15,7 @@ name = "glint_node"
 path = "src/lib.rs"
 
 [dependencies]
-glint-primitives = { workspace = true, features = ["rpc"] }
+glint-primitives = { workspace = true, features = ["rpc", "genesis"] }
 glint-engine.workspace = true
 
 alloy-consensus.workspace = true

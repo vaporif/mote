@@ -1,14 +1,7 @@
 use glint_primitives::config::GlintChainConfig;
 
 pub fn extract_glint_config(genesis: &serde_json::Value) -> eyre::Result<GlintChainConfig> {
-    let config = if let Some(glint_section) = genesis.get("config").and_then(|c| c.get("glint")) {
-        serde_json::from_value::<GlintChainConfig>(glint_section.clone())?
-    } else {
-        tracing::info!("no config.glint in genesis, using defaults");
-        GlintChainConfig::default()
-    };
-    config.validate()?;
-    Ok(config)
+    GlintChainConfig::from_genesis(genesis)
 }
 
 #[cfg(test)]
@@ -48,11 +41,24 @@ mod tests {
         let genesis_json = serde_json::json!({
             "config": {
                 "chainId": 901,
-                "glint": { "max_btl": 0 }
+                "glint": { "max_ops_per_tx": 0 }
             },
             "alloc": {}
         });
         assert!(extract_glint_config(&genesis_json).is_err());
+    }
+
+    #[test]
+    fn zero_max_btl_means_unlimited() {
+        let genesis_json = serde_json::json!({
+            "config": {
+                "chainId": 901,
+                "glint": { "max_btl": 0 }
+            },
+            "alloc": {}
+        });
+        let config = extract_glint_config(&genesis_json).expect("max_btl=0 is valid (unlimited)");
+        assert!(config.btl_unlimited());
     }
 
     #[test]

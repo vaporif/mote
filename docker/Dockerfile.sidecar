@@ -16,6 +16,7 @@ RUN mkdir -p /empty-data
 
 FROM gcr.io/distroless/cc-debian12
 COPY --from=builder /src/target/release/glint-sidecar /usr/local/bin/glint-sidecar
+COPY --from=builder /src/etc/genesis.json /etc/glint/genesis.json
 COPY --from=builder /empty-data /data
 EXPOSE 50051 8080
 ENTRYPOINT ["/usr/local/bin/glint-sidecar"]

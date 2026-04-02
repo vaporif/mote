@@ -10,7 +10,7 @@ use crate::transaction::{
 };
 
 const fn validate_btl(btl: u64, max_btl: u64) -> Result<(), GlintError> {
-    if btl == 0 || btl > max_btl {
+    if btl == 0 || (max_btl > 0 && btl > max_btl) {
         return Err(GlintError::InvalidBtl);
     }
     Ok(())
@@ -105,7 +105,7 @@ pub const fn validate_extend(e: &Extend, max_btl: u64) -> Result<(), GlintError>
     if e.additional_blocks == 0 {
         return Err(GlintError::InvalidExtend);
     }
-    if e.additional_blocks > max_btl {
+    if max_btl > 0 && e.additional_blocks > max_btl {
         return Err(GlintError::ExceedsMaxBtl);
     }
     Ok(())

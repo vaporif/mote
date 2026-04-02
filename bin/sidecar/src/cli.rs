@@ -37,6 +37,10 @@ pub struct RunArgs {
 
     #[arg(long, default_value = "memory", value_enum)]
     pub entities_backend: EntitiesBackend,
+
+    /// Genesis file path (reads `max_btl` to validate backend choice).
+    #[arg(long, default_value = "genesis.json")]
+    pub genesis: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, clap::ValueEnum)]

@@ -55,7 +55,20 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         health_port,
         db_path,
         entities_backend,
+        genesis,
     } = args;
+
+    let raw = std::fs::read_to_string(&genesis)
+        .map_err(|e| eyre::eyre!("reading genesis at {}: {e}", genesis.display()))?;
+    let genesis_json: serde_json::Value = serde_json::from_str(&raw)?;
+    let glint_config = glint_primitives::config::GlintChainConfig::from_genesis(&genesis_json)?;
+
+    if glint_config.btl_unlimited() && matches!(entities_backend, EntitiesBackend::Memory) {
+        eyre::bail!(
+            "memory backend is not supported with unlimited BTL (max_btl=0 in genesis). \
+             Use --entities-backend sqlite instead."
+        );
+    }
 
     let write_conn = Connection::open(&db_path)?;
     schema::create_tables(&write_conn)?;
