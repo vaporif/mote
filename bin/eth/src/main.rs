@@ -17,8 +17,8 @@ use reth_provider::BlockHashReader;
 use tracing::{info, warn};
 
 use glint_node::cli::GlintArgs;
-use glint_node::genesis::extract_glint_config;
 use glint_node::rpc::{GlintApiServer as _, GlintRpc};
+use glint_primitives::config::GlintChainConfig;
 
 fn main() {
     reth_ethereum::cli::sigsegv_handler::install();
@@ -32,7 +32,7 @@ fn main() {
         Cli::<EthereumChainSpecParser, GlintArgs>::parse().run(async move |builder, ext| {
             let chain_spec = Arc::clone(&builder.config().chain);
             let genesis_json = serde_json::to_value(chain_spec.genesis())?;
-            let config = extract_glint_config(&genesis_json)?;
+            let config = GlintChainConfig::from_genesis(&genesis_json)?;
             info!(?config, "loaded glint chain config");
 
             let enable_exex = !ext.disable_exex();

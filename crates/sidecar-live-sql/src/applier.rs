@@ -85,28 +85,35 @@ fn apply_commit(
         let mut insert_stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO entities_latest (
                 entity_key, owner, expires_at_block, content_type, payload,
-                string_annotations, numeric_annotations, created_at_block,
-                tx_hash, extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                created_at_block, tx_hash, extend_policy, operator
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
 
         let mut upsert_stmt = tx.prepare_cached(
             "INSERT INTO entities_latest (
                 entity_key, owner, expires_at_block, content_type, payload,
-                string_annotations, numeric_annotations, created_at_block,
-                tx_hash, extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                created_at_block, tx_hash, extend_policy, operator
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(entity_key) DO UPDATE SET
                 owner = excluded.owner,
                 expires_at_block = excluded.expires_at_block,
                 content_type = excluded.content_type,
                 payload = excluded.payload,
-                string_annotations = excluded.string_annotations,
-                numeric_annotations = excluded.numeric_annotations,
                 tx_hash = excluded.tx_hash,
                 extend_policy = excluded.extend_policy,
                 operator = excluded.operator",
         )?;
+
+        let mut insert_str_ann = tx.prepare_cached(
+            "INSERT OR REPLACE INTO entity_string_annotations (entity_key, ann_key, ann_value) VALUES (?1, ?2, ?3)",
+        )?;
+        let mut insert_num_ann = tx.prepare_cached(
+            "INSERT OR REPLACE INTO entity_numeric_annotations (entity_key, ann_key, ann_value) VALUES (?1, ?2, ?3)",
+        )?;
+        let mut delete_str_ann =
+            tx.prepare_cached("DELETE FROM entity_string_annotations WHERE entity_key = ?1")?;
+        let mut delete_num_ann =
+            tx.prepare_cached("DELETE FROM entity_numeric_annotations WHERE entity_key = ?1")?;
 
         let mut delete_stmt =
             tx.prepare_cached("DELETE FROM entities_latest WHERE entity_key = ?1")?;
@@ -137,8 +144,6 @@ fn apply_commit(
                         (!content_type_col.is_null(i)).then(|| content_type_col.value(i));
                     let payload: Option<&[u8]> =
                         (!payload_col.is_null(i)).then(|| payload_col.value(i));
-                    let str_ann = encode_string_map(str_ann_col, i)?;
-                    let num_ann = encode_numeric_map(num_ann_col, i)?;
                     let tx_hash = tx_hash_col.value(i);
                     let extend_policy = i64::from(extend_policy_col.value(i));
                     let operator: Option<&[u8]> =
@@ -150,8 +155,6 @@ fn apply_commit(
                         expires,
                         content_type,
                         payload,
-                        str_ann,
-                        num_ann,
                         block_number,
                         tx_hash,
                         extend_policy,
@@ -163,8 +166,48 @@ fn apply_commit(
                     } else {
                         upsert_stmt.execute(params)?;
                     }
+
+                    // Delete old annotations first (handles updates correctly)
+                    delete_str_ann.execute([entity_key])?;
+                    delete_num_ann.execute([entity_key])?;
+
+                    // Insert new string annotations
+                    if !str_ann_col.is_null(i) {
+                        let offsets = str_ann_col.value_offsets();
+                        let start = usize::try_from(offsets[i])?;
+                        let end = usize::try_from(offsets[i + 1])?;
+                        let keys = str_ann_col.keys().as_string::<i32>();
+                        let values = str_ann_col.values().as_string::<i32>();
+                        for j in start..end {
+                            insert_str_ann.execute(rusqlite::params![
+                                entity_key,
+                                keys.value(j),
+                                values.value(j),
+                            ])?;
+                        }
+                    }
+
+                    // Insert new numeric annotations
+                    if !num_ann_col.is_null(i) {
+                        let offsets = num_ann_col.value_offsets();
+                        let start = usize::try_from(offsets[i])?;
+                        let end = usize::try_from(offsets[i + 1])?;
+                        let keys = num_ann_col.keys().as_string::<i32>();
+                        let values = num_ann_col
+                            .values()
+                            .as_primitive::<arrow::datatypes::UInt64Type>();
+                        for j in start..end {
+                            insert_num_ann.execute(rusqlite::params![
+                                entity_key,
+                                keys.value(j),
+                                i64::try_from(values.value(j))?,
+                            ])?;
+                        }
+                    }
                 }
                 EntityEventType::Deleted | EntityEventType::Expired => {
+                    delete_str_ann.execute([entity_key])?;
+                    delete_num_ann.execute([entity_key])?;
                     delete_stmt.execute([entity_key])?;
                 }
                 EntityEventType::Extended => {
@@ -217,6 +260,14 @@ fn apply_revert(
 
         match event_type {
             EntityEventType::Created => {
+                tx.execute(
+                    "DELETE FROM entity_string_annotations WHERE entity_key = ?1",
+                    [entity_key],
+                )?;
+                tx.execute(
+                    "DELETE FROM entity_numeric_annotations WHERE entity_key = ?1",
+                    [entity_key],
+                )?;
                 tx.execute(
                     "DELETE FROM entities_latest WHERE entity_key = ?1",
                     [entity_key],
@@ -293,42 +344,6 @@ fn col_map<'a>(batch: &'a RecordBatch, name: &str) -> eyre::Result<&'a MapArray>
         .ok_or_else(|| eyre::eyre!("missing column: {name}"))?
         .as_map_opt()
         .ok_or_else(|| eyre::eyre!("column {name} is not MapArray"))
-}
-
-fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<String> {
-    if col.is_null(i) {
-        return Ok("[]".to_owned());
-    }
-    let offsets = col.value_offsets();
-    let start = usize::try_from(offsets[i])?;
-    let end = usize::try_from(offsets[i + 1])?;
-    if start == end {
-        return Ok("[]".to_owned());
-    }
-    let keys = col.keys().as_string::<i32>();
-    let values = col.values().as_string::<i32>();
-    let pairs: Vec<[&str; 2]> = (start..end)
-        .map(|j| [keys.value(j), values.value(j)])
-        .collect();
-    Ok(serde_json::to_string(&pairs)?)
-}
-
-fn encode_numeric_map(col: &MapArray, i: usize) -> eyre::Result<String> {
-    if col.is_null(i) {
-        return Ok("[]".to_owned());
-    }
-    let offsets = col.value_offsets();
-    let start = usize::try_from(offsets[i])?;
-    let end = usize::try_from(offsets[i + 1])?;
-    if start == end {
-        return Ok("[]".to_owned());
-    }
-    let keys = col.keys().as_string::<i32>();
-    let values = col.values().as_primitive::<arrow::datatypes::UInt64Type>();
-    let pairs: Vec<serde_json::Value> = (start..end)
-        .map(|j| serde_json::json!([keys.value(j), values.value(j)]))
-        .collect();
-    Ok(serde_json::to_string(&pairs)?)
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use alloy_primitives::{Address, B256, Bytes};
+use glint_primitives::config::GlintChainConfig;
 
 #[test]
 fn genesis_config_round_trips_through_extraction() {
@@ -7,7 +8,7 @@ fn genesis_config_round_trips_through_extraction() {
     )
     .unwrap();
     let genesis: serde_json::Value = serde_json::from_str(&genesis_str).unwrap();
-    let config = glint_node::genesis::extract_glint_config(&genesis).unwrap();
+    let config = GlintChainConfig::from_genesis(&genesis).unwrap();
     assert_eq!(config.max_btl, 302_400);
     assert!(config.validate().is_ok());
 }

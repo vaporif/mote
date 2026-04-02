@@ -95,7 +95,7 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     wait_for_sidecar_ready(&sidecar).await?;
 
     let batches = client
-        .query("SELECT entity_key, content_type FROM entities")
+        .query("SELECT entity_key, content_type FROM entities_latest")
         .await?;
 
     assert!(
@@ -139,23 +139,17 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     wait_for_sidecar_ready(&sidecar).await?;
 
     let owner_hex = format!("{:x}", expected_owner);
+
     let sql = format!(
-        "SELECT \
-            entity_key, \
-            owner, \
-            expires_at_block, \
-            content_type, \
-            payload, \
-            str_ann(string_annotations, 'app') AS app_ann, \
-            str_ann(string_annotations, 'env') AS env_ann, \
-            num_ann(numeric_annotations, 'priority') AS priority_ann, \
-            num_ann(numeric_annotations, 'version') AS version_ann \
-         FROM entities \
-         WHERE owner = x'{owner_hex}'"
+        "SELECT e.entity_key, e.owner, e.expires_at_block, e.content_type, e.payload, \
+                sa.ann_value AS app_ann, se.ann_value AS env_ann \
+         FROM entities_latest e \
+         JOIN entity_string_annotations sa ON e.entity_key = sa.entity_key AND sa.ann_key = 'app' \
+         JOIN entity_string_annotations se ON e.entity_key = se.entity_key AND se.ann_key = 'env' \
+         WHERE e.owner = x'{owner_hex}'"
     );
 
     let batches = client.query(&sql).await?;
-
     assert_eq!(row_count(&batches), 1, "expected exactly 1 entity row");
 
     let batch = &batches[0];
@@ -178,13 +172,21 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     let env_col: &arrow::array::StringArray = col(batch, "env_ann");
     assert_eq!(env_col.value(0), "test");
 
-    let priority_col: &arrow::array::UInt64Array = col(batch, "priority_ann");
-    assert_eq!(priority_col.value(0), 42);
+    // Query numeric annotations separately
+    let sql = format!(
+        "SELECT na.ann_key, na.ann_value \
+         FROM entities_latest e \
+         JOIN entity_numeric_annotations na USING (entity_key) \
+         WHERE e.owner = x'{owner_hex}' \
+         ORDER BY na.ann_key"
+    );
+    let batches = client.query(&sql).await?;
+    assert_eq!(row_count(&batches), 2, "expected 2 numeric annotations");
 
-    let version_col: &arrow::array::UInt64Array = col(batch, "version_ann");
-    assert_eq!(version_col.value(0), 1);
-
-    let expires_col: &arrow::array::UInt64Array = col(batch, "expires_at_block");
+    // Verify expires_at_block
+    let sql = format!("SELECT expires_at_block FROM entities_latest WHERE owner = x'{owner_hex}'");
+    let batches = client.query(&sql).await?;
+    let expires_col: &arrow::array::UInt64Array = col(&batches[0], "expires_at_block");
     let block_number = result
         .block_number()
         .expect("receipt should have block number");
@@ -228,19 +230,31 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
 
     // Filter by string annotation — should return 2 entities (alpha, beta)
     let batches = client
-        .query("SELECT entity_key FROM entities WHERE str_ann(string_annotations, 'category') = 'group-a'")
+        .query(
+            "SELECT e.entity_key FROM entities_latest e \
+             JOIN entity_string_annotations s USING (entity_key) \
+             WHERE s.ann_key = 'category' AND s.ann_value = 'group-a'",
+        )
         .await?;
     assert_eq!(row_count(&batches), 2, "expected 2 entities in group-a");
 
     // Filter by numeric annotation range — rank >= 2 should return 2 entities (beta, gamma)
     let batches = client
-        .query("SELECT entity_key FROM entities WHERE num_ann(numeric_annotations, 'rank') >= 2")
+        .query(
+            "SELECT e.entity_key FROM entities_latest e \
+             JOIN entity_numeric_annotations n USING (entity_key) \
+             WHERE n.ann_key = 'rank' AND n.ann_value >= 2",
+        )
         .await?;
     assert_eq!(row_count(&batches), 2, "expected 2 entities with rank >= 2");
 
     // Filter by exact numeric annotation — rank = 1 should return 1 entity (alpha)
     let batches = client
-        .query("SELECT entity_key FROM entities WHERE num_ann(numeric_annotations, 'rank') = 1")
+        .query(
+            "SELECT e.entity_key FROM entities_latest e \
+             JOIN entity_numeric_annotations n USING (entity_key) \
+             WHERE n.ann_key = 'rank' AND n.ann_value = 1",
+        )
         .await?;
     assert_eq!(row_count(&batches), 1, "expected 1 entity with rank = 1");
 
@@ -250,9 +264,11 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
     // Combined filter — group-a AND rank = 2 should return 1 entity (beta)
     let batches = client
         .query(
-            "SELECT entity_key FROM entities \
-             WHERE str_ann(string_annotations, 'category') = 'group-a' \
-               AND num_ann(numeric_annotations, 'rank') = 2",
+            "SELECT e.entity_key FROM entities_latest e \
+             JOIN entity_string_annotations s USING (entity_key) \
+             JOIN entity_numeric_annotations n USING (entity_key) \
+             WHERE s.ann_key = 'category' AND s.ann_value = 'group-a' \
+               AND n.ann_key = 'rank' AND n.ann_value = 2",
         )
         .await?;
     assert_eq!(
@@ -268,7 +284,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
     let owner_hex = format!("{:x}", expected_owner);
     let batches = client
         .query(&format!(
-            "SELECT entity_key FROM entities WHERE owner = x'{owner_hex}'"
+            "SELECT entity_key FROM entities_latest WHERE owner = x'{owner_hex}'"
         ))
         .await?;
     assert_eq!(
@@ -277,11 +293,12 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
         "expected 3 entities owned by dev wallet"
     );
 
-    // IN list filter — group-b OR non-existent category
+    // IN list filter — group-b OR group-c category
     let batches = client
         .query(
-            "SELECT entity_key FROM entities \
-             WHERE str_ann(string_annotations, 'category') IN ('group-b', 'group-c')",
+            "SELECT e.entity_key FROM entities_latest e \
+             JOIN entity_string_annotations s USING (entity_key) \
+             WHERE s.ann_key = 'category' AND s.ann_value IN ('group-b', 'group-c')",
         )
         .await?;
     assert_eq!(

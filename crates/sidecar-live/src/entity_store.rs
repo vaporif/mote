@@ -1,15 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
 
 use alloy_primitives::{Address, B256, Bytes};
 use arrow::{
-    array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder,
-        UInt64Builder, builder::MapBuilder,
-    },
-    datatypes::{DataType, Field, Fields, Schema, SchemaRef},
+    array::{BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder, UInt64Builder},
     record_batch::RecordBatch,
 };
 use roaring::RoaringBitmap;
@@ -54,6 +50,8 @@ impl SlotAllocator {
     }
 }
 
+// TODO: re-enable when bitmap pushdown is added to table_provider
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct IndexSnapshot {
     pub(crate) string_ann_index: HashMap<(String, String), RoaringBitmap>,
@@ -66,7 +64,11 @@ pub(crate) struct IndexSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    pub(crate) batch: Arc<RecordBatch>,
+    pub(crate) entities: Arc<RecordBatch>,
+    pub(crate) string_annotations: Arc<RecordBatch>,
+    pub(crate) numeric_annotations: Arc<RecordBatch>,
+    // TODO: re-enable when bitmap pushdown is added to table_provider
+    #[allow(dead_code)]
     pub(crate) indexes: Arc<IndexSnapshot>,
 }
 
@@ -253,27 +255,24 @@ impl EntityStore {
 
         let n = entries.len();
 
+        // Entity batch builders (9 columns, no annotations)
         let mut entity_key_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
         let mut owner_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
         let mut expires_b = UInt64Builder::with_capacity(n);
         let mut content_type_b = StringBuilder::with_capacity(n, n * 16);
         let mut payload_b = BinaryBuilder::with_capacity(n, n * 64);
-
-        let mut string_ann_b = MapBuilder::new(
-            Some(map_field_names()),
-            StringBuilder::new(),
-            StringBuilder::new(),
-        );
-        let mut numeric_ann_b = MapBuilder::new(
-            Some(map_field_names()),
-            StringBuilder::new(),
-            UInt64Builder::new(),
-        );
-
         let mut created_b = UInt64Builder::with_capacity(n);
         let mut tx_hash_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
         let mut extend_policy_b = UInt8Builder::with_capacity(n);
         let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
+
+        // Annotation batch builders
+        let mut str_ek_b = FixedSizeBinaryBuilder::new(32);
+        let mut str_key_b = StringBuilder::new();
+        let mut str_val_b = StringBuilder::new();
+        let mut num_ek_b = FixedSizeBinaryBuilder::new(32);
+        let mut num_key_b = StringBuilder::new();
+        let mut num_val_b = UInt64Builder::new();
 
         for (_, key) in &entries {
             let row = &self.entities[key];
@@ -282,19 +281,6 @@ impl EntityStore {
             expires_b.append_value(row.expires_at_block);
             content_type_b.append_value(&row.content_type);
             payload_b.append_value(&row.payload);
-
-            for (k, v) in &row.string_annotations {
-                string_ann_b.keys().append_value(k);
-                string_ann_b.values().append_value(v);
-            }
-            string_ann_b.append(true)?;
-
-            for (k, v) in &row.numeric_annotations {
-                numeric_ann_b.keys().append_value(k);
-                numeric_ann_b.values().append_value(*v);
-            }
-            numeric_ann_b.append(true)?;
-
             created_b.append_value(row.created_at_block);
             tx_hash_b.append_value(row.tx_hash.as_slice())?;
             extend_policy_b.append_value(row.extend_policy);
@@ -302,23 +288,60 @@ impl EntityStore {
                 Some(op) => operator_b.append_value(op.as_slice())?,
                 None => operator_b.append_null(),
             }
+
+            for (k, v) in &row.string_annotations {
+                str_ek_b.append_value(row.entity_key.as_slice())?;
+                str_key_b.append_value(k);
+                str_val_b.append_value(v);
+            }
+            for (k, v) in &row.numeric_annotations {
+                num_ek_b.append_value(row.entity_key.as_slice())?;
+                num_key_b.append_value(k);
+                num_val_b.append_value(*v);
+            }
         }
 
-        let columns: Vec<ArrayRef> = vec![
-            Arc::new(entity_key_b.finish()),
-            Arc::new(owner_b.finish()),
-            Arc::new(expires_b.finish()),
-            Arc::new(content_type_b.finish()),
-            Arc::new(payload_b.finish()),
-            Arc::new(string_ann_b.finish()),
-            Arc::new(numeric_ann_b.finish()),
-            Arc::new(created_b.finish()),
-            Arc::new(tx_hash_b.finish()),
-            Arc::new(extend_policy_b.finish()),
-            Arc::new(operator_b.finish()),
-        ];
+        let entities_schema = glint_primitives::exex_schema::entities_latest_schema();
+        let entities = Arc::new(RecordBatch::try_new(
+            entities_schema,
+            vec![
+                Arc::new(entity_key_b.finish()),
+                Arc::new(owner_b.finish()),
+                Arc::new(expires_b.finish()),
+                Arc::new(content_type_b.finish()),
+                Arc::new(payload_b.finish()),
+                Arc::new(created_b.finish()),
+                Arc::new(tx_hash_b.finish()),
+                Arc::new(extend_policy_b.finish()),
+                Arc::new(operator_b.finish()),
+            ],
+        )?);
 
-        let batch = Arc::new(RecordBatch::try_new(entity_schema(), columns)?);
+        let str_ann_schema = glint_primitives::exex_schema::string_annotations_schema();
+        let string_annotations = Arc::new(
+            RecordBatch::try_new(
+                str_ann_schema.clone(),
+                vec![
+                    Arc::new(str_ek_b.finish()),
+                    Arc::new(str_key_b.finish()),
+                    Arc::new(str_val_b.finish()),
+                ],
+            )
+            .unwrap_or_else(|_| RecordBatch::new_empty(str_ann_schema)),
+        );
+
+        let num_ann_schema = glint_primitives::exex_schema::numeric_annotations_schema();
+        let numeric_annotations = Arc::new(
+            RecordBatch::try_new(
+                num_ann_schema.clone(),
+                vec![
+                    Arc::new(num_ek_b.finish()),
+                    Arc::new(num_key_b.finish()),
+                    Arc::new(num_val_b.finish()),
+                ],
+            )
+            .unwrap_or_else(|_| RecordBatch::new_empty(num_ann_schema)),
+        );
 
         // Restrict indexes to live slots only.
         let live_slots: RoaringBitmap = entries.iter().map(|(slot, _)| *slot).collect();
@@ -332,7 +355,12 @@ impl EntityStore {
             slot_to_row,
         });
 
-        Ok(Snapshot { batch, indexes })
+        Ok(Snapshot {
+            entities,
+            string_annotations,
+            numeric_annotations,
+            indexes,
+        })
     }
 }
 
@@ -398,55 +426,6 @@ fn remove_from_btree<K: Ord + Clone>(map: &mut BTreeMap<K, RoaringBitmap>, key: 
     }
 }
 
-use glint_primitives::exex_schema::{columns, map_field_names};
-
-fn build_entity_schema() -> Schema {
-    let str_ann_entry = Field::new(
-        "entries",
-        DataType::Struct(Fields::from(vec![
-            Field::new("key", DataType::Utf8, false),
-            Field::new("value", DataType::Utf8, true),
-        ])),
-        false,
-    );
-    let num_ann_entry = Field::new(
-        "entries",
-        DataType::Struct(Fields::from(vec![
-            Field::new("key", DataType::Utf8, false),
-            Field::new("value", DataType::UInt64, true),
-        ])),
-        false,
-    );
-
-    Schema::new(vec![
-        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
-        Field::new(columns::OWNER, DataType::FixedSizeBinary(20), false),
-        Field::new(columns::EXPIRES_AT_BLOCK, DataType::UInt64, false),
-        Field::new(columns::CONTENT_TYPE, DataType::Utf8, false),
-        Field::new(columns::PAYLOAD, DataType::Binary, false),
-        Field::new(
-            columns::STRING_ANNOTATIONS,
-            DataType::Map(Arc::new(str_ann_entry), false),
-            true,
-        ),
-        Field::new(
-            columns::NUMERIC_ANNOTATIONS,
-            DataType::Map(Arc::new(num_ann_entry), false),
-            true,
-        ),
-        Field::new("created_at_block", DataType::UInt64, false),
-        Field::new(columns::TX_HASH, DataType::FixedSizeBinary(32), false),
-        Field::new(columns::EXTEND_POLICY, DataType::UInt8, false),
-        Field::new(columns::OPERATOR, DataType::FixedSizeBinary(20), true),
-    ])
-}
-
-static ENTITY_SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| Arc::new(build_entity_schema()));
-
-pub fn entity_schema() -> SchemaRef {
-    Arc::clone(&ENTITY_SCHEMA)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,57 +486,47 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_batch_schema() {
+    fn snapshot_entity_schema() {
         let mut store = EntityStore::new();
         store.insert(sample_row(0x01));
         let snap = store.snapshot().expect("snapshot should succeed");
-        let batch = &*snap.batch;
-        assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 11);
-        assert!(batch.schema().field_with_name(columns::ENTITY_KEY).is_ok());
-        assert!(batch.schema().field_with_name(columns::OWNER).is_ok());
+        // 9 columns: entity_key, owner, expires_at_block, content_type, payload,
+        //            created_at_block, tx_hash, extend_policy, operator
+        assert_eq!(snap.entities.num_columns(), 9);
+        assert_eq!(snap.entities.num_rows(), 1);
         assert!(
-            batch
+            snap.entities
                 .schema()
-                .field_with_name(columns::EXPIRES_AT_BLOCK)
-                .is_ok()
+                .field_with_name("string_annotations")
+                .is_err()
         );
         assert!(
-            batch
+            snap.entities
                 .schema()
-                .field_with_name(columns::CONTENT_TYPE)
-                .is_ok()
+                .field_with_name("numeric_annotations")
+                .is_err()
         );
-        assert!(batch.schema().field_with_name(columns::PAYLOAD).is_ok());
-        assert!(
-            batch
-                .schema()
-                .field_with_name(columns::STRING_ANNOTATIONS)
-                .is_ok()
-        );
-        assert!(
-            batch
-                .schema()
-                .field_with_name(columns::NUMERIC_ANNOTATIONS)
-                .is_ok()
-        );
-        assert!(batch.schema().field_with_name("created_at_block").is_ok());
-        assert!(batch.schema().field_with_name(columns::TX_HASH).is_ok());
-        assert!(
-            batch
-                .schema()
-                .field_with_name(columns::EXTEND_POLICY)
-                .is_ok()
-        );
-        assert!(batch.schema().field_with_name(columns::OPERATOR).is_ok());
     }
 
     #[test]
-    fn snapshot_batch_empty_store() {
+    fn snapshot_annotation_batches() {
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01)); // has 1 string ann, 1 numeric ann
+        let snap = store.snapshot().expect("snapshot should succeed");
+        assert_eq!(snap.string_annotations.num_rows(), 1);
+        assert_eq!(snap.string_annotations.num_columns(), 3);
+        assert_eq!(snap.numeric_annotations.num_rows(), 1);
+        assert_eq!(snap.numeric_annotations.num_columns(), 3);
+    }
+
+    #[test]
+    fn snapshot_empty_store() {
         let store = EntityStore::new();
         let snap = store.snapshot().expect("snapshot should succeed");
-        assert_eq!(snap.batch.num_rows(), 0);
-        assert_eq!(snap.batch.num_columns(), 11);
+        assert_eq!(snap.entities.num_rows(), 0);
+        assert_eq!(snap.entities.num_columns(), 9);
+        assert_eq!(snap.string_annotations.num_rows(), 0);
+        assert_eq!(snap.numeric_annotations.num_rows(), 0);
     }
 
     #[test]
@@ -713,11 +682,11 @@ mod tests {
 
         let snap = store.snapshot().expect("snapshot should succeed");
 
-        assert_eq!(snap.batch.num_rows(), 2);
+        assert_eq!(snap.entities.num_rows(), 2);
 
         for slot in &snap.indexes.all_live_slots {
             let row_idx = snap.indexes.slot_to_row[&slot];
-            assert!(row_idx < snap.batch.num_rows());
+            assert!(row_idx < snap.entities.num_rows());
         }
 
         assert_eq!(snap.indexes.slot_to_row.len(), 2);
@@ -732,7 +701,7 @@ mod tests {
         store.remove(&B256::repeat_byte(0x02));
 
         let snap = store.snapshot().expect("snapshot should succeed");
-        assert_eq!(snap.batch.num_rows(), 2);
+        assert_eq!(snap.entities.num_rows(), 2);
 
         assert_eq!(snap.indexes.slot_to_row.len(), 2);
         assert!(snap.indexes.slot_to_row.contains_key(&0));
@@ -757,19 +726,19 @@ mod tests {
 
         // current_block=0: both visible
         let snap = store.snapshot().expect("snapshot");
-        assert_eq!(snap.batch.num_rows(), 2);
+        assert_eq!(snap.entities.num_rows(), 2);
         assert_eq!(snap.indexes.all_live_slots.len(), 2);
 
         // Advance to block 100: entity 0x01 expires (expires_at_block <= current_block)
         store.set_current_block(100);
         let snap = store.snapshot().expect("snapshot");
-        assert_eq!(snap.batch.num_rows(), 1);
+        assert_eq!(snap.entities.num_rows(), 1);
         assert_eq!(snap.indexes.all_live_slots.len(), 1);
 
         // Advance to block 200: both expired
         store.set_current_block(200);
         let snap = store.snapshot().expect("snapshot");
-        assert_eq!(snap.batch.num_rows(), 0);
+        assert_eq!(snap.entities.num_rows(), 0);
         assert_eq!(snap.indexes.all_live_slots.len(), 0);
     }
 

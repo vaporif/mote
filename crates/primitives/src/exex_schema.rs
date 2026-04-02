@@ -1,9 +1,14 @@
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::builder::MapFieldNames;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 pub use crate::columns;
+
+pub mod ann_columns {
+    pub const ANN_KEY: &str = "ann_key";
+    pub const ANN_VALUE: &str = "ann_value";
+}
 
 static SCHEMA: LazyLock<Arc<Schema>> = LazyLock::new(|| Arc::new(build_schema()));
 
@@ -116,4 +121,146 @@ fn build_schema() -> Schema {
         Field::new(TIP_BLOCK, DataType::UInt64, false),
         Field::new(OP, DataType::UInt8, false),
     ])
+}
+
+/// Schema for `entities_latest` `DataFusion` table (no annotation columns).
+#[must_use]
+pub fn entities_latest_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::OWNER, DataType::FixedSizeBinary(20), false),
+        Field::new(columns::EXPIRES_AT_BLOCK, DataType::UInt64, false),
+        Field::new(columns::CONTENT_TYPE, DataType::Utf8, false),
+        Field::new(columns::PAYLOAD, DataType::Binary, false),
+        Field::new("created_at_block", DataType::UInt64, false),
+        Field::new(columns::TX_HASH, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::EXTEND_POLICY, DataType::UInt8, false),
+        Field::new(columns::OPERATOR, DataType::FixedSizeBinary(20), true),
+    ]))
+}
+
+/// Schema for `entity_string_annotations` table.
+#[must_use]
+pub fn string_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::Utf8, false),
+    ]))
+}
+
+/// Schema for `entity_numeric_annotations` table.
+#[must_use]
+pub fn numeric_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::UInt64, false),
+    ]))
+}
+
+/// Schema for `entity_events` `DataFusion` table (no annotation columns).
+#[must_use]
+pub fn entity_events_output_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::BLOCK_NUMBER, DataType::UInt64, false),
+        Field::new(columns::LOG_INDEX, DataType::UInt32, false),
+        Field::new(columns::EVENT_TYPE, DataType::UInt8, false),
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::OWNER, DataType::FixedSizeBinary(20), true),
+        Field::new(columns::EXPIRES_AT_BLOCK, DataType::UInt64, true),
+        Field::new(columns::CONTENT_TYPE, DataType::Utf8, true),
+        Field::new(columns::PAYLOAD, DataType::Binary, true),
+        Field::new(columns::EXTEND_POLICY, DataType::UInt8, true),
+        Field::new(columns::OPERATOR, DataType::FixedSizeBinary(20), true),
+        Field::new(columns::GAS_COST, DataType::UInt64, true),
+    ]))
+}
+
+/// Schema for `event_string_annotations` table.
+#[must_use]
+pub fn event_string_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::BLOCK_NUMBER, DataType::UInt64, false),
+        Field::new(columns::LOG_INDEX, DataType::UInt32, false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::Utf8, false),
+    ]))
+}
+
+/// Schema for `event_numeric_annotations` table.
+#[must_use]
+pub fn event_numeric_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::BLOCK_NUMBER, DataType::UInt64, false),
+        Field::new(columns::LOG_INDEX, DataType::UInt32, false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::UInt64, false),
+    ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entities_latest_schema_has_no_annotation_columns() {
+        let schema = entities_latest_schema();
+        assert!(schema.field_with_name("string_annotations").is_err());
+        assert!(schema.field_with_name("numeric_annotations").is_err());
+        assert_eq!(schema.fields().len(), 9);
+        assert!(schema.field_with_name("entity_key").is_ok());
+        assert!(schema.field_with_name("operator").is_ok());
+    }
+
+    #[test]
+    fn string_annotations_schema_shape() {
+        let schema = string_annotations_schema();
+        assert_eq!(schema.fields().len(), 3);
+        assert_eq!(
+            schema.field_with_name("entity_key").unwrap().data_type(),
+            &DataType::FixedSizeBinary(32)
+        );
+        assert_eq!(
+            schema.field_with_name("ann_key").unwrap().data_type(),
+            &DataType::Utf8
+        );
+        assert_eq!(
+            schema.field_with_name("ann_value").unwrap().data_type(),
+            &DataType::Utf8
+        );
+    }
+
+    #[test]
+    fn numeric_annotations_schema_shape() {
+        let schema = numeric_annotations_schema();
+        assert_eq!(schema.fields().len(), 3);
+        assert_eq!(
+            schema.field_with_name("ann_value").unwrap().data_type(),
+            &DataType::UInt64
+        );
+    }
+
+    #[test]
+    fn entity_events_output_schema_has_no_annotation_columns() {
+        let schema = entity_events_output_schema();
+        assert!(schema.field_with_name("string_annotations").is_err());
+        assert!(schema.field_with_name("numeric_annotations").is_err());
+        assert!(schema.field_with_name("block_number").is_ok());
+        assert!(schema.field_with_name("log_index").is_ok());
+        assert!(schema.field_with_name("entity_key").is_ok());
+    }
+
+    #[test]
+    fn event_string_annotations_schema_has_composite_key() {
+        let schema = event_string_annotations_schema();
+        assert_eq!(schema.fields().len(), 5);
+        assert!(schema.field_with_name("entity_key").is_ok());
+        assert!(schema.field_with_name("block_number").is_ok());
+        assert!(schema.field_with_name("log_index").is_ok());
+        assert!(schema.field_with_name("ann_key").is_ok());
+        assert!(schema.field_with_name("ann_value").is_ok());
+    }
 }

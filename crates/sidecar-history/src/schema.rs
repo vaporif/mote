@@ -2,7 +2,7 @@ use eyre::WrapErr;
 use rusqlite::{Connection, OptionalExtension};
 
 // TODO: support migrations instead of drop-and-recreate on schema version bump
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 
 pub fn configure_pragmas(conn: &Connection) -> eyre::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -31,8 +31,6 @@ pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
             old_expires_at_block INTEGER,
             content_type        TEXT,
             payload             BLOB,
-            string_annotations  TEXT,
-            numeric_annotations TEXT,
             extend_policy       INTEGER,
             operator            BLOB,
             gas_cost            INTEGER,
@@ -42,6 +40,30 @@ pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_block_number ON entity_events(block_number);
         CREATE INDEX IF NOT EXISTS idx_expires_at ON entity_events(expires_at_block);
         CREATE INDEX IF NOT EXISTS idx_owner ON entity_events(owner);
+
+        CREATE TABLE IF NOT EXISTS event_string_annotations (
+            entity_key   BLOB NOT NULL,
+            block_number INTEGER NOT NULL,
+            log_index    INTEGER NOT NULL,
+            ann_key      TEXT NOT NULL,
+            ann_value    TEXT NOT NULL,
+            PRIMARY KEY (entity_key, block_number, log_index, ann_key)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS idx_evt_str_ann_block
+            ON event_string_annotations(block_number, ann_key, ann_value);
+
+        CREATE TABLE IF NOT EXISTS event_numeric_annotations (
+            entity_key   BLOB NOT NULL,
+            block_number INTEGER NOT NULL,
+            log_index    INTEGER NOT NULL,
+            ann_key      TEXT NOT NULL,
+            ann_value    INTEGER NOT NULL,
+            PRIMARY KEY (entity_key, block_number, log_index, ann_key)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS idx_evt_num_ann_block
+            ON event_numeric_annotations(block_number, ann_key, ann_value);
 
         CREATE TABLE IF NOT EXISTS sidecar_meta (
             key   TEXT PRIMARY KEY,
@@ -104,6 +126,8 @@ pub fn set_last_processed_block(conn: &Connection, block: u64) -> eyre::Result<(
 pub fn drop_and_recreate(conn: &Connection) -> eyre::Result<()> {
     conn.execute_batch(
         "
+        DROP TABLE IF EXISTS event_string_annotations;
+        DROP TABLE IF EXISTS event_numeric_annotations;
         DROP TABLE IF EXISTS entities_latest;
         DROP TABLE IF EXISTS entity_events;
         DROP TABLE IF EXISTS sidecar_meta;
@@ -114,6 +138,14 @@ pub fn drop_and_recreate(conn: &Connection) -> eyre::Result<()> {
 
 pub fn delete_events_from_block(conn: &Connection, block_number: u64) -> eyre::Result<usize> {
     let block = i64::try_from(block_number).wrap_err("block number overflows i64")?;
+    conn.execute(
+        "DELETE FROM event_string_annotations WHERE block_number >= ?1",
+        [block],
+    )?;
+    conn.execute(
+        "DELETE FROM event_numeric_annotations WHERE block_number >= ?1",
+        [block],
+    )?;
     let count = conn.execute(
         "DELETE FROM entity_events WHERE block_number >= ?1",
         [block],
@@ -123,6 +155,14 @@ pub fn delete_events_from_block(conn: &Connection, block_number: u64) -> eyre::R
 
 pub fn prune_before_block(conn: &Connection, block_number: u64) -> eyre::Result<usize> {
     let block = i64::try_from(block_number).wrap_err("block number overflows i64")?;
+    conn.execute(
+        "DELETE FROM event_string_annotations WHERE block_number < ?1",
+        [block],
+    )?;
+    conn.execute(
+        "DELETE FROM event_numeric_annotations WHERE block_number < ?1",
+        [block],
+    )?;
     let count = conn.execute("DELETE FROM entity_events WHERE block_number < ?1", [block])?;
     Ok(count)
 }
@@ -231,5 +271,48 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM entity_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn event_annotation_tables_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        let str_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_string_annotations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(str_count, 0);
+        let num_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_numeric_annotations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(num_count, 0);
+    }
+
+    #[test]
+    fn delete_events_cascades_to_annotations() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO entity_events (block_number, block_hash, tx_index, tx_hash, log_index, event_type, entity_key)
+             VALUES (20, X'00', 0, X'00', 0, 0, X'01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO event_string_annotations (entity_key, block_number, log_index, ann_key, ann_value)
+             VALUES (X'01', 20, 0, 'k', 'v')",
+            [],
+        )
+        .unwrap();
+        delete_events_from_block(&conn, 20).unwrap();
+        let ann_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_string_annotations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(ann_count, 0);
     }
 }

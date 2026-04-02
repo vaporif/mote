@@ -7,8 +7,13 @@ use std::sync::Arc;
 
 use arrow::array::{Array, AsArray};
 use datafusion::prelude::*;
-use glint_historical::{provider::HistoricalTableProvider, schema, writer};
-use glint_primitives::exex_schema::columns;
+use glint_historical::{
+    provider::{
+        EventNumericAnnotationsProvider, EventStringAnnotationsProvider, HistoricalEventsProvider,
+    },
+    schema, writer,
+};
+use glint_primitives::columns;
 use glint_primitives::exex_types::EntityEventType;
 use glint_primitives::test_utils::{EventBuilder, build_batch};
 use parking_lot::Mutex;
@@ -22,7 +27,7 @@ fn setup_db_with_events(events: &[EventBuilder]) -> Arc<Mutex<rusqlite::Connecti
 }
 
 fn setup_session(conn: Arc<Mutex<rusqlite::Connection>>) -> SessionContext {
-    let provider = HistoricalTableProvider::new(conn);
+    let provider = HistoricalEventsProvider::new(conn);
     let ctx = SessionContext::new();
     ctx.register_table("entities", Arc::new(provider)).unwrap();
     ctx
@@ -176,27 +181,40 @@ async fn e2e_annotations_survive_roundtrip() {
     ];
 
     let conn = setup_db_with_events(&events);
-    let ctx = setup_session(conn);
 
+    // Register all three providers
+    let ctx = SessionContext::new();
+    ctx.register_table(
+        "entities",
+        Arc::new(HistoricalEventsProvider::new(Arc::clone(&conn))),
+    )
+    .unwrap();
+    ctx.register_table(
+        "event_string_annotations",
+        Arc::new(EventStringAnnotationsProvider::new(Arc::clone(&conn))),
+    )
+    .unwrap();
+    ctx.register_table(
+        "event_numeric_annotations",
+        Arc::new(EventNumericAnnotationsProvider::new(conn)),
+    )
+    .unwrap();
+
+    // Query string annotations from the separate table
     let df = ctx
-        .sql("SELECT string_annotations, numeric_annotations FROM entities WHERE block_number BETWEEN 50 AND 50")
+        .sql(
+            "SELECT ann_key, ann_value FROM event_string_annotations \
+             WHERE block_number BETWEEN 50 AND 50 ORDER BY ann_key",
+        )
         .await
         .unwrap();
     let batches = df.collect().await.unwrap();
-    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
 
-    let str_map = batches[0]
-        .column_by_name(columns::STRING_ANNOTATIONS)
-        .unwrap();
-    let str_map = str_map.as_map();
-    let keys = str_map.keys().as_string::<i32>();
-    let values = str_map.values().as_string::<i32>();
-    let offsets = str_map.value_offsets();
-    let start = usize::try_from(offsets[0]).unwrap();
-    let end = usize::try_from(offsets[1]).unwrap();
-
-    let pairs: Vec<_> = (start..end)
-        .map(|j| (keys.value(j).to_owned(), values.value(j).to_owned()))
+    let keys = batches[0].column(0).as_string::<i32>();
+    let values = batches[0].column(1).as_string::<i32>();
+    let pairs: Vec<_> = (0..batches[0].num_rows())
+        .map(|i| (keys.value(i).to_owned(), values.value(i).to_owned()))
         .collect();
     assert_eq!(
         pairs,
@@ -206,24 +224,27 @@ async fn e2e_annotations_survive_roundtrip() {
         ]
     );
 
-    let num_map = batches[0]
-        .column_by_name(columns::NUMERIC_ANNOTATIONS)
+    // Query numeric annotations from the separate table
+    let df = ctx
+        .sql(
+            "SELECT ann_key, ann_value FROM event_numeric_annotations \
+             WHERE block_number BETWEEN 50 AND 50 ORDER BY ann_key",
+        )
+        .await
         .unwrap();
-    let num_map = num_map.as_map();
-    let keys = num_map.keys().as_string::<i32>();
-    let values = num_map
-        .values()
-        .as_primitive::<arrow::datatypes::UInt64Type>();
-    let offsets = num_map.value_offsets();
-    let start = usize::try_from(offsets[0]).unwrap();
-    let end = usize::try_from(offsets[1]).unwrap();
+    let batches = df.collect().await.unwrap();
+    assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
 
-    let pairs: Vec<_> = (start..end)
-        .map(|j| (keys.value(j).to_owned(), values.value(j)))
+    let keys = batches[0].column(0).as_string::<i32>();
+    let values = batches[0]
+        .column(1)
+        .as_primitive::<arrow::datatypes::UInt64Type>();
+    let pairs: Vec<_> = (0..batches[0].num_rows())
+        .map(|i| (keys.value(i).to_owned(), values.value(i)))
         .collect();
     assert_eq!(
         pairs,
-        vec![("weight".to_owned(), 42), ("height".to_owned(), 100),]
+        vec![("height".to_owned(), 100), ("weight".to_owned(), 42),]
     );
 }
 

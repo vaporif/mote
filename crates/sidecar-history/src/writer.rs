@@ -43,9 +43,8 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
             "INSERT INTO entity_events (
                 block_number, block_hash, tx_index, tx_hash, log_index,
                 event_type, entity_key, owner, expires_at_block, old_expires_at_block,
-                content_type, payload, string_annotations, numeric_annotations,
-                extend_policy, operator, gas_cost
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                content_type, payload, extend_policy, operator, gas_cost
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ON CONFLICT (entity_key, block_number, log_index) DO UPDATE SET
                 block_hash = excluded.block_hash,
                 tx_index = excluded.tx_index,
@@ -56,11 +55,21 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 old_expires_at_block = excluded.old_expires_at_block,
                 content_type = excluded.content_type,
                 payload = excluded.payload,
-                string_annotations = excluded.string_annotations,
-                numeric_annotations = excluded.numeric_annotations,
                 extend_policy = excluded.extend_policy,
                 operator = excluded.operator,
                 gas_cost = excluded.gas_cost",
+        )?;
+
+        let mut insert_str_ann = tx.prepare_cached(
+            "INSERT INTO event_string_annotations (entity_key, block_number, log_index, ann_key, ann_value)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (entity_key, block_number, log_index, ann_key) DO UPDATE SET ann_value = excluded.ann_value",
+        )?;
+
+        let mut insert_num_ann = tx.prepare_cached(
+            "INSERT INTO event_numeric_annotations (entity_key, block_number, log_index, ann_key, ann_value)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (entity_key, block_number, log_index, ann_key) DO UPDATE SET ann_value = excluded.ann_value",
         )?;
 
         for i in 0..batch.num_rows() {
@@ -82,9 +91,6 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
             let content_type: Option<&str> = nullable_str(content_type_col, i);
             let payload: Option<&[u8]> = nullable_bytes(payload_col, i);
 
-            let string_annotations = encode_string_map(str_ann_col, i)?;
-            let numeric_annotations = encode_numeric_map(num_ann_col, i)?;
-
             let extend_policy: Option<i64> = nullable_u8_as_i64(extend_policy_col, i);
             let operator: Option<&[u8]> = nullable_blob(operator_col, i, 20, "operator")?;
             let gas_cost: Option<i64> = nullable_u64_as_i64(gas_cost_col, i)?;
@@ -102,12 +108,47 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 old_expires_at,
                 content_type,
                 payload,
-                string_annotations,
-                numeric_annotations,
                 extend_policy,
                 operator,
                 gas_cost,
             ])?;
+
+            let block_number_i64 = i64::try_from(block_number)?;
+
+            if !str_ann_col.is_null(i) {
+                let offsets = str_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = str_ann_col.keys().as_string::<i32>();
+                let values = str_ann_col.values().as_string::<i32>();
+                for j in start..end {
+                    insert_str_ann.execute(rusqlite::params![
+                        entity_key,
+                        block_number_i64,
+                        log_index,
+                        keys.value(j),
+                        values.value(j),
+                    ])?;
+                }
+            }
+            if !num_ann_col.is_null(i) {
+                let offsets = num_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = num_ann_col.keys().as_string::<i32>();
+                let values = num_ann_col
+                    .values()
+                    .as_primitive::<arrow::datatypes::UInt64Type>();
+                for j in start..end {
+                    insert_num_ann.execute(rusqlite::params![
+                        entity_key,
+                        block_number_i64,
+                        log_index,
+                        keys.value(j),
+                        i64::try_from(values.value(j))?,
+                    ])?;
+                }
+            }
         }
     }
 
@@ -204,42 +245,6 @@ fn col_map<'a>(batch: &'a RecordBatch, name: &str) -> eyre::Result<&'a MapArray>
         .ok_or_else(|| eyre::eyre!("column {name} is not MapArray"))
 }
 
-fn encode_string_map(col: &MapArray, i: usize) -> eyre::Result<Option<String>> {
-    if col.is_null(i) {
-        return Ok(None);
-    }
-    let offsets = col.value_offsets();
-    let start = usize::try_from(offsets[i])?;
-    let end = usize::try_from(offsets[i + 1])?;
-    if start == end {
-        return Ok(Some("[]".to_owned()));
-    }
-    let keys = col.keys().as_string::<i32>();
-    let values = col.values().as_string::<i32>();
-    let pairs: Vec<[&str; 2]> = (start..end)
-        .map(|j| [keys.value(j), values.value(j)])
-        .collect();
-    Ok(Some(serde_json::to_string(&pairs)?))
-}
-
-fn encode_numeric_map(col: &MapArray, i: usize) -> eyre::Result<Option<String>> {
-    if col.is_null(i) {
-        return Ok(None);
-    }
-    let offsets = col.value_offsets();
-    let start = usize::try_from(offsets[i])?;
-    let end = usize::try_from(offsets[i + 1])?;
-    if start == end {
-        return Ok(Some("[]".to_owned()));
-    }
-    let keys = col.keys().as_string::<i32>();
-    let values = col.values().as_primitive::<arrow::datatypes::UInt64Type>();
-    let pairs: Vec<serde_json::Value> = (start..end)
-        .map(|j| serde_json::json!([keys.value(j), values.value(j)]))
-        .collect();
-    Ok(Some(serde_json::to_string(&pairs)?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,27 +305,31 @@ mod tests {
     }
 
     #[test]
-    fn annotations_stored_as_json() {
+    fn annotations_stored_normalized() {
         let conn = setup_db();
         let batch = build_batch(&[EventBuilder::created(10, 0x01)
             .with_string_annotations(vec![("sk".into(), "sv".into())])
             .with_numeric_annotations(vec![("nk".into(), 99)])]);
         insert_batch(&conn, &batch).unwrap();
 
-        let str_ann: String = conn
-            .query_row("SELECT string_annotations FROM entity_events", [], |r| {
-                r.get(0)
-            })
+        let (ann_key, ann_value): (String, String) = conn
+            .query_row(
+                "SELECT ann_key, ann_value FROM event_string_annotations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        let parsed: Vec<Vec<String>> = serde_json::from_str(&str_ann).unwrap();
-        assert_eq!(parsed, vec![vec!["sk", "sv"]]);
+        assert_eq!(ann_key, "sk");
+        assert_eq!(ann_value, "sv");
 
-        let num_ann: String = conn
-            .query_row("SELECT numeric_annotations FROM entity_events", [], |r| {
-                r.get(0)
-            })
+        let (ann_key, ann_value): (String, i64) = conn
+            .query_row(
+                "SELECT ann_key, ann_value FROM event_numeric_annotations",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
-        let parsed: Vec<serde_json::Value> = serde_json::from_str(&num_ann).unwrap();
-        assert_eq!(parsed, vec![serde_json::json!(["nk", 99])]);
+        assert_eq!(ann_key, "nk");
+        assert_eq!(ann_value, 99);
     }
 }
