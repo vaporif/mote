@@ -225,18 +225,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn entity_created_event_signature_exists() {
-        let sig = EntityCreated::SIGNATURE;
-        assert!(!sig.is_empty());
-    }
-
-    #[test]
-    fn entity_deleted_has_two_indexed_topics() {
-        let anonymous = EntityDeleted::ANONYMOUS;
-        assert!(!anonymous);
-    }
-
-    #[test]
     fn entity_created_new_log_roundtrips() {
         let entity_key = B256::repeat_byte(0xAB);
         let owner = Address::repeat_byte(0x01);

@@ -85,7 +85,11 @@ where
         return Ok(ExpirationIndex::new());
     }
 
-    let start_block = tip_block.saturating_sub(config.max_btl);
+    let start_block = if config.btl_unlimited() {
+        0
+    } else {
+        tip_block.saturating_sub(config.max_btl)
+    };
     let total = tip_block - start_block;
     info!(
         start_block,
@@ -196,10 +200,11 @@ where
         index.insert(expires_at, entity_key);
     }
 
-    // Prune entries that are now expired (below the safe window)
-    let earliest_valid = tip_block.saturating_sub(config.max_btl);
-    if earliest_valid > 0 {
-        index.clear_range(0..=earliest_valid.saturating_sub(1));
+    if !config.btl_unlimited() {
+        let earliest_valid = tip_block.saturating_sub(config.max_btl);
+        if earliest_valid > 0 {
+            index.clear_range(0..=earliest_valid.saturating_sub(1));
+        }
     }
 
     info!(tip_block, "expiration index partially rebuilt");

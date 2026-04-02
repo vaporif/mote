@@ -245,11 +245,13 @@ pub fn execute_extend(
         .checked_add(extend.additional_blocks)
         .ok_or(GlintError::ExceedsMaxBtl)?;
 
-    let max_expires = current_block
-        .checked_add(max_btl)
-        .ok_or(GlintError::ExceedsMaxBtl)?;
-    if new_expires > max_expires {
-        return Err(GlintError::ExceedsMaxBtl);
+    if max_btl > 0 {
+        let max_expires = current_block
+            .checked_add(max_btl)
+            .ok_or(GlintError::ExceedsMaxBtl)?;
+        if new_expires > max_expires {
+            return Err(GlintError::ExceedsMaxBtl);
+        }
     }
 
     let new_metadata = EntityMetadata {

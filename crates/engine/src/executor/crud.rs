@@ -473,11 +473,13 @@ where
                 .checked_add(extend.additional_blocks)
                 .ok_or_else(|| glint_err("extend expiration overflow"))?;
 
-            let max_expires = current_block
-                .checked_add(self.config.max_btl)
-                .ok_or_else(|| glint_err("block + max_btl overflow"))?;
-            if new_expires > max_expires {
-                return Err(glint_err("extend would exceed MAX_BTL from current block"));
+            if self.config.max_btl > 0 {
+                let max_expires = current_block
+                    .checked_add(self.config.max_btl)
+                    .ok_or_else(|| glint_err("block + max_btl overflow"))?;
+                if new_expires > max_expires {
+                    return Err(glint_err("extend would exceed MAX_BTL from current block"));
+                }
             }
 
             let new_meta = EntityMetadata {

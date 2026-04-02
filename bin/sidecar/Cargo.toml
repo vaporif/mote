@@ -13,7 +13,7 @@ categories.workspace = true
 [dependencies]
 glint-analytics.workspace = true
 glint-historical.workspace = true
-glint-primitives.workspace = true
+glint-primitives = { workspace = true, features = ["genesis"] }
 glint-sidecar-live-sql.workspace = true
 
 arrow.workspace = true
