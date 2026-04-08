@@ -11,7 +11,7 @@ use glint_analytics::{
 };
 use glint_historical::{
     provider::{
-        event_numeric_annotions::EventNumericAnnotationsProvider,
+        event_numeric_annotations::EventNumericAnnotationsProvider,
         event_string_annotations::EventStringAnnotationsProvider,
         historical_events::HistoricalEventsProvider,
     },

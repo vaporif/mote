@@ -2,8 +2,8 @@ use alloy_eips::BlockNumHash;
 use arrow::record_batch::RecordBatch;
 use glint_primitives::exex_types::BatchOp;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const DEFAULT_MEMORY_CAP: u64 = 256 * 1024 * 1024; // 256 MB
 const PER_ENTRY_OVERHEAD: u64 = 256;
@@ -70,7 +70,7 @@ impl RingBuffer {
         self.update_atomics();
     }
 
-    /// Evict from the front until memory usage is within the cap.
+    /// Evict from front until under the memory cap.
     fn evict_to_cap(&mut self) {
         while self.memory_usage > self.memory_cap && self.entries.len() > 1 {
             if let Some(evicted) = self.entries.pop_front() {
@@ -81,8 +81,8 @@ impl RingBuffer {
         }
     }
 
-    /// Returns entries after the first commit for `resume_block`.
-    /// Returns the whole buffer when the block is 0 or not found.
+    /// Entries after the first commit for `resume_block`, or the whole buffer
+    /// if the block is 0 or missing.
     #[must_use]
     pub fn snapshot_from(&self, resume_block: u64) -> Vec<(BlockNumHash, RecordBatch)> {
         let start = if resume_block == 0 {
@@ -225,7 +225,7 @@ mod tests {
         for i in 5..=8_u64 {
             rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
         }
-        // resume_block=2 is not in the buffer
+        // block 2 not in buffer -> returns everything
         let snap = rb.snapshot_from(2);
         assert_eq!(snap.len(), 4);
     }
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn snapshot_includes_reverts_after_resume_point() {
         let mut rb = RingBuffer::new();
-        // commit 8, 9, 10 then revert 10, commit 10'
+        // 8, 9, 10, revert 10, commit 10'
         rb.push(bnh(8), BatchOp::Commit, dummy_batch(1));
         rb.push(bnh(9), BatchOp::Commit, dummy_batch(1));
         rb.push(bnh(10), BatchOp::Commit, dummy_batch(1));
@@ -244,7 +244,7 @@ mod tests {
             dummy_batch(1),
         );
 
-        // Consumer at block 9 — should get: commit(10), revert(10), commit(10')
+        // from 9 -> commit(10), revert(10), commit(10')
         let snap = rb.snapshot_from(9);
         assert_eq!(snap.len(), 3);
     }
@@ -268,8 +268,7 @@ mod tests {
             dummy_batch(1),
         );
 
-        // Consumer had block 10 (original). Finds first commit(10) at pos 2.
-        // Returns: revert(10), revert(9), commit(9'), commit(10')
+        // from 10 -> revert(10), revert(9), commit(9'), commit(10')
         let snap = rb.snapshot_from(10);
         assert_eq!(snap.len(), 4);
     }
@@ -277,7 +276,7 @@ mod tests {
     #[test]
     fn snapshot_multi_reorg_correct_order() {
         let mut rb = RingBuffer::new();
-        // chain: 5, 6, 7 → revert 7,6,5 → 5', 6', 7'
+        // 5,6,7 -> revert 7,6,5 -> 5',6',7'
         for i in 5..=7_u64 {
             rb.push(bnh(i), BatchOp::Commit, dummy_batch(1));
         }
@@ -292,12 +291,11 @@ mod tests {
             );
         }
 
-        // Consumer at block 4 — gets all 9 entries
+        // from 4 -> all 9 entries
         let snap = rb.snapshot_from(4);
         assert_eq!(snap.len(), 9);
 
-        // Consumer at block 7 — finds first commit(7) at pos 2,
-        // gets: revert(7), revert(6), revert(5), commit(5'), commit(6'), commit(7')
+        // from 7 -> revert(7,6,5), commit(5',6',7')
         let snap = rb.snapshot_from(7);
         assert_eq!(snap.len(), 6);
     }
@@ -319,7 +317,7 @@ mod tests {
         let mut rb = RingBuffer::new();
         rb.push(bnh(1), BatchOp::Commit, dummy_batch(1));
         let snap = rb.snapshot_from(0);
-        // Evict everything
+        // evict everything
         rb.push(bnh(2), BatchOp::Commit, dummy_batch(1));
         assert_eq!(snap.len(), 1);
     }

@@ -363,12 +363,10 @@ fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
 ) {
     let consumer_last_delivered = *delivered_rx.borrow();
 
-    // If the consumer told us how far it got, hold there so the WAL keeps
-    // everything it hasn't seen. Otherwise just report the tip — the ring
-    // buffer keeps its own history for replay.
+    // hold at consumer position so WAL keeps unseen data; fall back to tip
     let computed = consumer_last_delivered.unwrap_or(current_tip);
 
-    // Safety cap: never fall behind tip - MAX_BTL to prevent unbounded WAL growth
+    // cap: don't fall behind tip - MAX_BTL (prevents unbounded WAL growth)
     let absolute_floor = current_tip.number.saturating_sub(MAX_BTL);
     let height = if computed.number < absolute_floor {
         ring_buffer
@@ -378,7 +376,7 @@ fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
         computed
     };
 
-    // Monotonic: never report lower than previously reported
+    // monotonic: never go backwards
     if height.number > max_reported.number {
         *max_reported = height;
         let _ = ctx.send_finished_height(height);

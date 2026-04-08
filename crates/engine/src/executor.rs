@@ -263,7 +263,6 @@ where
 
         info!(%sender, %tx_hash, calldata_len = calldata.len(), gas_limit, "intercepted glint tx");
 
-        // We need the sender's current nonce/balance so we can update them below.
         let sender_info = {
             use revm::Database as _;
             self.inner
@@ -284,7 +283,7 @@ where
                 gas_limit,
                 total_gas, "insufficient gas for glint ops, reverting"
             );
-            // Revert still burns gas and bumps the nonce.
+            // revert still burns gas and bumps nonce
             let mut state = HashMap::default();
             let gas_cost = self.compute_gas_cost(gas_limit, tx_ref);
             insert_sender_account(&mut state, sender, &sender_info, gas_cost);
@@ -303,7 +302,7 @@ where
         let log_count = staged.logs.len();
         let (logs, mut state) = self.commit_crud(staged)?;
 
-        // Charge gas and bump nonce — without this a second tx from the same sender can't land.
+        // charge gas + bump nonce so the next tx from this sender lands
         let gas_cost = self.compute_gas_cost(total_gas, tx_ref);
         insert_sender_account(&mut state, sender, &sender_info, gas_cost);
 
@@ -383,7 +382,7 @@ where
             TxType = <InnerExec::Transaction as TransactionEnvelope>::TxType,
         >,
 {
-    /// `gas_used * min(max_fee, base_fee + priority_fee)`.
+    /// `gas_used * min(max_fee, base_fee + priority_fee)`
     fn compute_gas_cost<Tx: Transaction>(&self, gas_used: u64, tx: &Tx) -> U256 {
         use alloy_evm::revm::context::Block as _;
         let base_fee: u128 = u128::from(self.inner.evm().block().basefee());
@@ -585,8 +584,7 @@ fn update_entity_counter<E: Evm<DB: DatabaseCommit + revm::Database<Error: core:
 fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState {
     let mut storage = revm::state::EvmStorage::default();
     for (&slot, &value) in changes {
-        // original must differ from present so is_changed() returns true
-        // and State::commit doesn't silently drop the slot.
+        // original must differ from present so State::commit keeps the slot
         let original = if value == U256::ZERO {
             U256::from(1)
         } else {
@@ -598,8 +596,7 @@ fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState
         );
     }
 
-    // nonce=1 prevents EIP-161 state clear from treating the account as empty
-    // and discarding its storage.
+    // nonce=1 so EIP-161 doesn't treat the account as empty
     let info = AccountInfo {
         nonce: 1,
         ..Default::default()
@@ -616,7 +613,7 @@ fn build_processor_state(changes: &HashMap<B256, U256>) -> revm::state::EvmState
     revm::state::EvmState::from_iter([(PROCESSOR_ADDRESS, account)])
 }
 
-/// Bump nonce and subtract gas from the sender so subsequent txs see the right state.
+/// Bump nonce and subtract gas so subsequent txs from this sender work.
 fn insert_sender_account(
     state: &mut revm::state::EvmState,
     sender: alloy_primitives::Address,
@@ -695,7 +692,7 @@ mod tests {
             .storage
             .insert(U256::from_be_bytes(content_slot.0), U256::from(0xDEADu64));
 
-        // Seed counters so expiration housekeeping can decrement without underflow.
+        // seed counters so expiration can decrement without underflow
         let slot_counter_key = crate::slot_counter::USED_SLOTS_KEY;
         let entity_counter_key = crate::slot_counter::ENTITY_COUNT_KEY;
         let current_slots = account
@@ -954,7 +951,7 @@ mod tests {
         let mut executor = config.create_executor(evm, ctx);
         executor.apply_pre_execution_changes().unwrap();
 
-        // Build a glint create tx
+        // build a glint create tx
         let mut calldata = Vec::new();
         let glint_tx = GlintTx::new().create(Create::new("text/plain", b"test", 100));
         alloy_rlp::Encodable::encode(&glint_tx, &mut calldata);

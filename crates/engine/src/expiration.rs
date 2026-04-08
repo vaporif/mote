@@ -94,17 +94,15 @@ impl ExpirationIndex {
         self.index.retain(|block, _| !range.contains(block));
     }
 
-    /// Cold-start rebuild: scan the last `MAX_BTL` blocks of create/update/extend
-    /// logs and repopulate the index. Caller must pre-filter to only alive
-    /// entities with their latest expiration - duplicates or stale entries here
-    /// are consensus bugs.
+    /// Cold-start rebuild from event logs. Caller must pre-filter to only alive
+    /// entities with their latest expiration.
     pub fn rebuild_from_logs(&mut self, logs: impl Iterator<Item = (B256, u64)>) {
         for (entity_key, expires_at_block) in logs {
             self.insert(expires_at_block, entity_key);
         }
     }
 
-    /// Remove all occurrences of the given entity keys from every block in the index.
+    /// Drop all occurrences of `keys` from every block.
     pub fn remove_entities(&mut self, keys: &HashSet<B256>) {
         self.index.retain(|_block, set| {
             set.retain(|k| !keys.contains(k));
@@ -489,7 +487,7 @@ mod tests {
         idx.insert(10, old_key);
         idx.drain_block(10);
 
-        // After drain, a new entity is inserted at the same block (e.g. during reorg replay)
+        // re-insert at the same block after drain (reorg replay)
         idx.insert(10, new_key);
 
         let restored = idx.restore_drained_since(10);

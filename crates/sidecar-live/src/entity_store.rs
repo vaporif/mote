@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     sync::Arc,
 };
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, Bytes, B256};
 use arrow::{
-    array::{BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder, UInt64Builder},
+    array::{BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder, UInt8Builder},
     record_batch::RecordBatch,
 };
 use roaring::RoaringBitmap;
@@ -72,9 +72,8 @@ pub struct Snapshot {
     pub(crate) indexes: Arc<IndexSnapshot>,
 }
 
-/// Guarded mutable reference to an [`EntityRow`] that only exposes
-/// non-indexed fields. Prevents accidental mutation of indexed fields
-/// (owner, annotations) which would silently corrupt bitmap indexes.
+/// Mutable ref to [`EntityRow`] that hides indexed fields (owner, annotations)
+/// to prevent bitmap corruption.
 pub(crate) struct EntityRowMut<'a>(&'a mut EntityRow);
 
 impl EntityRowMut<'_> {
@@ -146,9 +145,7 @@ impl EntityStore {
         self.entities.get(key)
     }
 
-    /// Returns a guarded mutable reference that only exposes non-indexed
-    /// fields (`expires_at_block`, `tx_hash`). Indexed fields (owner,
-    /// annotations) are read-only to prevent silent bitmap corruption.
+    /// Mutable ref hiding indexed fields. See [`EntityRowMut`].
     pub(crate) fn get_mut(&mut self, key: &B256) -> Option<EntityRowMut<'_>> {
         self.entities.get_mut(key).map(EntityRowMut)
     }
@@ -233,8 +230,7 @@ impl EntityStore {
 
     // TODO: COW/incremental approach
     pub fn snapshot(&self) -> eyre::Result<Snapshot> {
-        // BTreeMap iterates in key order, so entries are already sorted by slot.
-        // Exclude expired entities.
+        // BTreeMap gives us slot-sorted order; skip expired
         let current = self.current_block;
         let entries: Vec<(u32, B256)> = self
             .slot_to_entity
@@ -255,7 +251,7 @@ impl EntityStore {
 
         let n = entries.len();
 
-        // Entity batch builders (9 columns, no annotations)
+        // entity columns (no annotations)
         let mut entity_key_b = FixedSizeBinaryBuilder::with_capacity(n, 32);
         let mut owner_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
         let mut expires_b = UInt64Builder::with_capacity(n);
@@ -266,7 +262,7 @@ impl EntityStore {
         let mut extend_policy_b = UInt8Builder::with_capacity(n);
         let mut operator_b = FixedSizeBinaryBuilder::with_capacity(n, 20);
 
-        // Annotation batch builders
+        // annotation columns
         let mut str_ek_b = FixedSizeBinaryBuilder::new(32);
         let mut str_key_b = StringBuilder::new();
         let mut str_val_b = StringBuilder::new();
@@ -343,7 +339,7 @@ impl EntityStore {
             .unwrap_or_else(|_| RecordBatch::new_empty(num_ann_schema)),
         );
 
-        // Restrict indexes to live slots only.
+        // restrict indexes to live slots
         let live_slots: RoaringBitmap = entries.iter().map(|(slot, _)| *slot).collect();
 
         let indexes = Arc::new(IndexSnapshot {
@@ -392,7 +388,11 @@ fn intersect_range_index(
                 .iter()
                 .filter_map(|(v, bm)| {
                     let f = bm & live;
-                    if f.is_empty() { None } else { Some((*v, f)) }
+                    if f.is_empty() {
+                        None
+                    } else {
+                        Some((*v, f))
+                    }
                 })
                 .collect();
             if filtered.is_empty() {
@@ -429,7 +429,7 @@ fn remove_from_btree<K: Ord + Clone>(map: &mut BTreeMap<K, RoaringBitmap>, key: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_primitives::{Address, Bytes, B256};
 
     fn sample_row(byte: u8) -> EntityRow {
         EntityRow {
@@ -490,22 +490,18 @@ mod tests {
         let mut store = EntityStore::new();
         store.insert(sample_row(0x01));
         let snap = store.snapshot().expect("snapshot should succeed");
-        // 9 columns: entity_key, owner, expires_at_block, content_type, payload,
-        //            created_at_block, tx_hash, extend_policy, operator
         assert_eq!(snap.entities.num_columns(), 9);
         assert_eq!(snap.entities.num_rows(), 1);
-        assert!(
-            snap.entities
-                .schema()
-                .field_with_name("string_annotations")
-                .is_err()
-        );
-        assert!(
-            snap.entities
-                .schema()
-                .field_with_name("numeric_annotations")
-                .is_err()
-        );
+        assert!(snap
+            .entities
+            .schema()
+            .field_with_name("string_annotations")
+            .is_err());
+        assert!(snap
+            .entities
+            .schema()
+            .field_with_name("numeric_annotations")
+            .is_err());
     }
 
     #[test]
@@ -604,19 +600,15 @@ mod tests {
 
         let slot = store.entity_to_slot[&B256::repeat_byte(0x01)];
 
-        assert!(
-            !store
-                .string_ann_index
-                .contains_key(&("k1".to_owned(), "v1".to_owned()))
-        );
+        assert!(!store
+            .string_ann_index
+            .contains_key(&("k1".to_owned(), "v1".to_owned())));
         assert!(!store.numeric_ann_index.contains_key(&("n1".to_owned(), 42)));
-        assert!(
-            store
-                .numeric_ann_range
-                .get("n1")
-                .and_then(|bt| bt.get(&42))
-                .is_none()
-        );
+        assert!(store
+            .numeric_ann_range
+            .get("n1")
+            .and_then(|bt| bt.get(&42))
+            .is_none());
 
         let str_bm = &store.string_ann_index[&("k1".to_owned(), "v2".to_owned())];
         assert!(str_bm.contains(slot));
@@ -717,25 +709,22 @@ mod tests {
     fn snapshot_filters_expired_entities() {
         let mut store = EntityStore::new();
 
-        // Entity expiring at block 100
-        store.insert(sample_row(0x01));
-        // Entity expiring at block 200
+        store.insert(sample_row(0x01)); // expires at 100
         let mut row2 = sample_row(0x02);
-        row2.expires_at_block = 200;
+        row2.expires_at_block = 200; // expires at 200
         store.insert(row2);
 
-        // current_block=0: both visible
         let snap = store.snapshot().expect("snapshot");
         assert_eq!(snap.entities.num_rows(), 2);
         assert_eq!(snap.indexes.all_live_slots.len(), 2);
 
-        // Advance to block 100: entity 0x01 expires (expires_at_block <= current_block)
+        // 0x01 now expired
         store.set_current_block(100);
         let snap = store.snapshot().expect("snapshot");
         assert_eq!(snap.entities.num_rows(), 1);
         assert_eq!(snap.indexes.all_live_slots.len(), 1);
 
-        // Advance to block 200: both expired
+        // both expired
         store.set_current_block(200);
         let snap = store.snapshot().expect("snapshot");
         assert_eq!(snap.entities.num_rows(), 0);
@@ -754,48 +743,38 @@ mod tests {
         row2.numeric_annotations = vec![("n2".into(), 77)];
         store.insert(row2);
 
-        // Expire entity 0x01
-        store.set_current_block(100);
+        store.set_current_block(100); // expire 0x01
         let snap = store.snapshot().expect("snapshot");
 
-        // Owner index should only contain 0x02's owner
-        assert!(
-            !snap
-                .indexes
-                .owner_index
-                .contains_key(&Address::repeat_byte(0x01))
-        );
-        assert!(
-            snap.indexes
-                .owner_index
-                .contains_key(&Address::repeat_byte(0x02))
-        );
+        // only 0x02's owner remains
+        assert!(!snap
+            .indexes
+            .owner_index
+            .contains_key(&Address::repeat_byte(0x01)));
+        assert!(snap
+            .indexes
+            .owner_index
+            .contains_key(&Address::repeat_byte(0x02)));
 
-        // String annotation index: k1/v1 from expired entity should be gone
-        assert!(
-            !snap
-                .indexes
-                .string_ann_index
-                .contains_key(&("k1".to_owned(), "v1".to_owned()))
-        );
-        assert!(
-            snap.indexes
-                .string_ann_index
-                .contains_key(&("k2".to_owned(), "v2".to_owned()))
-        );
+        // k1/v1 gone with expired entity
+        assert!(!snap
+            .indexes
+            .string_ann_index
+            .contains_key(&("k1".to_owned(), "v1".to_owned())));
+        assert!(snap
+            .indexes
+            .string_ann_index
+            .contains_key(&("k2".to_owned(), "v2".to_owned())));
 
-        // Numeric annotation index: n1/42 from expired entity should be gone
-        assert!(
-            !snap
-                .indexes
-                .numeric_ann_index
-                .contains_key(&("n1".to_owned(), 42))
-        );
-        assert!(
-            snap.indexes
-                .numeric_ann_index
-                .contains_key(&("n2".to_owned(), 77))
-        );
+        // n1/42 gone with expired entity
+        assert!(!snap
+            .indexes
+            .numeric_ann_index
+            .contains_key(&("n1".to_owned(), 42)));
+        assert!(snap
+            .indexes
+            .numeric_ann_index
+            .contains_key(&("n2".to_owned(), 77)));
     }
 
     #[test]

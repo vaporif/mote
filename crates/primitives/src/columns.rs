@@ -1,4 +1,4 @@
-/// Column names used in entity event Arrow batches.
+/// Arrow column names for entity event batches.
 pub const BLOCK_NUMBER: &str = "block_number";
 pub const BLOCK_HASH: &str = "block_hash";
 pub const TX_INDEX: &str = "tx_index";

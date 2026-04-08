@@ -134,7 +134,7 @@ where
     Ok(index)
 }
 
-/// Like `rebuild_expiration_index` but replays only blocks after `start_block`.
+/// Partial rebuild: replays only blocks after `start_block`.
 pub fn rebuild_expiration_index_partial<P>(
     provider: &P,
     config: &GlintChainConfig,
@@ -191,9 +191,7 @@ where
 
     let (live_entities, all_seen) = tracker.into_inner();
 
-    // Remove stale entries for entities that were touched during the replay window.
-    // Without this, entities that were deleted/expired or had their expiration changed
-    // would leave phantom entries in the index from the checkpoint.
+    // purge stale entries for entities touched during the replay window
     index.remove_entities(&all_seen);
 
     for (entity_key, expires_at) in live_entities {
