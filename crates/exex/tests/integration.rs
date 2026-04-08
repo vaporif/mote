@@ -209,9 +209,7 @@ async fn full_subscribe_and_replay() {
         .await
         .unwrap();
 
-    // Read on a blocking thread after all data has been sent to the server.
-    // All 3 batches (snapshot + watermark + live) are buffered in the IPC
-    // writer channel, so blocking reads will find data without racing.
+    // all 3 batches buffered in IPC writer, blocking read won't race
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         std_client

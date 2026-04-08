@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, AsArray};
 use datafusion::prelude::*;
-use glint_historical::provider::event_numeric_annotions::EventNumericAnnotationsProvider;
+use glint_historical::provider::event_numeric_annotations::EventNumericAnnotationsProvider;
 use glint_historical::provider::event_string_annotations::EventStringAnnotationsProvider;
 use glint_historical::provider::historical_events::HistoricalEventsProvider;
 use glint_historical::{schema, writer};
@@ -180,7 +180,7 @@ async fn e2e_annotations_survive_roundtrip() {
 
     let conn = setup_db_with_events(&events);
 
-    // Register all three providers
+    // register providers
     let ctx = SessionContext::new();
     ctx.register_table(
         "entities",
@@ -198,7 +198,7 @@ async fn e2e_annotations_survive_roundtrip() {
     )
     .unwrap();
 
-    // Query string annotations from the separate table
+    // string annotations
     let df = ctx
         .sql(
             "SELECT ann_key, ann_value FROM event_string_annotations \
@@ -222,7 +222,7 @@ async fn e2e_annotations_survive_roundtrip() {
         ]
     );
 
-    // Query numeric annotations from the separate table
+    // numeric annotations
     let df = ctx
         .sql(
             "SELECT ann_key, ann_value FROM event_numeric_annotations \

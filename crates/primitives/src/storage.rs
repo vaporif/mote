@@ -50,16 +50,9 @@ pub fn decode_operator_value(value: U256) -> Address {
     Address::from_slice(&bytes[..ADDRESS_LEN])
 }
 
-/// Compute the on-chain content hash from raw RLP field slices.
-///
-/// Formula: `keccak256(len(f1) || f1 || len(f2) || f2 || len(f3) || f3 || len(f4) || f4)`
-///
-/// where `len(f)` is the field's byte length as a big-endian `u32`, and
-/// `f1..f4` are the raw RLP encodings of `payload`, `content_type`,
-/// `string_annotations`, and `numeric_annotations` respectively.
-///
-/// Length-prefixing each field provides domain separation — the hash is
-/// unambiguous even if the raw slices are not perfectly canonical RLP.
+/// `keccak256(len(f1) || f1 || ... || len(f4) || f4)` over raw RLP of
+/// payload, content_type, string_annotations, numeric_annotations.
+/// Length prefixes provide domain separation.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
     content_type_rlp: &[u8],

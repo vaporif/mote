@@ -154,7 +154,7 @@ fn query_string_annotations(
     let from_i64 = i64::try_from(from_block).df_err()?;
     let to_i64 = i64::try_from(to_block).df_err()?;
 
-    // Build dynamic params
+    // dynamic params
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
         vec![Box::new(from_i64), Box::new(to_i64)];
     if let (Some(_), Some(k)) = (key_idx, &ann_key) {

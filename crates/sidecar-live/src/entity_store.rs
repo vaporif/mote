@@ -1,11 +1,11 @@
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     sync::Arc,
 };
 
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, B256, Bytes};
 use arrow::{
-    array::{BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt64Builder, UInt8Builder},
+    array::{BinaryBuilder, FixedSizeBinaryBuilder, StringBuilder, UInt8Builder, UInt64Builder},
     record_batch::RecordBatch,
 };
 use roaring::RoaringBitmap;
@@ -388,11 +388,7 @@ fn intersect_range_index(
                 .iter()
                 .filter_map(|(v, bm)| {
                     let f = bm & live;
-                    if f.is_empty() {
-                        None
-                    } else {
-                        Some((*v, f))
-                    }
+                    if f.is_empty() { None } else { Some((*v, f)) }
                 })
                 .collect();
             if filtered.is_empty() {
@@ -429,7 +425,7 @@ fn remove_from_btree<K: Ord + Clone>(map: &mut BTreeMap<K, RoaringBitmap>, key: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
 
     fn sample_row(byte: u8) -> EntityRow {
         EntityRow {
@@ -492,16 +488,18 @@ mod tests {
         let snap = store.snapshot().expect("snapshot should succeed");
         assert_eq!(snap.entities.num_columns(), 9);
         assert_eq!(snap.entities.num_rows(), 1);
-        assert!(snap
-            .entities
-            .schema()
-            .field_with_name("string_annotations")
-            .is_err());
-        assert!(snap
-            .entities
-            .schema()
-            .field_with_name("numeric_annotations")
-            .is_err());
+        assert!(
+            snap.entities
+                .schema()
+                .field_with_name("string_annotations")
+                .is_err()
+        );
+        assert!(
+            snap.entities
+                .schema()
+                .field_with_name("numeric_annotations")
+                .is_err()
+        );
     }
 
     #[test]
@@ -600,15 +598,19 @@ mod tests {
 
         let slot = store.entity_to_slot[&B256::repeat_byte(0x01)];
 
-        assert!(!store
-            .string_ann_index
-            .contains_key(&("k1".to_owned(), "v1".to_owned())));
+        assert!(
+            !store
+                .string_ann_index
+                .contains_key(&("k1".to_owned(), "v1".to_owned()))
+        );
         assert!(!store.numeric_ann_index.contains_key(&("n1".to_owned(), 42)));
-        assert!(store
-            .numeric_ann_range
-            .get("n1")
-            .and_then(|bt| bt.get(&42))
-            .is_none());
+        assert!(
+            store
+                .numeric_ann_range
+                .get("n1")
+                .and_then(|bt| bt.get(&42))
+                .is_none()
+        );
 
         let str_bm = &store.string_ann_index[&("k1".to_owned(), "v2".to_owned())];
         assert!(str_bm.contains(slot));
@@ -747,34 +749,43 @@ mod tests {
         let snap = store.snapshot().expect("snapshot");
 
         // only 0x02's owner remains
-        assert!(!snap
-            .indexes
-            .owner_index
-            .contains_key(&Address::repeat_byte(0x01)));
-        assert!(snap
-            .indexes
-            .owner_index
-            .contains_key(&Address::repeat_byte(0x02)));
+        assert!(
+            !snap
+                .indexes
+                .owner_index
+                .contains_key(&Address::repeat_byte(0x01))
+        );
+        assert!(
+            snap.indexes
+                .owner_index
+                .contains_key(&Address::repeat_byte(0x02))
+        );
 
         // k1/v1 gone with expired entity
-        assert!(!snap
-            .indexes
-            .string_ann_index
-            .contains_key(&("k1".to_owned(), "v1".to_owned())));
-        assert!(snap
-            .indexes
-            .string_ann_index
-            .contains_key(&("k2".to_owned(), "v2".to_owned())));
+        assert!(
+            !snap
+                .indexes
+                .string_ann_index
+                .contains_key(&("k1".to_owned(), "v1".to_owned()))
+        );
+        assert!(
+            snap.indexes
+                .string_ann_index
+                .contains_key(&("k2".to_owned(), "v2".to_owned()))
+        );
 
         // n1/42 gone with expired entity
-        assert!(!snap
-            .indexes
-            .numeric_ann_index
-            .contains_key(&("n1".to_owned(), 42)));
-        assert!(snap
-            .indexes
-            .numeric_ann_index
-            .contains_key(&("n2".to_owned(), 77)));
+        assert!(
+            !snap
+                .indexes
+                .numeric_ann_index
+                .contains_key(&("n1".to_owned(), 42))
+        );
+        assert!(
+            snap.indexes
+                .numeric_ann_index
+                .contains_key(&("n2".to_owned(), 77))
+        );
     }
 
     #[test]

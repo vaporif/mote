@@ -36,7 +36,7 @@ fn references_block_number(expr: &Expr) -> bool {
     references_column(expr, columns::BLOCK_NUMBER)
 }
 
-/// Require `block_number` bounds, return error if missing or inverted.
+/// Extract `block_number` bounds, error if missing.
 fn require_block_range(filters: &[Expr]) -> datafusion::error::Result<(u64, u64)> {
     let range = extract_block_range(filters).ok_or_else(|| {
         datafusion::error::DataFusionError::Plan(
@@ -63,8 +63,8 @@ mod tests {
     use super::*;
     use crate::{
         provider::{
-            event_numeric_annotions::EventNumericAnnotationsProvider,
-            event_string_annnotations::EventStringAnnotationsProvider,
+            event_numeric_annotations::EventNumericAnnotationsProvider,
+            event_string_annotations::EventStringAnnotationsProvider,
             historical_events::HistoricalEventsProvider,
         },
         schema,
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn extract_block_range_inverted_returns_valid_tuple() {
         use datafusion::prelude::*;
-        // lower > upper produces a valid tuple (validation happens at scan time)
+        // inverted range still parses; scan-time validation catches it
         let expr = col("block_number")
             .gt_eq(lit(500u64))
             .and(col("block_number").lt_eq(lit(100u64)));
