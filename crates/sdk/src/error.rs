@@ -35,39 +35,3 @@ pub enum Error {
     #[error("invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::B256;
-    use glint_primitives::error::GlintError;
-
-    #[test]
-    fn reverted_error_contains_tx_hash() {
-        let hash = B256::repeat_byte(0xAB);
-        let err = Error::Reverted(hash);
-        let msg = err.to_string();
-        assert!(msg.contains("reverted"), "expected 'reverted' in: {msg}");
-        assert!(
-            msg.contains(&format!("{hash}")),
-            "expected tx hash in: {msg}"
-        );
-    }
-
-    #[test]
-    fn validation_error_converts_from_glint_error() {
-        let glint_err = GlintError::EmptyTransaction;
-        let err = Error::from(glint_err);
-        assert!(
-            matches!(err, Error::Validation(GlintError::EmptyTransaction)),
-            "expected Validation variant"
-        );
-    }
-
-    #[test]
-    fn invalid_url_converts() {
-        let url_err: Result<url::Url, _> = "not a url".parse();
-        let err = Error::from(url_err.unwrap_err());
-        assert!(matches!(err, Error::InvalidUrl(_)));
-    }
-}

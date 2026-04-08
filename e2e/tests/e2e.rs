@@ -172,7 +172,7 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     let env_col: &arrow::array::StringArray = col(batch, "env_ann");
     assert_eq!(env_col.value(0), "test");
 
-    // Query numeric annotations separately
+    // numeric annotations via JOIN
     let sql = format!(
         "SELECT na.ann_key, na.ann_value \
          FROM entities_latest e \
@@ -183,7 +183,7 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     let batches = client.query(&sql).await?;
     assert_eq!(row_count(&batches), 2, "expected 2 numeric annotations");
 
-    // Verify expires_at_block
+    // check expiration
     let sql = format!("SELECT expires_at_block FROM entities_latest WHERE owner = x'{owner_hex}'");
     let batches = client.query(&sql).await?;
     let expires_col: &arrow::array::UInt64Array = col(&batches[0], "expires_at_block");
@@ -210,7 +210,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
         .build()
         .await?;
 
-    // Create 3 entities with different annotations
+    // 3 entities with varying annotations
     let payloads: [&[u8]; 3] = [b"alpha", b"beta", b"gamma"];
     let mut entity_keys = Vec::new();
 
@@ -228,7 +228,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
 
     wait_for_sidecar_ready(&sidecar).await?;
 
-    // Filter by string annotation — should return 2 entities (alpha, beta)
+    // string filter: group-a -> alpha, beta
     let batches = client
         .query(
             "SELECT e.entity_key FROM entities_latest e \
@@ -238,7 +238,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
         .await?;
     assert_eq!(row_count(&batches), 2, "expected 2 entities in group-a");
 
-    // Filter by numeric annotation range — rank >= 2 should return 2 entities (beta, gamma)
+    // range filter: rank >= 2 -> beta, gamma
     let batches = client
         .query(
             "SELECT e.entity_key FROM entities_latest e \
@@ -248,7 +248,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
         .await?;
     assert_eq!(row_count(&batches), 2, "expected 2 entities with rank >= 2");
 
-    // Filter by exact numeric annotation — rank = 1 should return 1 entity (alpha)
+    // exact filter: rank = 1 -> alpha
     let batches = client
         .query(
             "SELECT e.entity_key FROM entities_latest e \
@@ -261,7 +261,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
     let ek_col: &arrow::array::FixedSizeBinaryArray = col(&batches[0], "entity_key");
     assert_eq!(ek_col.value(0), entity_keys[0].as_slice());
 
-    // Combined filter — group-a AND rank = 2 should return 1 entity (beta)
+    // combined: group-a AND rank=2 -> beta
     let batches = client
         .query(
             "SELECT e.entity_key FROM entities_latest e \
@@ -280,7 +280,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
     let ek_col: &arrow::array::FixedSizeBinaryArray = col(&batches[0], "entity_key");
     assert_eq!(ek_col.value(0), entity_keys[1].as_slice());
 
-    // Owner filter — all 3 should belong to our wallet
+    // owner filter -> all 3
     let owner_hex = format!("{:x}", expected_owner);
     let batches = client
         .query(&format!(
@@ -293,7 +293,7 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
         "expected 3 entities owned by dev wallet"
     );
 
-    // IN list filter — group-b OR group-c category
+    // IN filter: group-b or group-c
     let batches = client
         .query(
             "SELECT e.entity_key FROM entities_latest e \

@@ -167,11 +167,10 @@ fn apply_commit(
                         upsert_stmt.execute(params)?;
                     }
 
-                    // Delete old annotations first (handles updates correctly)
+                    // clear old annotations before re-inserting
                     delete_str_ann.execute([entity_key])?;
                     delete_num_ann.execute([entity_key])?;
 
-                    // Insert new string annotations
                     if !str_ann_col.is_null(i) {
                         let offsets = str_ann_col.value_offsets();
                         let start = usize::try_from(offsets[i])?;
@@ -187,7 +186,6 @@ fn apply_commit(
                         }
                     }
 
-                    // Insert new numeric annotations
                     if !num_ann_col.is_null(i) {
                         let offsets = num_ann_col.value_offsets();
                         let start = usize::try_from(offsets[i])?;

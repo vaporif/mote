@@ -335,8 +335,7 @@ async fn replay_snapshot(
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
 ) -> eyre::Result<ReplayResult> {
-    // Start the IPC writer immediately so the client can read the schema
-    // header while we wait for the snapshot.
+    // start IPC writer so client reads the schema header while we snapshot
     let std_stream = stream.into_std()?;
     std_stream.set_nonblocking(false)?;
     let schema = entity_events_schema();
@@ -373,13 +372,13 @@ async fn replay_snapshot(
         "received snapshot for replay"
     );
 
-    // Buffer any batches that arrived while we waited for the snapshot.
+    // drain batches that arrived during snapshot
     let mut buffered = Vec::new();
     while let Ok(item) = batch_rx.try_recv() {
         buffered.push(item);
     }
 
-    // Dedup: skip buffered batches already in the snapshot.
+    // dedup against snapshot
     let snapshot_keys: HashSet<BatchKey> = snapshot
         .iter()
         .filter_map(|(_, batch)| batch_dedup_key(batch))
@@ -398,7 +397,7 @@ async fn replay_snapshot(
         return Err(eyre::eyre!("writer closed during watermark send"));
     }
 
-    // Forward batches the snapshot didn't cover.
+    // forward non-duplicate buffered batches
     for (maybe_bnh, batch) in buffered {
         let dominated = batch_dedup_key(&batch).is_some_and(|key| snapshot_keys.contains(&key));
         if !dominated {
@@ -633,7 +632,7 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
         let (batch_tx, mut batch_rx) = mpsc::channel(16);
-        // Small writer channel to exercise backpressure path
+        // small channel to exercise backpressure
         let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(1);
         let (delivered_tx, mut delivered_rx) = watch::channel(None);
         let cancel = CancellationToken::new();
@@ -686,7 +685,7 @@ mod tests {
         cancel.cancel();
         live_handle.await.unwrap().unwrap();
 
-        // +1 for the watermark sent on cancellation
+        // +1 for cancellation watermark
         assert_eq!(
             writer_count.load(AtomicOrdering::Relaxed),
             4,
@@ -783,7 +782,7 @@ mod tests {
         let (bnh1, batch1) = make_test_batch(1, 0x01, BatchOp::Commit);
         let (bnh2, batch2) = make_test_batch(2, 0x02, BatchOp::Commit);
 
-        // Pre-load channel with same batches as snapshot
+        // preload channel with same batches as snapshot
         batch_tx.send((Some(bnh1), batch1.clone())).await.unwrap();
         batch_tx.send((Some(bnh2), batch2.clone())).await.unwrap();
 
@@ -791,7 +790,7 @@ mod tests {
         let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
 
         assert_eq!(tip, 2);
-        // Only snapshot batches + watermark; no duplicates forwarded
+        // snapshot + watermark only, duplicates filtered
         assert_eq!(
             received.len(),
             3,
@@ -803,10 +802,10 @@ mod tests {
     async fn replay_forwards_reorg_batches_with_different_hash() {
         let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
-        // Snapshot covers block 100 with hash 0xAA
+        // snapshot: block 100, hash 0xAA
         let (bnh100, batch100) = make_test_batch(100, 0xAA, BatchOp::Commit);
 
-        // After snapshot: revert(100, 0xAA) + commit(100', 0xBB)
+        // channel: revert(100, 0xAA) + commit(100', 0xBB)
         let (_, revert_batch) = make_test_batch(100, 0xAA, BatchOp::Revert);
         let (bnh100_prime, commit_batch) = make_test_batch(100, 0xBB, BatchOp::Commit);
 
@@ -820,7 +819,7 @@ mod tests {
         let (tip, received) = run_replay_test(&mut batch_rx, snapshot).await;
 
         assert_eq!(tip, 100, "tip should be 100 from reorg commit");
-        // snapshot(1) + watermark(1) + revert(1) + commit(1) = 4
+        // snapshot + watermark + revert + commit = 4
         assert_eq!(received.len(), 4, "reorg batches should be forwarded");
     }
 
@@ -828,16 +827,16 @@ mod tests {
     async fn replay_filters_duplicate_revert_in_buffer() {
         let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
 
-        // Snapshot contains a revert for block 5
+        // snapshot has revert for block 5
         let (bnh5, revert5) = make_test_batch(5, 0x05, BatchOp::Revert);
 
-        // Channel also has the same revert (duplicate)
+        // same revert in channel (duplicate)
         batch_tx.send((None, revert5.clone())).await.unwrap();
 
         let snapshot = vec![(bnh5, revert5)];
         let (_, received) = run_replay_test(&mut batch_rx, snapshot).await;
 
-        // snapshot(1) + watermark(1), duplicate revert filtered out
+        // snapshot + watermark, duplicate revert filtered
         assert_eq!(
             received.len(),
             2,

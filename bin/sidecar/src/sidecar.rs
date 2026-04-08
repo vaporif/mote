@@ -9,14 +9,16 @@ use glint_analytics::{
     entity_store::EntityStore,
     table_provider,
 };
-
-use crate::{cli::EntitiesBackend, flight_sql, health, ipc_client};
 use glint_historical::{
     provider::{
-        EventNumericAnnotationsProvider, EventStringAnnotationsProvider, HistoricalEventsProvider,
+        event_numeric_annotations::EventNumericAnnotationsProvider,
+        event_string_annotations::EventStringAnnotationsProvider,
+        historical_events::HistoricalEventsProvider,
     },
     schema, writer,
 };
+
+use crate::{cli::EntitiesBackend, flight_sql, health, ipc_client};
 use glint_primitives::exex_schema::columns;
 use glint_sidecar_live_sql::{
     applier as sql_applier,
