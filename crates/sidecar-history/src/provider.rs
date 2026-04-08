@@ -3,7 +3,7 @@ use datafusion::prelude::Expr;
 pub mod annotation_extractors;
 pub mod block_range_filter;
 pub mod event_numeric_annotions;
-pub mod event_string_annnotations;
+pub mod event_string_annotations;
 pub mod historical_events;
 
 use glint_primitives::exex_schema::columns;

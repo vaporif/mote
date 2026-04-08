@@ -7,12 +7,10 @@ use std::sync::Arc;
 
 use arrow::array::{Array, AsArray};
 use datafusion::prelude::*;
-use glint_historical::{
-    provider::{
-        EventNumericAnnotationsProvider, EventStringAnnotationsProvider, HistoricalEventsProvider,
-    },
-    schema, writer,
-};
+use glint_historical::provider::event_numeric_annotions::EventNumericAnnotationsProvider;
+use glint_historical::provider::event_string_annotations::EventStringAnnotationsProvider;
+use glint_historical::provider::historical_events::HistoricalEventsProvider;
+use glint_historical::{schema, writer};
 use glint_primitives::columns;
 use glint_primitives::exex_types::EntityEventType;
 use glint_primitives::test_utils::{EventBuilder, build_batch};
@@ -196,7 +194,7 @@ async fn e2e_annotations_survive_roundtrip() {
     .unwrap();
     ctx.register_table(
         "event_numeric_annotations",
-        Arc::new(EventNumericAnnotationsProvider::new(conn)),
+        Arc::new(ventNumericAnnotationsProvider::new(conn)),
     )
     .unwrap();
 
