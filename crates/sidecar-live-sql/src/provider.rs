@@ -28,10 +28,6 @@ use glint_primitives::{
 use parking_lot::Mutex;
 use rusqlite::Connection;
 
-// ---------------------------------------------------------------------------
-// SqliteEntitiesProvider
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct SqliteEntitiesProvider {
     read_conn: Arc<Mutex<Connection>>,
@@ -188,10 +184,6 @@ fn query_entities_latest(
     Ok(batch)
 }
 
-// ---------------------------------------------------------------------------
-// SqliteStringAnnotationsProvider
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct SqliteStringAnnotationsProvider {
     read_conn: Arc<Mutex<Connection>>,
@@ -312,10 +304,6 @@ fn query_string_annotations(
     Ok(batch)
 }
 
-// ---------------------------------------------------------------------------
-// SqliteNumericAnnotationsProvider
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub struct SqliteNumericAnnotationsProvider {
     read_conn: Arc<Mutex<Connection>>,
@@ -435,10 +423,6 @@ fn query_numeric_annotations(
 
     Ok(batch)
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 fn references_column(expr: &Expr, col_name: &str) -> bool {
     match expr {
