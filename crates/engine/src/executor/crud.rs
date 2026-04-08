@@ -102,8 +102,7 @@ where
             entity_counter_delta: 0,
         };
 
-        // Safe because validation rejects duplicate entity keys across operations
-        // within a single transaction (see primitives/src/validation.rs).
+        // validation already rejects duplicate keys within a tx
         Self::process_creates(&mut acc, &decoded, sender, tx_hash, current_block)?;
         self.process_updates(&mut acc, &decoded, sender, current_block)?;
         self.process_deletes(&mut acc, &decoded.tx.deletes, sender)?;
@@ -691,7 +690,7 @@ mod tests {
             value: 42,
         }];
 
-        // "key1" (4) + "val1" (4) + "nk" (2) + 8 = 18
+        // "key1"(4) + "val1"(4) + "nk"(2) + 8 = 18
         assert_eq!(annotation_gas_bytes(&str_anns, &num_anns), 18);
     }
 

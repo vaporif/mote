@@ -28,7 +28,7 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
 
     let op_col = col_u8(batch, col_names::OP)?;
 
-    // Batches are homogeneous by op.
+    // batches are homogeneous by op
     let op_val = op_col.value(0);
     if op_val == 0xFF {
         return Ok(ApplyResult::Watermark);
@@ -184,8 +184,7 @@ fn apply_revert(
 
                 if let Some(mut row) = store.get_mut(&entity_key) {
                     row.set_expires_at_block(old_expires);
-                    // tx_hash can't be fully restored — the revert payload doesn't carry
-                    // the pre-extension tx_hash, so we leave it as-is.
+                    // revert doesn't carry the pre-extension tx_hash
                 } else {
                     warn!(?entity_key, "reverting Extended event for missing entity");
                 }
