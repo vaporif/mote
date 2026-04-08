@@ -194,7 +194,7 @@ async fn e2e_annotations_survive_roundtrip() {
     .unwrap();
     ctx.register_table(
         "event_numeric_annotations",
-        Arc::new(ventNumericAnnotationsProvider::new(conn)),
+        Arc::new(EventNumericAnnotationsProvider::new(conn)),
     )
     .unwrap();
 

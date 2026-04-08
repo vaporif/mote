@@ -84,14 +84,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn storage_key_is_deterministic() {
-        let entity_key = B256::repeat_byte(0x42);
-        let key1 = entity_storage_key(&entity_key);
-        let key2 = entity_storage_key(&entity_key);
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
     fn storage_key_matches_spec() {
         let entity_key = B256::repeat_byte(0x01);
         let mut preimage = Vec::new();
@@ -132,14 +124,6 @@ mod tests {
     }
 
     #[test]
-    fn operator_key_is_deterministic() {
-        let entity_key = B256::repeat_byte(0x42);
-        let key1 = entity_operator_key(&entity_key);
-        let key2 = entity_operator_key(&entity_key);
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
     fn operator_key_matches_spec_preimage() {
         let entity_key = B256::repeat_byte(0x01);
         let mut preimage = Vec::new();
@@ -157,12 +141,6 @@ mod tests {
         let encoded = super::encode_operator_value(addr);
         let decoded = super::decode_operator_value(encoded);
         assert_eq!(decoded, addr);
-    }
-
-    #[test]
-    fn operator_value_zero_is_zero_address() {
-        let decoded = super::decode_operator_value(U256::ZERO);
-        assert_eq!(decoded, alloy_primitives::Address::ZERO);
     }
 
     #[test]

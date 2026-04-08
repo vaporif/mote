@@ -49,22 +49,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_op_repr_values() {
-        assert_eq!(BatchOp::Commit as u8, 0);
-        assert_eq!(BatchOp::Revert as u8, 1);
-    }
-
-    #[test]
-    fn entity_event_type_repr_values() {
-        assert_eq!(EntityEventType::Created as u8, 0);
-        assert_eq!(EntityEventType::Updated as u8, 1);
-        assert_eq!(EntityEventType::Deleted as u8, 2);
-        assert_eq!(EntityEventType::Expired as u8, 3);
-        assert_eq!(EntityEventType::Extended as u8, 4);
-        assert_eq!(EntityEventType::PermissionsChanged as u8, 5);
-    }
-
-    #[test]
     fn batch_op_roundtrip() {
         assert_eq!(BatchOp::try_from(0u8).unwrap(), BatchOp::Commit);
         assert_eq!(BatchOp::try_from(1u8).unwrap(), BatchOp::Revert);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use datafusion::prelude::*;
-use glint_historical::{provider::HistoricalEventsProvider, schema, writer};
+use glint_historical::{provider::historical_events::HistoricalEventsProvider, schema, writer};
 use glint_primitives::test_utils::{EventBuilder, build_batch};
 
 #[tokio::test]
