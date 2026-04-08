@@ -51,7 +51,7 @@ pub fn decode_operator_value(value: U256) -> Address {
 }
 
 /// `keccak256(len(f1) || f1 || ... || len(f4) || f4)` over raw RLP of
-/// payload, content_type, string_annotations, numeric_annotations.
+/// payload, `content_type`, `string_annotations`, `numeric_annotations`.
 /// Length prefixes provide domain separation.
 pub fn compute_content_hash_from_raw(
     payload_rlp: &[u8],
