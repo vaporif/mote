@@ -190,17 +190,14 @@ async fn full_subscribe_and_replay() {
     assert!(!is_watermark(&batches[2]));
 }
 
-/// Probe via IPC transport returns minimal info (zeros) since the transport
-/// layer doesn't own ring buffer stats. The real probe stats are only available
-/// through the subscribe handshake or gRPC probe.
+/// IPC probe doesn't have ring buffer stats — those live in the writer task,
+/// not the transport layer. Returns zeros.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn probe_returns_status() {
     let harness = TestHarness::spawn();
 
     let client = glint_transport::ipc::IpcClient::new(harness.socket_path.clone());
     let info = client.probe().await.unwrap();
-
-    // IPC transport's inline probe handler returns zeros
     assert_eq!(info.tip_block, 0);
     assert_eq!(info.oldest_block, 0);
     assert!(!harness.consumer_connected.load(Ordering::Acquire));

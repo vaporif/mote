@@ -328,7 +328,7 @@ async fn run_connection(
         }
 
         if is_live {
-            // Drain any already-buffered batches before publishing a snapshot
+            // Batch up queued messages so we publish one snapshot, not N
             while let Some(Some(queued_result)) = batch_stream.next().now_or_never() {
                 let queued = queued_result?;
                 match process_batch(backend, sqlite_conn, &queued, &mut last_block)? {

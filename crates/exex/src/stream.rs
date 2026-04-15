@@ -366,7 +366,7 @@ mod tests {
             received
         });
 
-        // Run server-side replay in current task (no lifetime issue with batch_rx)
+        // Server side: accept, handshake, replay, close
         let mut conn = ipc_server.accept().await.unwrap();
         let resume = conn.recv_subscribe().await.unwrap();
         conn.send_handshake(0, 0).await.unwrap();
