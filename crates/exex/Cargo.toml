@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 glint-primitives = { workspace = true, features = ["arrow"] }
+glint-transport.workspace = true
 
 reth-exex.workspace = true
 reth-exex-types.workspace = true
@@ -37,7 +38,9 @@ arrow = { workspace = true, features = ["prettyprint"] }
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 glint-primitives.workspace = true
+glint-transport.workspace = true
 borsh.workspace = true
+futures.workspace = true
 tempfile.workspace = true
 
 [lints]

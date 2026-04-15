@@ -1,6 +1,12 @@
 pub mod eth_node_handle;
 pub mod sidecar_handle;
 
+#[derive(Debug, Clone, Copy)]
+pub enum Transport {
+    Ipc,
+    Grpc,
+}
+
 fn fetch_container_logs(container_id: &str) -> String {
     let output = std::process::Command::new("docker")
         .args(["logs", container_id])

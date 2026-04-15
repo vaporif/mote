@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use futures::{FutureExt, StreamExt};
 use glint_analytics::{
     batch_decoder::{self, ApplyResult},
     entity_store::EntityStore,
@@ -18,7 +19,7 @@ use glint_historical::{
     schema, writer,
 };
 
-use crate::{cli::EntitiesBackend, flight_sql, health, ipc_client};
+use crate::{cli::EntitiesBackend, flight_sql, health};
 use glint_primitives::exex_schema::columns;
 use glint_sidecar_live_sql::{
     applier as sql_applier,
@@ -62,6 +63,7 @@ enum Backend {
 pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
     let crate::cli::RunArgs {
         exex_socket,
+        exex_grpc,
         flight_port,
         health_port,
         db_path,
@@ -187,13 +189,15 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             res = &mut flight_handle => {
                 return Err(eyre::eyre!("flight sql server exited unexpectedly: {res:?}"));
             }
-            result = run_connection(
-                &exex_socket,
-                &mut backend,
-                &write_conn,
-                &ready_tx,
-                resume_block,
-            ) => {
+            result = async {
+                let client: Box<dyn glint_transport::ExExTransportClient> =
+                    if let Some(ref grpc_url) = exex_grpc {
+                        Box::new(glint_transport::grpc::GrpcClient::new(grpc_url.clone()))
+                    } else {
+                        Box::new(glint_transport::ipc::IpcClient::new(exex_socket.clone()))
+                    };
+                run_connection(client, &mut backend, &write_conn, &ready_tx, resume_block).await
+            } => {
                 match result {
                     Ok(ConnectionOutcome::Closed { last_block }) => {
                         info!(last_block, "connection closed");
@@ -244,12 +248,6 @@ enum BatchOutcome {
     NeedsReplay,
 }
 
-impl BatchOutcome {
-    const fn is_needs_replay(&self) -> bool {
-        matches!(self, Self::NeedsReplay)
-    }
-}
-
 fn process_batch(
     backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
@@ -295,39 +293,26 @@ fn process_batch(
 }
 
 async fn run_connection(
-    socket_path: &Path,
+    client: Box<dyn glint_transport::ExExTransportClient>,
     backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
 ) -> eyre::Result<ConnectionOutcome> {
-    let (handshake, std_stream) =
-        ipc_client::connect_and_subscribe(socket_path, resume_block).await?;
+    let (handshake, mut batch_stream) = client.subscribe(resume_block).await?;
     info!(
         oldest = handshake.oldest_block,
         tip = handshake.tip_block,
         "connected to ExEx"
     );
 
-    check_gap(sqlite_conn, &handshake)?;
-
-    let (batch_tx, mut batch_rx) = tokio::sync::mpsc::channel(256);
-
-    let reader_handle = tokio::task::spawn_blocking(move || -> eyre::Result<()> {
-        let iter = ipc_client::read_batches(std_stream)?;
-        for batch_result in iter {
-            let batch = batch_result?;
-            if batch_tx.blocking_send(batch).is_err() {
-                break;
-            }
-        }
-        Ok(())
-    });
+    check_gap(sqlite_conn, handshake.oldest_block)?;
 
     let mut is_live = false;
     let mut last_block: u64 = resume_block;
 
-    while let Some(batch) = batch_rx.recv().await {
+    while let Some(batch_result) = batch_stream.next().await {
+        let batch = batch_result?;
         match process_batch(backend, sqlite_conn, &batch, &mut last_block)? {
             BatchOutcome::EnterLive => {
                 info!("watermark received, entering live mode");
@@ -343,10 +328,12 @@ async fn run_connection(
         }
 
         if is_live {
-            while let Ok(queued) = batch_rx.try_recv() {
-                if process_batch(backend, sqlite_conn, &queued, &mut last_block)?.is_needs_replay()
-                {
-                    return Ok(ConnectionOutcome::NeedsReplay);
+            // Batch up queued messages so we publish one snapshot, not N
+            while let Some(Some(queued_result)) = batch_stream.next().now_or_never() {
+                let queued = queued_result?;
+                match process_batch(backend, sqlite_conn, &queued, &mut last_block)? {
+                    BatchOutcome::NeedsReplay => return Ok(ConnectionOutcome::NeedsReplay),
+                    BatchOutcome::EnterLive | BatchOutcome::Continue => {}
                 }
             }
             if let Backend::Memory { store, snapshot_tx } = backend {
@@ -355,29 +342,18 @@ async fn run_connection(
         }
     }
 
-    match reader_handle.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e),
-        Err(e) => return Err(eyre::eyre!("IPC reader task panicked: {e}")),
-    }
-
     Ok(ConnectionOutcome::Closed { last_block })
 }
 
-fn check_gap(
-    sqlite_conn: &Arc<Mutex<Connection>>,
-    handshake: &ipc_client::Handshake,
-) -> eyre::Result<()> {
+fn check_gap(sqlite_conn: &Arc<Mutex<Connection>>, oldest_block: u64) -> eyre::Result<()> {
     let last_processed = schema::get_last_processed_block(&sqlite_conn.lock())?;
 
     if let Some(last) = last_processed
-        && handshake.oldest_block > last
+        && oldest_block > last
     {
         eyre::bail!(
-            "ExEx ring buffer oldest block ({}) > SQLite last_processed_block ({}). \
+            "ExEx ring buffer oldest block ({oldest_block}) > SQLite last_processed_block ({last}). \
              Run `glint db rebuild --from-block {last}` to recover.",
-            handshake.oldest_block,
-            last,
         );
     }
 

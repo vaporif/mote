@@ -1,7 +1,10 @@
-use std::path::Path;
-
 use testcontainers::core::{IntoContainerPort, Mount};
 use testcontainers::{ContainerAsync, GenericImage, ImageExt, runners::AsyncRunner};
+
+use crate::Transport;
+use crate::eth_node_handle::EthNodeHandle;
+
+const HOST_ALIAS: &str = "host.testcontainers.internal";
 
 pub struct SidecarHandle {
     _container: ContainerAsync<GenericImage>,
@@ -11,30 +14,47 @@ pub struct SidecarHandle {
 }
 
 impl SidecarHandle {
-    pub async fn spawn(exex_volume_path: &Path) -> eyre::Result<Self> {
+    pub async fn spawn(node: &EthNodeHandle, transport: Transport) -> eyre::Result<Self> {
         let image_tag = std::env::var("GLINT_IMAGE_TAG").unwrap_or_else(|_| "latest".into());
 
-        let image = GenericImage::new("glint-sidecar", &image_tag)
+        let mut cmd = vec![
+            "run".to_string(),
+            "--flight-port".to_string(),
+            "50051".to_string(),
+            "--health-port".to_string(),
+            "8080".to_string(),
+            "--db-path".to_string(),
+            "/data/glint-sidecar.db".to_string(),
+            "--genesis".to_string(),
+            "/etc/glint/genesis.json".to_string(),
+        ];
+
+        let mut image = GenericImage::new("glint-sidecar", &image_tag)
             .with_exposed_port(50051.tcp())
             .with_exposed_port(8080.tcp())
-            .with_env_var("RUST_LOG", "debug")
-            .with_mount(Mount::bind_mount(
-                exex_volume_path.to_str().unwrap(),
-                "/exex",
-            ))
-            .with_cmd(vec![
-                "run",
-                "--exex-socket",
-                "/exex/glint-exex.sock",
-                "--flight-port",
-                "50051",
-                "--health-port",
-                "8080",
-                "--db-path",
-                "/data/glint-sidecar.db",
-                "--genesis",
-                "/etc/glint/genesis.json",
-            ]);
+            .with_env_var("RUST_LOG", "debug");
+
+        match transport {
+            Transport::Ipc => {
+                image = image.with_mount(Mount::bind_mount(
+                    node.exex_volume_path().to_str().unwrap(),
+                    "/exex",
+                ));
+                cmd.push("--exex-socket".to_string());
+                cmd.push("/exex/glint-exex.sock".to_string());
+            }
+            Transport::Grpc => {
+                let grpc_port = node
+                    .grpc_host_port()
+                    .expect("node must be spawned with Transport::Grpc");
+                image = image.with_exposed_host_port(grpc_port);
+                cmd.push("--exex-grpc".to_string());
+                cmd.push(format!("http://{HOST_ALIAS}:{grpc_port}"));
+            }
+        }
+
+        let cmd_refs: Vec<&str> = cmd.iter().map(String::as_str).collect();
+        let image = image.with_cmd(cmd_refs);
 
         let container = image.start().await?;
         let container_id = container.id().to_string();

@@ -12,6 +12,10 @@ pub struct GlintArgs {
     )]
     pub exex_socket_path: PathBuf,
 
+    /// gRPC listen port for remote sidecars. Set to enable gRPC transport.
+    #[arg(long = "glint.exex-grpc-port")]
+    pub exex_grpc_port: Option<u16>,
+
     /// Path for expiration index checkpoint file
     #[arg(long = "glint.checkpoint-path", default_value = None)]
     pub checkpoint_path: Option<PathBuf>,
@@ -81,6 +85,18 @@ mod tests {
             cli.glint.checkpoint_path,
             Some(PathBuf::from("/data/glint/expiration-index.bin"))
         );
+    }
+
+    #[test]
+    fn grpc_port_not_set_by_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(cli.glint.exex_grpc_port.is_none());
+    }
+
+    #[test]
+    fn custom_grpc_port() {
+        let cli = TestCli::parse_from(["test", "--glint.exex-grpc-port", "9100"]);
+        assert_eq!(cli.glint.exex_grpc_port, Some(9100));
     }
 
     #[cfg(debug_assertions)]

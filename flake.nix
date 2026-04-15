@@ -31,7 +31,11 @@
       fenixPkgs,
       craneLib,
     }: let
-      src = craneLib.cleanCargoSource ./.;
+      src = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          (builtins.match ".*\\.proto$" path != null) || (craneLib.filterCargoSources path type);
+      };
 
       commonArgs =
         {
@@ -42,6 +46,7 @@
             [
               pkgs.pkg-config
               pkgs.llvmPackages.clang
+              pkgs.protobuf
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.openssl
@@ -140,6 +145,7 @@
             pkgs.taplo
             pkgs.typos
             pkgs.llvmPackages.clang
+            pkgs.protobuf
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.pkg-config

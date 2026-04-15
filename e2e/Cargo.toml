@@ -14,7 +14,7 @@ eyre.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
-testcontainers = "0.27"
+testcontainers.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
@@ -26,3 +26,4 @@ alloy-network.workspace = true
 alloy-signer-local.workspace = true
 
 arrow.workspace = true
+rstest.workspace = true

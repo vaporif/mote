@@ -1,35 +1,21 @@
-use std::io::{Read as _, Write as _};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, B256, Bytes};
 use arrow::array::UInt8Array;
-use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use futures::StreamExt;
 use glint_exex::arrow::{EventRow, build_record_batch};
 use glint_exex::ring_buffer::RingBufferStats;
-use glint_exex::stream::{ProbeResponse, SnapshotRequest, socket_writer_task};
+use glint_exex::stream::{SnapshotRequest, writer_task};
 use glint_primitives::exex_schema::columns;
 use glint_primitives::exex_types::BatchOp;
 use glint_primitives::parse::EntityEvent;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+use glint_transport::{ExExTransportClient, ExExTransportServer};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-
-fn temp_socket_path() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "glint-test-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ))
-}
 
 fn sample_created_event() -> EntityEvent {
     EntityEvent::Created {
@@ -66,13 +52,6 @@ fn make_test_batch(block_number: u64) -> RecordBatch {
     .expect("test batch build should succeed")
 }
 
-fn subscribe_msg(resume_block: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(9);
-    buf.push(1u8);
-    buf.extend_from_slice(&resume_block.to_le_bytes());
-    buf
-}
-
 fn is_watermark(batch: &RecordBatch) -> bool {
     batch
         .column_by_name(columns::OP)
@@ -80,14 +59,8 @@ fn is_watermark(batch: &RecordBatch) -> bool {
         .is_some_and(|col| !col.is_empty() && col.value(0) == 0xFF)
 }
 
-fn consume_handshake(stream: &std::os::unix::net::UnixStream) {
-    let mut buf = [0u8; glint_exex::stream::HANDSHAKE_RESPONSE_SIZE];
-    (&*stream).read_exact(&mut buf).expect("handshake read");
-    assert_eq!(buf[0], 1, "protocol version echo should be 1");
-}
-
 struct TestHarness {
-    socket_path: PathBuf,
+    socket_path: std::path::PathBuf,
     batch_tx: mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     #[allow(dead_code)]
@@ -98,26 +71,40 @@ struct TestHarness {
 
 impl TestHarness {
     fn spawn() -> Self {
-        let socket_path = temp_socket_path();
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
         let (batch_tx, batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(64);
         let (snapshot_tx, snapshot_rx) = mpsc::channel::<SnapshotRequest>(1);
         let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
         let consumer_connected = Arc::new(AtomicBool::new(false));
+        let probe_state = glint_transport::ProbeState {
+            consumer_connected: Arc::clone(&consumer_connected),
+            tip_block: Arc::new(AtomicU64::new(100)),
+            oldest_block: Arc::new(AtomicU64::new(1)),
+            ring_buffer_entries: Arc::new(AtomicU64::new(42)),
+            ring_buffer_memory_bytes: Arc::new(AtomicU64::new(8192)),
+        };
         let rb_stats = RingBufferStats {
-            entries: Arc::new(AtomicU64::new(42)),
-            memory: Arc::new(AtomicU64::new(8192)),
-            tip: Arc::new(AtomicU64::new(100)),
-            oldest: Arc::new(AtomicU64::new(1)),
+            entries: Arc::clone(&probe_state.ring_buffer_entries),
+            memory: Arc::clone(&probe_state.ring_buffer_memory_bytes),
+            tip: Arc::clone(&probe_state.tip_block),
+            oldest: Arc::clone(&probe_state.oldest_block),
         };
         let cancellation_token = CancellationToken::new();
 
-        let task_path = socket_path.clone();
         let task_connected = Arc::clone(&consumer_connected);
         let task_cancel = cancellation_token.clone();
 
+        let ipc_server = glint_transport::ipc::IpcServer::new(
+            socket_path.clone(),
+            probe_state,
+            task_cancel.clone(),
+        )
+        .expect("failed to bind IPC socket");
+
         tokio::spawn(async move {
-            let _ = socket_writer_task(
-                task_path,
+            let _ = writer_task(
+                Box::new(ipc_server),
                 snapshot_tx,
                 batch_rx,
                 delivered_tx,
@@ -128,6 +115,9 @@ impl TestHarness {
             .await;
         });
 
+        // Keep tempdir alive by leaking it (cleaned up on process exit)
+        std::mem::forget(dir);
+
         Self {
             socket_path,
             batch_tx,
@@ -136,32 +126,6 @@ impl TestHarness {
             consumer_connected,
             cancellation_token,
         }
-    }
-
-    async fn wait_for_socket(&self) {
-        for _ in 0..100 {
-            if self.socket_path.exists() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!(
-            "socket file did not appear at {}",
-            self.socket_path.display()
-        );
-    }
-
-    async fn connect(&self) -> UnixStream {
-        for _ in 0..50 {
-            if let Ok(stream) = UnixStream::connect(&self.socket_path).await {
-                return stream;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!(
-            "could not connect to socket at {}",
-            self.socket_path.display()
-        );
     }
 }
 
@@ -175,15 +139,13 @@ impl Drop for TestHarness {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_subscribe_and_replay() {
     let mut harness = TestHarness::spawn();
-    harness.wait_for_socket().await;
 
-    let client = harness.connect().await;
-    let std_client = client.into_std().unwrap();
-    std_client.set_nonblocking(false).unwrap();
+    let client = Box::new(glint_transport::ipc::IpcClient::new(
+        harness.socket_path.clone(),
+    ));
 
-    (&std_client).write_all(&subscribe_msg(0)).unwrap();
-
-    consume_handshake(&std_client);
+    // Client subscribe triggers server accept
+    let subscribe_handle = tokio::spawn(async move { client.subscribe(0).await.unwrap() });
 
     let snap_req = timeout(Duration::from_secs(5), harness.snapshot_rx.recv())
         .await
@@ -209,36 +171,25 @@ async fn full_subscribe_and_replay() {
         .await
         .unwrap();
 
-    // all 3 batches buffered in IPC writer, blocking read won't race
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        std_client
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let reader = StreamReader::try_new(&std_client, None).unwrap();
-        let mut batches = Vec::new();
-        for batch_result in reader {
-            match batch_result {
-                Ok(batch) => {
-                    batches.push(batch);
-                    if batches.len() >= 3 {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = done_tx.send(batches);
-    });
+    // Give the writer task time to send batches
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let batches = timeout(Duration::from_secs(10), done_rx)
-        .await
-        .expect("timed out waiting for reader")
-        .unwrap();
+    // Cancel to close the stream
+    harness.cancellation_token.cancel();
+
+    let (_info, mut stream) = subscribe_handle.await.unwrap();
+
+    let mut batches = Vec::new();
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(batch) => batches.push(batch),
+            Err(_) => break,
+        }
+    }
 
     assert!(
         batches.len() >= 3,
-        "expected at least 3 batches, got {}",
+        "expected at least 3 batches (snapshot + watermark + live), got {}",
         batches.len()
     );
 
@@ -252,33 +203,22 @@ async fn full_subscribe_and_replay() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn probe_returns_status() {
     let harness = TestHarness::spawn();
-    harness.wait_for_socket().await;
 
-    let mut client = harness.connect().await;
-
-    client.write_all(&[0x00]).await.unwrap();
-
-    let mut buf = Vec::new();
-    timeout(Duration::from_secs(5), client.read_to_end(&mut buf))
-        .await
-        .expect("timed out reading probe")
-        .unwrap();
-
-    let resp: ProbeResponse = borsh::from_slice(&buf).unwrap();
-    assert_eq!(resp.ring_buffer_entries, 42);
-    assert_eq!(resp.ring_buffer_memory_bytes, 8192);
-    assert_eq!(resp.tip_block, 100);
-    assert_eq!(resp.oldest_block, 1);
-
+    let client = glint_transport::ipc::IpcClient::new(harness.socket_path.clone());
+    let info = client.probe().await.unwrap();
+    assert_eq!(info.tip_block, 100);
+    assert_eq!(info.oldest_block, 1);
     assert!(!harness.consumer_connected.load(Ordering::Acquire));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_message_returns_error_byte() {
-    let harness = TestHarness::spawn();
-    harness.wait_for_socket().await;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
 
-    let mut client = harness.connect().await;
+    let harness = TestHarness::spawn();
+
+    let mut client = UnixStream::connect(&harness.socket_path).await.unwrap();
 
     let mut buf = Vec::with_capacity(9);
     buf.push(0xFE);
@@ -303,32 +243,30 @@ async fn unknown_message_returns_error_byte() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancellation_disconnects_consumer() {
     let mut harness = TestHarness::spawn();
-    harness.wait_for_socket().await;
 
-    let client_a = harness.connect().await;
-    let std_a = client_a.into_std().unwrap();
-    std_a.set_nonblocking(false).unwrap();
+    let client = Box::new(glint_transport::ipc::IpcClient::new(
+        harness.socket_path.clone(),
+    ));
 
-    (&std_a).write_all(&subscribe_msg(0)).unwrap();
+    let subscribe_handle = tokio::spawn(async move { client.subscribe(0).await.unwrap() });
 
-    consume_handshake(&std_a);
-
-    let _drain_a = tokio::task::spawn_blocking(move || {
-        let mut buf = [0u8; 4096];
-        loop {
-            match std::io::Read::read(&mut &std_a, &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-        }
-    });
-
-    let snap_a = timeout(Duration::from_secs(5), harness.snapshot_rx.recv())
+    let snap_req = timeout(Duration::from_secs(5), harness.snapshot_rx.recv())
         .await
         .expect("snapshot request timed out")
         .unwrap();
-    snap_a.reply_tx.send(vec![]).unwrap();
-    let _ = snap_a.replay_done_rx.await;
+    snap_req.reply_tx.send(vec![]).unwrap();
+    let _ = snap_req.replay_done_rx.await;
+
+    let (_info, mut stream) = subscribe_handle.await.unwrap();
+
+    // Drain in background
+    let drain_handle = tokio::spawn(async move {
+        while let Some(result) = stream.next().await {
+            if result.is_err() {
+                break;
+            }
+        }
+    });
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -336,4 +274,6 @@ async fn cancellation_disconnects_consumer() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!harness.consumer_connected.load(Ordering::Acquire));
+
+    let _ = drain_handle.await;
 }

@@ -194,9 +194,9 @@ graph TB
         hist_prov --> flight
     end
 
-    ring -->|Arrow IPC<br/>unix socket| mem_store
-    ring -->|Arrow IPC<br/>unix socket| sql_store
-    ring -->|Arrow IPC<br/>unix socket| sqlite
+    ring -->|Arrow IPC<br/>unix socket / gRPC| mem_store
+    ring -->|Arrow IPC<br/>unix socket / gRPC| sql_store
+    ring -->|Arrow IPC<br/>unix socket / gRPC| sqlite
 
     subgraph clients["Clients"]
         sdk["glint-sdk (Rust)"]
@@ -222,7 +222,7 @@ graph TB
 
 `glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations: create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket.
+`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket or gRPC. The gRPC transport uses a small custom proto wrapping Arrow IPC bytes rather than Arrow Flight — Flight is built for query-serving, not one-way push streams.
 
 `glint-sidecar` is the query layer. It runs as a separate process, consumes the ExEx stream, and serves two tables over Flight SQL:
 
@@ -280,9 +280,9 @@ Everything in-memory rebuilds from the chain. No snapshots, no separate sync mod
 
 On node restart, `glint-engine` scans entity event logs from reth's database to reconstruct the expiration index. When MAX_BTL is set, it only scans that many blocks back - at ~1 week of history (302,400 blocks at 2s) this takes seconds to a few minutes. When `max_btl=0` (unlimited), it scans from genesis.
 
-On sidecar restart, it connects to the ExEx IPC stream and rebuilds from empty. The ExEx replays from its ring buffer. With bounded BTL, after MAX_BTL blocks from tip all live entities are reconstructed since anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy, same path.
+On sidecar restart, it connects to the ExEx stream (IPC unix socket or gRPC) and rebuilds from empty. The ExEx replays from its ring buffer. With bounded BTL, after MAX_BTL blocks from tip all live entities are reconstructed since anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy, same path.
 
-If the ExEx's IPC buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects the sidecar, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
+If the ExEx's buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects the sidecar, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
 
 ## License
 

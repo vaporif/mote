@@ -41,6 +41,7 @@ glint-sdk = { path = "crates/sdk" }
 glint-analytics = { path = "crates/sidecar-live" }
 glint-historical = { path = "crates/sidecar-history" }
 glint-sidecar-live-sql = { path = "crates/sidecar-live-sql" }
+glint-transport = { path = "crates/transport" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
@@ -58,18 +59,23 @@ alloy-rpc-types-eth = "=1.7.3"
 # version used by reth
 alloy-evm = "0.27"
 
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3", features = ["node", "node-api", "evm", "cli"] }
-reth-evm = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-exex = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-exex-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3", features = [
+  "node",
+  "node-api",
+  "evm",
+  "cli",
+] }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-exex-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 
 # op-reth crates from the optimism monorepo (pinned to reth v1.11.3)
 reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism", rev = "9705faa886127f60e2b1a9b1bcdfcb57ceef2ab8" }
@@ -103,6 +109,9 @@ roaring = "0.11"
 arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
 prost = "0.14"
 tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tokio-stream = "0.1"
 axum = "0.8"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
@@ -111,12 +120,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 tower = { version = "0.5", features = ["util"] }
 
+testcontainers = { version = "0.27", features = ["host-port-exposure"] }
 tempfile = "3"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
 regex = "1"
 thiserror = "2"
 url = "2"
 color-eyre = "0.6"
+rstest = "0.25"
 
 # Patch crates.io versions with the same optimism monorepo rev so there's only
 # one copy of each crate in the dependency graph (mirrors the optimism

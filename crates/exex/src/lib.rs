@@ -25,51 +25,62 @@ const BATCH_CHANNEL_SIZE: usize = 1024;
 const SNAPSHOT_CHANNEL_SIZE: usize = 1;
 
 pub fn install<Node>(
-    socket_path: std::path::PathBuf,
+    transport: Box<dyn glint_transport::ExExTransportServer>,
+    probe_state: glint_transport::ProbeState,
+    cancel: CancellationToken,
 ) -> impl FnOnce(
     reth_exex::ExExContext<Node>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = eyre::Result<()>> + Send>>
 where
     Node: reth_node_api::FullNodeComponents,
 {
-    move |ctx| Box::pin(glint_exex(ctx, socket_path))
+    move |ctx| Box::pin(glint_exex(ctx, transport, probe_state, cancel))
 }
 
 async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     mut ctx: reth_exex::ExExContext<Node>,
-    socket_path: std::path::PathBuf,
+    transport: Box<dyn glint_transport::ExExTransportServer>,
+    probe_state: glint_transport::ProbeState,
+    cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
-    info!(?socket_path, head = ?ctx.head, "glint exex starting");
-
-    let (batch_tx, batch_rx) =
-        mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(BATCH_CHANNEL_SIZE);
-    let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(SNAPSHOT_CHANNEL_SIZE);
-    let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
+    info!(
+        head = ?ctx.head,
+        "glint exex starting"
+    );
 
     // TODO: checkpoint persistence — right now we replay from genesis on every
     // restart. Persist the ring buffer and max_reported height to disk.
-    let cancellation_token = CancellationToken::new();
-    let mut ring_buffer = RingBuffer::new();
+    let mut ring_buffer = RingBuffer::with_probe_state(&probe_state);
     let rb_stats = ring_buffer.stats();
-    let consumer_connected = Arc::new(AtomicBool::new(false));
+    let consumer_connected = probe_state.consumer_connected;
+
+    let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(SNAPSHOT_CHANNEL_SIZE);
+
+    let (batch_tx, batch_rx) =
+        mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(BATCH_CHANNEL_SIZE);
+    let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
 
     let writer_cancel = cancellation_token.clone();
     let writer_consumer = Arc::clone(&consumer_connected);
+    let writer_snapshot_tx = snapshot_tx.clone();
+    let writer_rb_stats = rb_stats.clone();
     tokio::spawn(async move {
-        if let Err(e) = stream::socket_writer_task(
-            socket_path,
-            snapshot_tx,
+        if let Err(e) = stream::writer_task(
+            transport,
+            writer_snapshot_tx,
             batch_rx,
             delivered_tx,
             writer_consumer,
-            rb_stats,
+            writer_rb_stats,
             writer_cancel,
         )
         .await
         {
-            error!(?e, "socket writer task failed");
+            error!(?e, "writer task failed");
         }
     });
+
+    drop(snapshot_tx); // drop original so channel closes when writer stops
 
     let mut replay_in_progress = false;
     let mut pending_replay_done_rx: Option<oneshot::Receiver<()>> = None;
@@ -213,7 +224,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
                 try_send_batch(
                     batch_tx,
                     Some(bnh),
-                    batch,
+                    &batch,
                     consumer_connected,
                     grace,
                     replay_in_progress,
@@ -263,7 +274,7 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
                 try_send_batch(
                     batch_tx,
                     None,
-                    batch,
+                    &batch,
                     consumer_connected,
                     grace,
                     replay_in_progress,
@@ -319,7 +330,7 @@ where
 fn try_send_batch(
     batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     bnh: Option<BlockNumHash>,
-    batch: RecordBatch,
+    batch: &RecordBatch,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
@@ -328,7 +339,7 @@ fn try_send_batch(
         return;
     }
 
-    match batch_tx.try_send((bnh, batch)) {
+    match batch_tx.try_send((bnh, batch.clone())) {
         Ok(()) => {
             // TODO: metrics
             grace.reset();
@@ -404,7 +415,7 @@ mod tests {
             try_send_batch(
                 &batch_tx,
                 None,
-                dummy_batch(),
+                &dummy_batch(),
                 &consumer_connected,
                 &mut grace,
                 false,
@@ -433,7 +444,7 @@ mod tests {
             try_send_batch(
                 &batch_tx,
                 None,
-                dummy_batch(),
+                &dummy_batch(),
                 &consumer_connected,
                 &mut grace,
                 true, // replay_in_progress
@@ -461,7 +472,7 @@ mod tests {
         try_send_batch(
             &batch_tx,
             None,
-            dummy_batch(),
+            &dummy_batch(),
             &consumer_connected,
             &mut grace,
             false,
@@ -482,7 +493,7 @@ mod tests {
         try_send_batch(
             &batch_tx,
             None,
-            dummy_batch(),
+            &dummy_batch(),
             &consumer_connected,
             &mut grace,
             false,
@@ -503,7 +514,7 @@ mod tests {
         try_send_batch(
             &batch_tx,
             None,
-            dummy_batch(),
+            &dummy_batch(),
             &consumer_connected,
             &mut grace,
             false,

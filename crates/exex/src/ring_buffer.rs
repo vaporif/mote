@@ -32,6 +32,15 @@ impl RingBufferStats {
             oldest: Arc::new(AtomicU64::new(0)),
         }
     }
+
+    pub fn from_probe_state(state: &glint_transport::ProbeState) -> Self {
+        Self {
+            entries: Arc::clone(&state.ring_buffer_entries),
+            memory: Arc::clone(&state.ring_buffer_memory_bytes),
+            tip: Arc::clone(&state.tip_block),
+            oldest: Arc::clone(&state.oldest_block),
+        }
+    }
 }
 
 pub struct RingBuffer {
@@ -51,6 +60,16 @@ impl RingBuffer {
     #[must_use]
     pub fn new() -> Self {
         Self::with_memory_cap(DEFAULT_MEMORY_CAP)
+    }
+
+    #[must_use]
+    pub fn with_probe_state(probe_state: &glint_transport::ProbeState) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            memory_usage: 0,
+            memory_cap: DEFAULT_MEMORY_CAP,
+            stats: RingBufferStats::from_probe_state(probe_state),
+        }
     }
 
     #[must_use]
