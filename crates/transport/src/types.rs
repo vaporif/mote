@@ -1,4 +1,3 @@
-/// Server handshake / probe response.
 #[derive(Debug, Clone, Copy)]
 pub struct HandshakeInfo {
     pub oldest_block: u64,

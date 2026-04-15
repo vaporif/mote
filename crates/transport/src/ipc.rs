@@ -22,19 +22,12 @@ const MAX_CLIENT_MSG_LEN: usize = 64;
 const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
 const WRITER_CHANNEL_SIZE: usize = 16;
 
-// -- Server ------------------------------------------------------------------
-
-/// IPC transport server over a Unix domain socket.
-///
-/// Handles probe requests internally and only surfaces subscribe connections
-/// through the `ExExTransportServer` trait.
 pub struct IpcServer {
     listener: UnixListener,
     cancel: CancellationToken,
 }
 
 impl IpcServer {
-    /// Bind a new listener. Removes any leftover socket file first.
     #[allow(clippy::needless_pass_by_value)] // owned path is idiomatic for bind
     pub fn new(socket_path: PathBuf, cancel: CancellationToken) -> eyre::Result<Self> {
         if socket_path.exists() {
@@ -63,9 +56,8 @@ impl ExExTransportServer for IpcServer {
 
             match try_classify_connection(stream).await {
                 Ok(Classified::Subscribe(conn)) => return Ok(Box::new(conn)),
-                Ok(Classified::Handled) => {
-                    // probe or unknown -- already responded, loop back
-                }
+                Ok(Classified::Handled) => {}
+
                 Err(e) => {
                     warn!(?e, "error classifying connection, skipping");
                 }
@@ -76,11 +68,9 @@ impl ExExTransportServer for IpcServer {
 
 enum Classified {
     Subscribe(IpcConnection),
-    /// Probe/unknown already handled inline.
     Handled,
 }
 
-/// Read the first message, decide what kind of connection this is.
 async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classified> {
     let mut buf = vec![0u8; MAX_CLIENT_MSG_LEN];
     let n = stream.read(&mut buf).await?;
@@ -89,14 +79,8 @@ async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classif
 
     match buf[0] {
         0x00 => {
-            // Probe -- respond inline with a minimal borsh-encoded ProbeResponse.
-            // The real ExEx server fills in live stats; here we just send zeros
-            // since the transport layer doesn't own ring-buffer state.
-            // In practice, probes on an IpcServer-based setup will go through
-            // the ExExTransportClient::probe path instead.
-            //
-            // Still, we must not break the protocol: send *something* valid so
-            // the client doesn't hang.
+            // Respond with zeroed probe data — the transport doesn't own
+            // ring-buffer state, but we need a valid reply to not hang the client.
             let resp = MinimalProbeResponse {
                 consumer_connected: false,
                 tip_block: 0,
@@ -132,8 +116,6 @@ async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classif
     }
 }
 
-/// Mirror of the exex `ProbeResponse` for borsh encoding.
-/// Kept private -- only used for the inline probe reply.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
 struct MinimalProbeResponse {
     consumer_connected: bool,
@@ -143,10 +125,6 @@ struct MinimalProbeResponse {
     ring_buffer_memory_bytes: u64,
 }
 
-// -- Connection (server side) ------------------------------------------------
-
-/// A single server-to-client IPC connection after the subscribe handshake byte
-/// has been read.
 pub struct IpcConnection {
     stream: Option<UnixStream>,
     subscribe_buf: Vec<u8>,
@@ -176,7 +154,6 @@ impl ExExConnection for IpcConnection {
         resp[1..9].copy_from_slice(&oldest.to_le_bytes());
         resp[9..17].copy_from_slice(&tip.to_le_bytes());
 
-        // Write the handshake bytes before handing the stream to the blocking writer.
         let mut async_stream = stream;
         async_stream.write_all(&resp).await?;
 
@@ -212,7 +189,6 @@ impl ExExConnection for IpcConnection {
     }
 
     async fn finish(&mut self) -> eyre::Result<()> {
-        // Drop the sender so the blocking writer thread sees channel close.
         self.writer_tx.take();
 
         if let Some(handle) = self.write_handle.take() {
@@ -224,9 +200,6 @@ impl ExExConnection for IpcConnection {
     }
 }
 
-// -- Client ------------------------------------------------------------------
-
-/// IPC transport client. Connects to a node's Unix socket.
 pub struct IpcClient {
     socket_path: PathBuf,
 }
@@ -244,7 +217,6 @@ impl ExExTransportClient for IpcClient {
         let mut stream = UnixStream::connect(&self.socket_path).await?;
         stream.write_all(&[0x00]).await?;
 
-        // ProbeResponse is borsh-encoded: bool(1) + 4 x u64(32) = 33 bytes
         let mut buf = vec![0u8; 256];
         let n = stream.read(&mut buf).await?;
         ensure!(n >= 17, "probe response too short ({n} bytes)");
