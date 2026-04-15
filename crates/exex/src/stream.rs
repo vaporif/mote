@@ -121,6 +121,7 @@ pub async fn writer_task(
         }
 
         consumer_connected.store(false, Ordering::Release);
+        // TODO: metrics
     }
 
     Ok(())
@@ -135,6 +136,7 @@ async fn handle_transport_connection(
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
     let resume_block = conn.recv_subscribe().await?;
+    // TODO: metrics
     debug!(resume_block, "subscribe received");
 
     let oldest = rb_stats.oldest.load(Ordering::Relaxed);

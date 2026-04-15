@@ -341,15 +341,18 @@ fn try_send_batch(
 
     match batch_tx.try_send((bnh, batch.clone())) {
         Ok(()) => {
+            // TODO: metrics
             grace.reset();
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
+            // TODO: metrics
             if replay_in_progress {
                 debug!("batch channel full during replay, suppressing disconnect");
             } else {
                 debug!("batch channel full, applying backpressure");
                 grace.record_failure();
                 if grace.should_disconnect {
+                    // TODO: metrics
                     warn!("backpressure threshold exceeded, disconnecting consumer");
                     consumer_connected.store(false, Ordering::Release);
                 }
