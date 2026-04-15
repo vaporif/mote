@@ -1,0 +1,21 @@
+syntax = "proto3";
+package glint.exex.v1;
+
+service ExExStream {
+  rpc Probe(ProbeRequest) returns (ProbeResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream BatchMessage);
+}
+
+message ProbeRequest {}
+message ProbeResponse {
+  uint64 oldest_block = 1;
+  uint64 tip_block = 2;
+}
+
+message SubscribeRequest {
+  uint64 resume_block = 1;
+}
+
+message BatchMessage {
+  bytes arrow_ipc = 1;
+}

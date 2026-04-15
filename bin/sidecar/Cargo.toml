@@ -15,6 +15,7 @@ glint-analytics.workspace = true
 glint-historical.workspace = true
 glint-primitives = { workspace = true, features = ["genesis"] }
 glint-sidecar-live-sql.workspace = true
+glint-transport.workspace = true
 
 arrow.workspace = true
 datafusion.workspace = true

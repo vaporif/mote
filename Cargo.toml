@@ -41,6 +41,7 @@ glint-sdk = { path = "crates/sdk" }
 glint-analytics = { path = "crates/sidecar-live" }
 glint-historical = { path = "crates/sidecar-history" }
 glint-sidecar-live-sql = { path = "crates/sidecar-live-sql" }
+glint-transport = { path = "crates/transport" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 alloy-primitives = { version = "1.5", features = ["borsh"] }
@@ -58,7 +59,12 @@ alloy-rpc-types-eth = "=1.7.3"
 # version used by reth
 alloy-evm = "0.27"
 
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3", features = ["node", "node-api", "evm", "cli"] }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3", features = [
+  "node",
+  "node-api",
+  "evm",
+  "cli",
+] }
 reth-evm = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-exex = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
 reth-exex-types = { git = "https://github.com/paradigmxyz/reth.git", tag = "v1.11.3" }
@@ -103,6 +109,9 @@ roaring = "0.11"
 arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
 prost = "0.14"
 tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+tokio-stream = "0.1"
 axum = "0.8"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }

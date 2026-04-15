@@ -1,0 +1,43 @@
+[package]
+name = "glint-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["ipc", "grpc"]
+ipc = ["tokio/net"]
+grpc = ["tonic", "tonic-prost", "prost", "dep:tonic-prost-build"]
+
+[dependencies]
+arrow = { workspace = true }
+async-trait = { workspace = true }
+eyre = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+glint-primitives = { workspace = true, features = ["arrow"] }
+borsh = { workspace = true }
+
+# gRPC (optional)
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+arrow = { workspace = true, features = ["prettyprint"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

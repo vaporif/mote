@@ -1,63 +1,17 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use alloy_eips::BlockNumHash;
-use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
-use eyre::ensure;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::arrow::build_watermark_batch;
 use crate::ring_buffer::RingBufferStats;
-use glint_primitives::exex_schema::{columns, entity_events_schema};
-
-const SUBSCRIBE_MSG_SIZE: usize = 9; // 1 byte msg_type + 8 bytes resume_block
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClientMessage {
-    Probe,
-    Subscribe { resume_block: u64 },
-    Unknown(u8),
-}
-
-impl ClientMessage {
-    pub fn parse(buf: &[u8]) -> eyre::Result<Self> {
-        ensure!(!buf.is_empty(), "client message buffer is empty");
-
-        let msg_type = buf[0];
-        match msg_type {
-            0 => Ok(Self::Probe),
-            1 => {
-                ensure!(
-                    buf.len() >= SUBSCRIBE_MSG_SIZE,
-                    "Subscribe message requires {SUBSCRIBE_MSG_SIZE} bytes, got {}",
-                    buf.len()
-                );
-                let resume_block =
-                    u64::from_le_bytes(buf[1..SUBSCRIBE_MSG_SIZE].try_into().unwrap_or_default());
-                Ok(Self::Subscribe { resume_block })
-            }
-            other => Ok(Self::Unknown(other)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, borsh::BorshSerialize, borsh::BorshDeserialize)]
-pub struct ProbeResponse {
-    pub consumer_connected: bool,
-    pub tip_block: u64,
-    pub oldest_block: u64,
-    pub ring_buffer_entries: u64,
-    pub ring_buffer_memory_bytes: u64,
-}
+use glint_primitives::exex_schema::columns;
 
 pub struct SnapshotRequest {
     pub resume_block: u64,
@@ -121,12 +75,10 @@ impl GraceState {
     }
 }
 
-const WRITER_CHANNEL_SIZE: usize = 16;
-const MAX_CLIENT_MSG_LEN: usize = 64;
-pub const HANDSHAKE_RESPONSE_SIZE: usize = 17; // 1 + 8 + 8
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub async fn socket_writer_task(
-    socket_path: PathBuf,
+pub async fn writer_task(
+    server: Box<dyn glint_transport::ExExTransportServer>,
     snapshot_tx: mpsc::Sender<SnapshotRequest>,
     mut batch_rx: mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
     delivered_tx: watch::Sender<Option<BlockNumHash>>,
@@ -134,34 +86,27 @@ pub async fn socket_writer_task(
     rb_stats: RingBufferStats,
     cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
-    if socket_path.exists() {
-        std::fs::remove_file(&socket_path)?;
-    }
-
-    let listener = UnixListener::bind(&socket_path)?;
-    info!(?socket_path, "unix socket listener bound");
-
     loop {
-        let stream = tokio::select! {
-            biased;
-            () = cancellation_token.cancelled() => {
-                info!("socket writer shutting down");
-                break;
-            }
-            result = listener.accept() => {
-                let (stream, _addr) = result?;
-                stream
+        let conn = match server.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                if cancellation_token.is_cancelled() {
+                    info!("writer task shutting down");
+                    break;
+                }
+                warn!(?e, "accept error");
+                continue;
             }
         };
 
         info!("new connection accepted");
+        consumer_connected.store(true, Ordering::Release);
 
-        match handle_connection(
-            stream,
+        match handle_transport_connection(
+            conn,
             &snapshot_tx,
             &mut batch_rx,
             &delivered_tx,
-            &consumer_connected,
             &rb_stats,
             &cancellation_token,
         )
@@ -176,120 +121,29 @@ pub async fn socket_writer_task(
         }
 
         consumer_connected.store(false, Ordering::Release);
-        // TODO: metrics
     }
 
-    let _ = std::fs::remove_file(&socket_path);
     Ok(())
 }
 
-async fn handle_connection(
-    mut stream: UnixStream,
+async fn handle_transport_connection(
+    mut conn: Box<dyn glint_transport::ExExConnection>,
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
     delivered_tx: &watch::Sender<Option<BlockNumHash>>,
-    consumer_connected: &Arc<AtomicBool>,
     rb_stats: &RingBufferStats,
     cancel: &CancellationToken,
 ) -> eyre::Result<()> {
-    let mut buf = vec![0u8; MAX_CLIENT_MSG_LEN];
-    let n = stream.read(&mut buf).await?;
-    ensure!(n > 0, "client disconnected before sending message");
-    buf.truncate(n);
+    let resume_block = conn.recv_subscribe().await?;
+    debug!(resume_block, "subscribe received");
 
-    let msg = ClientMessage::parse(&buf)?;
-    debug!(?msg, "parsed client message");
+    let oldest = rb_stats.oldest.load(Ordering::Relaxed);
+    let tip = rb_stats.tip.load(Ordering::Relaxed);
+    conn.send_handshake(oldest, tip).await?;
 
-    match msg {
-        ClientMessage::Probe => handle_probe(&mut stream, consumer_connected, rb_stats).await,
-        ClientMessage::Unknown(v) => {
-            warn!(msg_type = v, "unknown client message type");
-            stream.write_all(&[0xFF]).await?;
-            stream.shutdown().await?;
-            Ok(())
-        }
-        ClientMessage::Subscribe { resume_block } => {
-            consumer_connected.store(true, Ordering::Release);
-            // TODO: metrics
+    let replay_tip = replay_via_transport(&mut *conn, resume_block, snapshot_tx, batch_rx).await?;
 
-            let oldest = rb_stats.oldest.load(Ordering::Relaxed);
-            let tip = rb_stats.tip.load(Ordering::Relaxed);
-            let mut resp = [0u8; HANDSHAKE_RESPONSE_SIZE];
-            resp[0] = 1; // protocol version echo
-            resp[1..9].copy_from_slice(&oldest.to_le_bytes());
-            resp[9..17].copy_from_slice(&tip.to_le_bytes());
-            stream.write_all(&resp).await?;
-
-            handle_subscribe(
-                stream,
-                resume_block,
-                snapshot_tx,
-                batch_rx,
-                delivered_tx,
-                cancel,
-            )
-            .await
-        }
-    }
-}
-
-async fn handle_probe(
-    stream: &mut UnixStream,
-    consumer_connected: &Arc<AtomicBool>,
-    rb_stats: &RingBufferStats,
-) -> eyre::Result<()> {
-    let resp = ProbeResponse {
-        consumer_connected: consumer_connected.load(Ordering::Acquire),
-        tip_block: rb_stats.tip.load(Ordering::Relaxed),
-        oldest_block: rb_stats.oldest.load(Ordering::Relaxed),
-        ring_buffer_entries: rb_stats.entries.load(Ordering::Relaxed),
-        ring_buffer_memory_bytes: rb_stats.memory.load(Ordering::Relaxed),
-    };
-    let bytes = borsh::to_vec(&resp)?;
-    stream.write_all(&bytes).await?;
-    stream.shutdown().await?;
-
-    debug!("probe response sent");
-    Ok(())
-}
-
-async fn shutdown_writer(
-    writer_tx: mpsc::Sender<RecordBatch>,
-    write_handle: JoinHandle<eyre::Result<()>>,
-) {
-    drop(writer_tx);
-    match write_handle.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!(?e, "IPC writer error during shutdown"),
-        Err(e) => warn!(?e, "IPC writer thread panicked"),
-    }
-}
-
-async fn handle_subscribe(
-    stream: UnixStream,
-    resume_block: u64,
-    snapshot_tx: &mpsc::Sender<SnapshotRequest>,
-    batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
-    delivered_tx: &watch::Sender<Option<BlockNumHash>>,
-    cancel: &CancellationToken,
-) -> eyre::Result<()> {
-    let replay = replay_snapshot(stream, resume_block, snapshot_tx, batch_rx).await?;
-
-    stream_live(
-        batch_rx,
-        replay.writer_tx,
-        replay.write_handle,
-        delivered_tx,
-        cancel,
-        replay.tip,
-    )
-    .await
-}
-
-struct ReplayResult {
-    writer_tx: mpsc::Sender<RecordBatch>,
-    write_handle: JoinHandle<eyre::Result<()>>,
-    tip: u64,
+    stream_live_via_transport(&mut *conn, batch_rx, delivered_tx, cancel, replay_tip).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -329,27 +183,12 @@ fn batch_dedup_key(batch: &RecordBatch) -> Option<BatchKey> {
     })
 }
 
-async fn replay_snapshot(
-    stream: UnixStream,
+async fn replay_via_transport(
+    conn: &mut dyn glint_transport::ExExConnection,
     resume_block: u64,
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
-) -> eyre::Result<ReplayResult> {
-    // start IPC writer so client reads the schema header while we snapshot
-    let std_stream = stream.into_std()?;
-    std_stream.set_nonblocking(false)?;
-    let schema = entity_events_schema();
-    let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(WRITER_CHANNEL_SIZE);
-
-    let write_handle = tokio::task::spawn_blocking(move || -> eyre::Result<()> {
-        let mut writer = StreamWriter::try_new(&std_stream, &schema)?;
-        while let Some(batch) = writer_rx.blocking_recv() {
-            writer.write(&batch)?;
-        }
-        writer.finish()?;
-        Ok(())
-    });
-
+) -> eyre::Result<u64> {
     let (reply_tx, reply_rx) = oneshot::channel();
     let (replay_done_tx, replay_done_rx) = oneshot::channel();
 
@@ -386,24 +225,18 @@ async fn replay_snapshot(
 
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
     for (_, batch) in &snapshot {
-        if writer_tx.send(batch.clone()).await.is_err() {
-            return Err(eyre::eyre!("writer closed during snapshot replay"));
-        }
+        conn.send_batch(batch).await?;
     }
 
     let mut tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
     let watermark = build_watermark_batch(tip)?;
-    if writer_tx.send(watermark).await.is_err() {
-        return Err(eyre::eyre!("writer closed during watermark send"));
-    }
+    conn.send_batch(&watermark).await?;
 
     // forward non-duplicate buffered batches
     for (maybe_bnh, batch) in buffered {
         let dominated = batch_dedup_key(&batch).is_some_and(|key| snapshot_keys.contains(&key));
         if !dominated {
-            if writer_tx.send(batch).await.is_err() {
-                return Err(eyre::eyre!("writer closed during buffered batch send"));
-            }
+            conn.send_batch(&batch).await?;
             if let Some(bnh) = maybe_bnh {
                 tip = bnh.number;
             }
@@ -414,19 +247,12 @@ async fn replay_snapshot(
 
     info!(tip, "snapshot replay complete, entering live stream");
 
-    Ok(ReplayResult {
-        writer_tx,
-        write_handle,
-        tip,
-    })
+    Ok(tip)
 }
 
-const SEND_TIMEOUT: Duration = Duration::from_secs(5);
-
-async fn stream_live(
+async fn stream_live_via_transport(
+    conn: &mut dyn glint_transport::ExExConnection,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
-    writer_tx: mpsc::Sender<RecordBatch>,
-    write_handle: JoinHandle<eyre::Result<()>>,
     delivered_tx: &watch::Sender<Option<BlockNumHash>>,
     cancel: &CancellationToken,
     initial_tip: u64,
@@ -439,14 +265,14 @@ async fn stream_live(
             () = cancel.cancelled() => {
                 debug!("live loop cancelled, draining remaining batches");
                 while let Ok((_, batch)) = batch_rx.try_recv() {
-                    if writer_tx.send(batch).await.is_err() {
+                    if conn.send_batch(&batch).await.is_err() {
                         break;
                     }
                 }
                 if let Ok(wm) = build_watermark_batch(current_tip) {
-                    let _ = writer_tx.send(wm).await;
+                    let _ = conn.send_batch(&wm).await;
                 }
-                shutdown_writer(writer_tx, write_handle).await;
+                conn.finish().await?;
                 return Ok(());
             }
             maybe_batch = batch_rx.recv() => {
@@ -454,26 +280,26 @@ async fn stream_live(
                     item
                 } else {
                     debug!("batch channel closed");
-                    shutdown_writer(writer_tx, write_handle).await;
+                    conn.finish().await?;
                     return Ok(());
                 }
             }
         };
 
-        match tokio::time::timeout(SEND_TIMEOUT, writer_tx.send(batch)).await {
+        match tokio::time::timeout(SEND_TIMEOUT, conn.send_batch(&batch)).await {
             Ok(Ok(())) => {
                 if let Some(bnh) = maybe_bnh {
                     current_tip = bnh.number;
                     let _ = delivered_tx.send(Some(bnh));
                 }
             }
-            Ok(Err(_)) => {
-                warn!("writer channel closed, consumer disconnected");
+            Ok(Err(e)) => {
+                warn!(?e, "send_batch failed, consumer disconnected");
                 return Ok(());
             }
             Err(_) => {
                 warn!("send timed out, disconnecting slow consumer");
-                shutdown_writer(writer_tx, write_handle).await;
+                let _ = conn.finish().await;
                 return Ok(());
             }
         }
@@ -484,6 +310,7 @@ async fn stream_live(
 mod tests {
     use super::*;
     use glint_primitives::exex_types::BatchOp;
+    use glint_transport::ExExTransportServer;
 
     fn make_test_batch(block: u64, hash_byte: u8, op: BatchOp) -> (BlockNumHash, RecordBatch) {
         let hash = alloy_primitives::B256::repeat_byte(hash_byte);
@@ -515,20 +342,9 @@ mod tests {
     ) -> (u64, Vec<RecordBatch>) {
         let dir = tempfile::tempdir().unwrap();
         let sock_path = dir.path().join("test.sock");
-        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
-
-        let client_handle = tokio::spawn(async move {
-            let stream = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
-            let std_stream = stream.into_std().unwrap();
-            std_stream.set_nonblocking(false).unwrap();
-            let reader = arrow::ipc::reader::StreamReader::try_new(&std_stream, None).unwrap();
-            reader
-                .into_iter()
-                .filter_map(Result::ok)
-                .collect::<Vec<_>>()
-        });
-
-        let (server_stream, _) = listener.accept().await.unwrap();
+        let cancel = CancellationToken::new();
+        let ipc_server =
+            glint_transport::ipc::IpcServer::new(sock_path.clone(), cancel.clone()).unwrap();
 
         let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(1);
         let snapshot_fulfiller = tokio::spawn(async move {
@@ -537,55 +353,32 @@ mod tests {
             let _ = req.replay_done_rx.await;
         });
 
-        let result = replay_snapshot(server_stream, 0, &snapshot_tx, batch_rx)
+        // Spawn client reader in background
+        let client_handle = tokio::spawn(async move {
+            use futures::StreamExt;
+            let client: Box<dyn glint_transport::ExExTransportClient> =
+                Box::new(glint_transport::ipc::IpcClient::new(sock_path));
+            let (_, mut stream) = client.subscribe(0).await.unwrap();
+            let mut received = Vec::new();
+            while let Some(result) = stream.next().await {
+                received.push(result.unwrap());
+            }
+            received
+        });
+
+        // Run server-side replay in current task (no lifetime issue with batch_rx)
+        let mut conn = ipc_server.accept().await.unwrap();
+        let resume = conn.recv_subscribe().await.unwrap();
+        conn.send_handshake(0, 0).await.unwrap();
+        let tip = replay_via_transport(&mut *conn, resume, &snapshot_tx, batch_rx)
             .await
             .unwrap();
-
-        let tip = result.tip;
-        drop(result.writer_tx);
-        let _ = result.write_handle.await;
-        snapshot_fulfiller.await.unwrap();
+        conn.finish().await.unwrap();
 
         let received = client_handle.await.unwrap();
+        snapshot_fulfiller.await.unwrap();
+
         (tip, received)
-    }
-
-    #[test]
-    fn parse_subscribe_message() {
-        let mut buf = Vec::new();
-        buf.push(1u8);
-        buf.extend_from_slice(&100u64.to_le_bytes());
-        let msg = ClientMessage::parse(&buf).unwrap();
-        assert_eq!(msg, ClientMessage::Subscribe { resume_block: 100 });
-    }
-
-    #[test]
-    fn parse_probe_message() {
-        let buf = vec![0u8];
-        let msg = ClientMessage::parse(&buf).unwrap();
-        assert_eq!(msg, ClientMessage::Probe);
-    }
-
-    #[test]
-    fn parse_unknown_message_type() {
-        let mut buf = Vec::new();
-        buf.push(0xFE);
-        buf.extend_from_slice(&0u64.to_le_bytes());
-        let msg = ClientMessage::parse(&buf);
-        assert!(matches!(msg, Ok(ClientMessage::Unknown(0xFE))));
-    }
-
-    #[test]
-    fn parse_empty_buffer_is_error() {
-        let result = ClientMessage::parse(&[]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_subscribe_too_short_is_error() {
-        let buf = vec![1u8, 0x00, 0x01]; // only 3 bytes, need 9
-        let result = ClientMessage::parse(&buf);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -627,37 +420,44 @@ mod tests {
         assert!(state.should_disconnect);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn stream_live_delivers_all_batches() {
         use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
-        let (batch_tx, mut batch_rx) = mpsc::channel(16);
-        // small channel to exercise backpressure
-        let (writer_tx, mut writer_rx) = mpsc::channel::<RecordBatch>(1);
-        let (delivered_tx, mut delivered_rx) = watch::channel(None);
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
+        let ipc_server =
+            glint_transport::ipc::IpcServer::new(sock_path.clone(), cancel.clone()).unwrap();
+
+        let (batch_tx, mut batch_rx) = mpsc::channel(16);
+        let (delivered_tx, mut delivered_rx) = watch::channel(None);
 
         let writer_count = Arc::new(AtomicU32::new(0));
         let writer_count_clone = Arc::clone(&writer_count);
 
-        let write_handle = tokio::spawn(async move {
-            while let Some(_batch) = writer_rx.recv().await {
+        // Connect client that counts received batches
+        let client_handle = tokio::spawn(async move {
+            use futures::StreamExt;
+            let client: Box<dyn glint_transport::ExExTransportClient> =
+                Box::new(glint_transport::ipc::IpcClient::new(sock_path));
+            let (_, mut stream) = client.subscribe(0).await.unwrap();
+            while let Some(result) = stream.next().await {
+                let _ = result.unwrap();
                 writer_count_clone.fetch_add(1, AtomicOrdering::Relaxed);
             }
-            Ok::<(), eyre::Report>(())
         });
 
+        // Run server in current task
+        let mut conn = ipc_server.accept().await.unwrap();
+        let _resume = conn.recv_subscribe().await.unwrap();
+        conn.send_handshake(0, 0).await.unwrap();
+
         let cancel_clone = cancel.clone();
-        let live_handle = tokio::spawn(async move {
-            stream_live(
-                &mut batch_rx,
-                writer_tx,
-                write_handle,
-                &delivered_tx,
-                &cancel_clone,
-                0,
-            )
-            .await
+        let server_handle = tokio::spawn(async move {
+            stream_live_via_transport(&mut *conn, &mut batch_rx, &delivered_tx, &cancel_clone, 0)
+                .await
+                .unwrap();
         });
 
         let batch = build_watermark_batch(1).unwrap();
@@ -683,30 +483,15 @@ mod tests {
         assert_eq!(delivered_rx.borrow().unwrap().number, 30);
 
         cancel.cancel();
-        live_handle.await.unwrap().unwrap();
+        server_handle.await.unwrap();
+        client_handle.await.unwrap();
 
-        // +1 for cancellation watermark
+        // 3 batches + 1 shutdown watermark
         assert_eq!(
             writer_count.load(AtomicOrdering::Relaxed),
             4,
             "writer must receive all 3 batches + 1 shutdown watermark (no drops)"
         );
-    }
-
-    #[test]
-    fn probe_response_roundtrip() {
-        let resp = ProbeResponse {
-            consumer_connected: true,
-            tip_block: 42,
-            oldest_block: 1,
-            ring_buffer_entries: 100,
-            ring_buffer_memory_bytes: 8192,
-        };
-        let bytes = borsh::to_vec(&resp).unwrap();
-        let decoded: ProbeResponse = borsh::from_slice(&bytes).unwrap();
-        assert!(decoded.consumer_connected);
-        assert_eq!(decoded.tip_block, 42);
-        assert_eq!(decoded.ring_buffer_entries, 100);
     }
 
     #[test]

@@ -42,6 +42,7 @@
             [
               pkgs.pkg-config
               pkgs.llvmPackages.clang
+              pkgs.protobuf
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.openssl
@@ -140,6 +141,7 @@
             pkgs.taplo
             pkgs.typos
             pkgs.llvmPackages.clang
+            pkgs.protobuf
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.pkg-config

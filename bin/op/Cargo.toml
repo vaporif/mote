@@ -18,6 +18,7 @@ path = "src/main.rs"
 glint-engine = { workspace = true, features = ["op"] }
 glint-exex.workspace = true
 glint-node.workspace = true
+glint-transport.workspace = true
 glint-primitives = { workspace = true, features = ["genesis"] }
 
 reth-optimism-node.workspace = true
@@ -29,6 +30,7 @@ reth-provider.workspace = true
 
 alloy-primitives.workspace = true
 eyre.workspace = true
+tokio-util.workspace = true
 parking_lot.workspace = true
 clap.workspace = true
 serde_json.workspace = true

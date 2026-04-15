@@ -26,6 +26,10 @@ pub struct RunArgs {
     #[arg(long, default_value = "/tmp/glint-exex.sock")]
     pub exex_socket: PathBuf,
 
+    /// gRPC endpoint URL (e.g. `http://10.0.0.1:9100`). Overrides --exex-socket when set.
+    #[arg(long)]
+    pub exex_grpc: Option<String>,
+
     #[arg(long, default_value_t = 50051)]
     pub flight_port: u16,
 
