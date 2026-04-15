@@ -133,9 +133,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         EntitiesBackend::Memory => {
             let mut store = if snapshot_interval > 0 {
                 match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
-                    Ok(Some((snap_block, loaded_store)))
-                        if snap_block <= resume_block =>
-                    {
+                    Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
                         info!(snap_block, entities = loaded_store.len(), "loaded snapshot");
                         loaded_store
                     }
@@ -222,11 +220,11 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                 {
                     let current_block = store.current_block();
                     if current_block > 0 && current_block != last_snapshot_block {
-                        match store.snapshot() {
-                            Ok(snap) => {
-                                write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
-                            }
-                            Err(e) => warn!(?e, "failed to create shutdown snapshot"),
+                        match store.snapshot().and_then(|snap| {
+                            write_and_prune_snapshot(&snapshots_dir, current_block, &snap)
+                        }) {
+                            Ok(()) => {}
+                            Err(e) => warn!(?e, "failed to write shutdown snapshot"),
                         }
                     }
                 }
@@ -289,9 +287,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                 // Only use the snapshot if it's not ahead of where we're resuming from.
                 if snapshot_interval > 0 {
                     match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
-                        Ok(Some((snap_block, loaded_store)))
-                            if snap_block <= resume_block =>
-                        {
+                        Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
                             info!(
                                 snap_block,
                                 entities = loaded_store.len(),
@@ -380,17 +376,14 @@ fn write_and_prune_snapshot(
     snapshots_dir: &Path,
     block: u64,
     snap: &glint_analytics::entity_store::Snapshot,
-) -> bool {
-    if let Err(e) = glint_analytics::snapshot_io::write_snapshot(snapshots_dir, block, snap) {
-        warn!(?e, "failed to write snapshot");
-        return false;
-    }
+) -> eyre::Result<()> {
+    glint_analytics::snapshot_io::write_snapshot(snapshots_dir, block, snap)?;
     info!(block, "snapshot written");
     if let Err(e) = glint_analytics::snapshot_io::prune_snapshots(snapshots_dir, SNAPSHOTS_TO_KEEP)
     {
         warn!(?e, "failed to prune snapshots");
     }
-    true
+    Ok(())
 }
 
 struct SnapshotState<'a> {
@@ -450,9 +443,11 @@ async fn run_connection(
 
                 if snapshots.interval > 0
                     && last_block.saturating_sub(*snapshots.last_block) >= snapshots.interval
-                    && write_and_prune_snapshot(snapshots.dir, last_block, &snap)
                 {
-                    *snapshots.last_block = last_block;
+                    match write_and_prune_snapshot(snapshots.dir, last_block, &snap) {
+                        Ok(()) => *snapshots.last_block = last_block,
+                        Err(e) => warn!(?e, "failed to write snapshot"),
+                    }
                 }
             }
         }
@@ -520,7 +515,10 @@ mod tests {
         }
     }
 
-    fn make_memory_backend() -> (Backend, watch::Receiver<Arc<glint_analytics::entity_store::Snapshot>>) {
+    fn make_memory_backend() -> (
+        Backend,
+        watch::Receiver<Arc<glint_analytics::entity_store::Snapshot>>,
+    ) {
         let store = EntityStore::new();
         let initial_snapshot = Arc::new(store.snapshot().unwrap());
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
@@ -553,9 +551,9 @@ mod tests {
         store.insert(sample_row(0x01));
 
         let snap = store.snapshot().unwrap();
-        assert!(write_and_prune_snapshot(&snapshots_dir, 1000, &snap));
-        assert!(write_and_prune_snapshot(&snapshots_dir, 2000, &snap));
-        assert!(write_and_prune_snapshot(&snapshots_dir, 3000, &snap));
+        write_and_prune_snapshot(&snapshots_dir, 1000, &snap).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 2000, &snap).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 3000, &snap).unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)
             .unwrap()
@@ -710,14 +708,14 @@ mod tests {
         store.set_current_block(5000);
 
         let snap = store.snapshot().unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 5000, &snap);
+        write_and_prune_snapshot(&snapshots_dir, 5000, &snap).unwrap();
         let last_snapshot_block: u64 = 5000;
 
         let count_before = std::fs::read_dir(&snapshots_dir).unwrap().count();
 
         let current_block = store.current_block();
         if current_block > 0 && current_block != last_snapshot_block {
-            write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap).unwrap();
         }
 
         let count_after = std::fs::read_dir(&snapshots_dir).unwrap().count();
@@ -734,12 +732,12 @@ mod tests {
         store.set_current_block(5000);
 
         let snap = store.snapshot().unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 4000, &snap);
+        write_and_prune_snapshot(&snapshots_dir, 4000, &snap).unwrap();
         let last_snapshot_block: u64 = 4000;
 
         let current_block = store.current_block();
         if current_block > 0 && current_block != last_snapshot_block {
-            write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap).unwrap();
         }
 
         assert!(snapshots_dir.join("block-00004000").exists());
