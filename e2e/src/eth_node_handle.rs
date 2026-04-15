@@ -4,16 +4,21 @@ use tempfile::TempDir;
 use testcontainers::core::{IntoContainerPort, Mount};
 use testcontainers::{ContainerAsync, GenericImage, ImageExt, runners::AsyncRunner};
 
+use crate::Transport;
+
+const GRPC_PORT: u16 = 9100;
+
 pub struct EthNodeHandle {
     _container: ContainerAsync<GenericImage>,
     container_id: String,
     rpc_url: String,
     exex_volume_path: PathBuf,
+    grpc_host_port: Option<u16>,
     _exex_dir: TempDir,
 }
 
 impl EthNodeHandle {
-    pub async fn spawn() -> eyre::Result<Self> {
+    pub async fn spawn(transport: Transport) -> eyre::Result<Self> {
         let image_tag = std::env::var("GLINT_IMAGE_TAG").unwrap_or_else(|_| "latest".into());
         let tmpdir_base = std::env::var("GLINT_E2E_TMPDIR").unwrap_or_else(|_| "/tmp".into());
         let exex_dir = tempfile::Builder::new()
@@ -21,46 +26,66 @@ impl EthNodeHandle {
             .tempdir_in(tmpdir_base)?;
         let exex_host_path = exex_dir.path().to_path_buf();
 
-        let image = GenericImage::new("eth-glint", &image_tag)
-            .with_exposed_port(8545.tcp())
+        let mut cmd = vec![
+            "node",
+            "--chain",
+            "/etc/glint/genesis.json",
+            "--dev",
+            "--dev.block-time",
+            "1s",
+            "--http",
+            "--http.addr",
+            "0.0.0.0",
+            "--http.port",
+            "8545",
+            "--port",
+            "30303",
+            "--discovery.port",
+            "30303",
+            "--authrpc.port",
+            "8551",
+            "--datadir",
+            "/data",
+            "--log.file.directory",
+            "/data/logs",
+            "--glint.exex-socket-path",
+            "/exex/glint-exex.sock",
+            "-vvvv",
+        ];
+
+        let grpc_port_str = GRPC_PORT.to_string();
+        if matches!(transport, Transport::Grpc) {
+            cmd.push("--glint.exex-grpc-port");
+            cmd.push(&grpc_port_str);
+        }
+
+        let mut generic = GenericImage::new("eth-glint", &image_tag).with_exposed_port(8545.tcp());
+
+        if matches!(transport, Transport::Grpc) {
+            generic = generic.with_exposed_port(GRPC_PORT.tcp());
+        }
+
+        let image = generic
             .with_mount(Mount::bind_mount(exex_host_path.to_str().unwrap(), "/exex"))
-            .with_cmd(vec![
-                "node",
-                "--chain",
-                "/etc/glint/genesis.json",
-                "--dev",
-                "--dev.block-time",
-                "1s",
-                "--http",
-                "--http.addr",
-                "0.0.0.0",
-                "--http.port",
-                "8545",
-                "--port",
-                "30303",
-                "--discovery.port",
-                "30303",
-                "--authrpc.port",
-                "8551",
-                "--datadir",
-                "/data",
-                "--log.file.directory",
-                "/data/logs",
-                "--glint.exex-socket-path",
-                "/exex/glint-exex.sock",
-                "-vvvv",
-            ]);
+            .with_cmd(cmd);
 
         let container = image.start().await?;
         let container_id = container.id().to_string();
         let host_port = container.get_host_port_ipv4(8545.tcp()).await?;
         let rpc_url = format!("http://127.0.0.1:{host_port}");
 
+        let grpc_host_port = if matches!(transport, Transport::Grpc) {
+            Some(container.get_host_port_ipv4(GRPC_PORT.tcp()).await?)
+        } else {
+            None
+        };
+
         let handle = Self {
             _container: container,
             container_id,
             rpc_url,
             exex_volume_path: exex_host_path,
+            grpc_host_port,
             _exex_dir: exex_dir,
         };
 
@@ -74,6 +99,10 @@ impl EthNodeHandle {
 
     pub fn exex_volume_path(&self) -> &Path {
         &self.exex_volume_path
+    }
+
+    pub const fn grpc_host_port(&self) -> Option<u16> {
+        self.grpc_host_port
     }
 
     pub fn logs(&self) -> String {

@@ -1,7 +1,9 @@
 use alloy_network::EthereumWallet;
 use alloy_signer_local::PrivateKeySigner;
 use arrow::array::RecordBatch;
+use rstest::rstest;
 
+use glint_e2e::Transport;
 use glint_e2e::eth_node_handle::EthNodeHandle;
 use glint_e2e::sidecar_handle::SidecarHandle;
 use glint_primitives::transaction::{Create, GlintTransaction};
@@ -30,7 +32,7 @@ fn dev_wallet() -> EthereumWallet {
 #[tokio::test]
 #[ignore = "requires eth-glint Docker image; run with `just e2e`"]
 async fn test_create_entity() -> eyre::Result<()> {
-    let node = EthNodeHandle::spawn().await?;
+    let node = EthNodeHandle::spawn(Transport::Ipc).await?;
 
     let wallet = dev_wallet();
     let expected_owner = wallet.default_signer().address();
@@ -74,11 +76,14 @@ async fn test_create_entity() -> eyre::Result<()> {
     Ok(())
 }
 
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
 #[tokio::test]
 #[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
-async fn test_flight_sql_query() -> eyre::Result<()> {
-    let node = EthNodeHandle::spawn().await?;
-    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
+async fn test_flight_sql_query(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
 
     let client = Glint::builder(node.rpc_url())
         .wallet(dev_wallet())
@@ -106,11 +111,14 @@ async fn test_flight_sql_query() -> eyre::Result<()> {
     Ok(())
 }
 
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
 #[tokio::test]
 #[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
-async fn test_flight_sql_complex_query() -> eyre::Result<()> {
-    let node = EthNodeHandle::spawn().await?;
-    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
+async fn test_flight_sql_complex_query(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
 
     let wallet = dev_wallet();
     let expected_owner = wallet.default_signer().address();
@@ -195,11 +203,14 @@ async fn test_flight_sql_complex_query() -> eyre::Result<()> {
     Ok(())
 }
 
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
 #[tokio::test]
 #[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
-async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
-    let node = EthNodeHandle::spawn().await?;
-    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
+async fn test_flight_sql_multi_entity_filters(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
 
     let wallet = dev_wallet();
     let expected_owner = wallet.default_signer().address();
@@ -310,11 +321,14 @@ async fn test_flight_sql_multi_entity_filters() -> eyre::Result<()> {
     Ok(())
 }
 
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
 #[tokio::test]
 #[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
-async fn test_historical_query() -> eyre::Result<()> {
-    let node = EthNodeHandle::spawn().await?;
-    let sidecar = SidecarHandle::spawn(node.exex_volume_path()).await?;
+async fn test_historical_query(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
 
     let client = Glint::builder(node.rpc_url())
         .wallet(dev_wallet())
