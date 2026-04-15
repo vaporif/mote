@@ -1,6 +1,5 @@
 [extend]
 useDefault = true
 
-[[allowlist.paths]]
-description = "Cargo.lock is auto-generated and contains crate names, not secrets"
-regex = '''Cargo\.lock'''
+[allowlist]
+paths = ['''Cargo\.lock''']
