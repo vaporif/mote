@@ -396,19 +396,17 @@ mod tests {
             conn.finish().await.unwrap();
         });
 
-        // Send probe
         let client = IpcClient::new(sock.clone());
         let info = client.probe().await.unwrap();
         assert_eq!(info.tip_block, 0);
         assert_eq!(info.oldest_block, 0);
 
-        // Now send a subscribe to unblock the server's accept loop
+        // subscribe to unblock accept()
         let mut stream = UnixStream::connect(&sock).await.unwrap();
         let mut msg = [0u8; SUBSCRIBE_MSG_SIZE];
         msg[0] = 0x01;
         stream.write_all(&msg).await.unwrap();
 
-        // Read handshake to let the server finish cleanly
         let mut resp = [0u8; HANDSHAKE_RESPONSE_SIZE];
         stream.read_exact(&mut resp).await.unwrap();
 
