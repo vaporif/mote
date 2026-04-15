@@ -47,7 +47,6 @@ impl ExExTransportClient for GrpcClient {
             .await?
             .into_inner();
 
-        // First message must be handshake
         let first = stream
             .next()
             .await
