@@ -238,13 +238,11 @@ impl ExExTransportClient for IpcClient {
     )> {
         let mut stream = UnixStream::connect(&self.socket_path).await?;
 
-        // Send subscribe message: [0x01, resume_block LE]
         let mut msg = [0u8; SUBSCRIBE_MSG_SIZE];
         msg[0] = 0x01;
         msg[1..9].copy_from_slice(&resume_block.to_le_bytes());
         stream.write_all(&msg).await?;
 
-        // Read 17-byte handshake response
         let mut resp = [0u8; HANDSHAKE_RESPONSE_SIZE];
         stream.read_exact(&mut resp).await?;
         ensure!(resp[0] == 1, "unexpected protocol version: {}", resp[0]);
@@ -256,7 +254,6 @@ impl ExExTransportClient for IpcClient {
             tip_block,
         };
 
-        // Spawn a blocking reader for the Arrow IPC stream.
         let std_stream = stream.into_std()?;
         std_stream.set_nonblocking(false)?;
 
