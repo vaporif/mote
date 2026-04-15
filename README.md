@@ -222,7 +222,7 @@ graph TB
 
 `glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations: create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket.
+`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket or gRPC. The gRPC transport uses a small custom proto wrapping Arrow IPC bytes rather than Arrow Flight — Flight is built for query-serving, not one-way push streams.
 
 `glint-sidecar` is the query layer. It runs as a separate process, consumes the ExEx stream, and serves two tables over Flight SQL:
 
