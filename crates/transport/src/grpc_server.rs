@@ -125,6 +125,7 @@ impl ExExTransportServer for GrpcServer {
                 Ok(Box::new(GrpcConnection {
                     resume_block: sub.resume_block,
                     batch_tx: Some(sub.batch_tx),
+                    handshake_sent: false,
                     probe_info: Arc::clone(&self.probe_info),
                 }))
             }
@@ -135,6 +136,7 @@ impl ExExTransportServer for GrpcServer {
 pub struct GrpcConnection {
     resume_block: u64,
     batch_tx: Option<mpsc::Sender<Result<StreamMessage, Status>>>,
+    handshake_sent: bool,
     probe_info: Arc<tokio::sync::RwLock<HandshakeInfo>>,
 }
 
@@ -145,6 +147,8 @@ impl ExExConnection for GrpcConnection {
     }
 
     async fn send_handshake(&mut self, oldest: u64, tip: u64) -> eyre::Result<()> {
+        eyre::ensure!(!self.handshake_sent, "handshake already sent");
+
         let info = HandshakeInfo {
             oldest_block: oldest,
             tip_block: tip,
@@ -165,6 +169,7 @@ impl ExExConnection for GrpcConnection {
         tx.send(Ok(msg))
             .await
             .map_err(|_| eyre!("gRPC batch receiver dropped"))?;
+        self.handshake_sent = true;
         Ok(())
     }
 
