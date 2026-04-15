@@ -2,8 +2,8 @@ use alloy_eips::BlockNumHash;
 use arrow::record_batch::RecordBatch;
 use glint_primitives::exex_types::BatchOp;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DEFAULT_MEMORY_CAP: u64 = 256 * 1024 * 1024; // 256 MB
 const PER_ENTRY_OVERHEAD: u64 = 256;
