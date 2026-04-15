@@ -388,13 +388,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let server = IpcServer::new(sock.clone(), cancel.clone()).unwrap();
 
-        // The server handles probes inline and loops back to accept.
-        // We need a second connection (subscribe) to unblock accept,
-        // or we can just talk to the socket directly without going through accept.
-
-        // Spawn a raw listener that handles the probe like the real server does.
-        // Actually, IpcServer.accept() handles probes internally. So we spawn
-        // accept() in the background and then send a probe + a subscribe to unblock it.
+        // accept() handles probes inline, so we send a probe then a subscribe to unblock it.
         let server_handle = tokio::spawn(async move {
             let mut conn = server.accept().await.unwrap();
             let _resume = conn.recv_subscribe().await.unwrap();
