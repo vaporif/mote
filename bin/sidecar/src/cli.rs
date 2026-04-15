@@ -45,6 +45,10 @@ pub struct RunArgs {
     /// Genesis file path (reads `max_btl` to validate backend choice).
     #[arg(long, default_value = "genesis.json")]
     pub genesis: PathBuf,
+
+    /// Snapshot interval in blocks (0 = disabled). Default: 1000.
+    #[arg(long, default_value_t = 1000)]
+    pub snapshot_interval: u64,
 }
 
 #[derive(Clone, Debug, Default, clap::ValueEnum)]

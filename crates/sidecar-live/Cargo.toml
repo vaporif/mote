@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 arrow = { workspace = true, features = ["prettyprint"] }
 alloy-primitives.workspace = true
 glint-primitives = { workspace = true, features = ["test-utils"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

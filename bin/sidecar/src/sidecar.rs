@@ -69,6 +69,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         db_path,
         entities_backend,
         genesis,
+        snapshot_interval,
     } = args;
 
     let raw = std::fs::read_to_string(&genesis)
@@ -82,6 +83,11 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
              Use --entities-backend sqlite instead."
         );
     }
+
+    let snapshots_dir = db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("snapshots");
 
     let write_conn = Connection::open(&db_path)?;
     schema::create_tables(&write_conn)?;
@@ -125,7 +131,36 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
 
     let mut backend = match entities_backend {
         EntitiesBackend::Memory => {
-            let store = EntityStore::new();
+            let mut store = if snapshot_interval > 0 {
+                match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
+                    Ok(Some((snap_block, loaded_store)))
+                        if snap_block <= resume_block =>
+                    {
+                        info!(snap_block, entities = loaded_store.len(), "loaded snapshot");
+                        loaded_store
+                    }
+                    Ok(Some((snap_block, _))) => {
+                        warn!(
+                            snap_block,
+                            resume_block, "snapshot ahead of SQLite, starting empty"
+                        );
+                        EntityStore::new()
+                    }
+                    Ok(None) => {
+                        info!("no snapshot found, starting empty");
+                        EntityStore::new()
+                    }
+                    Err(e) => {
+                        warn!(?e, "failed to load snapshot, starting empty");
+                        EntityStore::new()
+                    }
+                }
+            } else {
+                EntityStore::new()
+            };
+
+            store.set_current_block(resume_block);
+
             let initial_snapshot = Arc::new(store.snapshot()?);
             let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
 
@@ -175,11 +210,26 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         }
     });
 
+    let mut last_snapshot_block: u64 = 0;
+
     loop {
         tokio::select! {
             biased;
             _ = tokio::signal::ctrl_c() => {
                 info!("received shutdown signal");
+                if snapshot_interval > 0
+                    && let Backend::Memory { store, .. } = &backend
+                {
+                    let current_block = store.current_block();
+                    if current_block > 0 && current_block != last_snapshot_block {
+                        match store.snapshot() {
+                            Ok(snap) => {
+                                write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
+                            }
+                            Err(e) => warn!(?e, "failed to create shutdown snapshot"),
+                        }
+                    }
+                }
                 let _ = shutdown_tx.send(true);
                 return Ok(());
             }
@@ -196,7 +246,16 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                     } else {
                         Box::new(glint_transport::ipc::IpcClient::new(exex_socket.clone()))
                     };
-                run_connection(client, &mut backend, &write_conn, &ready_tx, resume_block).await
+                run_connection(
+                    client,
+                    &mut backend,
+                    &write_conn,
+                    &ready_tx,
+                    resume_block,
+                    &snapshots_dir,
+                    snapshot_interval,
+                    &mut last_snapshot_block,
+                ).await
             } => {
                 match result {
                     Ok(ConnectionOutcome::Closed { last_block }) => {
@@ -206,12 +265,14 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                     Ok(ConnectionOutcome::NeedsReplay) => {
                         warn!("non-reversible revert, full replay needed");
                         resume_block = 0;
+                        last_snapshot_block = 0;
                         if let Backend::Sqlite { .. } = &backend {
                             sql_schema::clear_entities_latest(&write_conn.lock())?;
                         }
                     }
                     Err(e) => {
                         resume_block = last_processed_resume_block(&write_conn);
+                        last_snapshot_block = 0;
                         warn!(?e, resume_block, "connection error, resuming from last processed block");
                     }
                 }
@@ -222,7 +283,26 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
             Backend::Memory {
                 store, snapshot_tx, ..
             } => {
-                store.clear();
+                // Try reloading from the latest snapshot to avoid full replay.
+                // Only use the snapshot if it's not ahead of where we're resuming from.
+                if snapshot_interval > 0 {
+                    match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
+                        Ok(Some((snap_block, loaded_store)))
+                            if snap_block <= resume_block =>
+                        {
+                            info!(
+                                snap_block,
+                                entities = loaded_store.len(),
+                                "reloaded snapshot after reconnect"
+                            );
+                            **store = loaded_store;
+                        }
+                        _ => store.clear(),
+                    }
+                } else {
+                    store.clear();
+                }
+                store.set_current_block(resume_block);
                 let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
             }
             Backend::Sqlite { .. } => {}
@@ -292,12 +372,36 @@ fn process_batch(
     Ok(BatchOutcome::Continue)
 }
 
+const SNAPSHOTS_TO_KEEP: usize = 2;
+
+/// Write a snapshot to disk and prune old ones. Returns `true` on success.
+fn write_and_prune_snapshot(
+    snapshots_dir: &Path,
+    block: u64,
+    snap: &glint_analytics::entity_store::Snapshot,
+) -> bool {
+    if let Err(e) = glint_analytics::snapshot_io::write_snapshot(snapshots_dir, block, snap) {
+        warn!(?e, "failed to write snapshot");
+        return false;
+    }
+    info!(block, "snapshot written");
+    if let Err(e) = glint_analytics::snapshot_io::prune_snapshots(snapshots_dir, SNAPSHOTS_TO_KEEP)
+    {
+        warn!(?e, "failed to prune snapshots");
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     client: Box<dyn glint_transport::ExExTransportClient>,
     backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
+    snapshots_dir: &Path,
+    snapshot_interval: u64,
+    last_snapshot_block: &mut u64,
 ) -> eyre::Result<ConnectionOutcome> {
     let (handshake, mut batch_stream) = client.subscribe(resume_block).await?;
     info!(
@@ -337,7 +441,15 @@ async fn run_connection(
                 }
             }
             if let Backend::Memory { store, snapshot_tx } = backend {
-                let _ = snapshot_tx.send(Arc::new(store.snapshot()?));
+                let snap = Arc::new(store.snapshot()?);
+                let _ = snapshot_tx.send(Arc::clone(&snap));
+
+                if snapshot_interval > 0
+                    && last_block.saturating_sub(*last_snapshot_block) >= snapshot_interval
+                    && write_and_prune_snapshot(snapshots_dir, last_block, &snap)
+                {
+                    *last_snapshot_block = last_block;
+                }
             }
         }
     }
@@ -379,11 +491,40 @@ fn is_revert_batch(batch: &arrow::record_batch::RecordBatch) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{Address, B256, Bytes};
+    use glint_analytics::entity_store::EntityRow;
 
     fn setup_sqlite() -> Arc<Mutex<Connection>> {
         let conn = Connection::open_in_memory().unwrap();
         schema::create_tables(&conn).unwrap();
         Arc::new(Mutex::new(conn))
+    }
+
+    fn sample_row(byte: u8) -> EntityRow {
+        EntityRow {
+            entity_key: B256::repeat_byte(byte),
+            owner: Address::repeat_byte(byte),
+            expires_at_block: 100,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            string_annotations: vec![("color".into(), "red".into())],
+            numeric_annotations: vec![("size".into(), 42)],
+            created_at_block: 1,
+            tx_hash: B256::repeat_byte(0xAA),
+            extend_policy: 0,
+            operator: Some(Address::ZERO),
+        }
+    }
+
+    fn make_memory_backend() -> (Backend, watch::Receiver<Arc<glint_analytics::entity_store::Snapshot>>) {
+        let store = EntityStore::new();
+        let initial_snapshot = Arc::new(store.snapshot().unwrap());
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let backend = Backend::Memory {
+            store: Box::new(store),
+            snapshot_tx,
+        };
+        (backend, snapshot_rx)
     }
 
     #[test]
@@ -397,5 +538,207 @@ mod tests {
     fn resume_block_after_error_returns_zero_without_progress() {
         let conn = setup_sqlite();
         assert_eq!(last_processed_resume_block(&conn), 0);
+    }
+
+    #[test]
+    fn write_and_prune_snapshot_writes_and_prunes() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+
+        let snap = store.snapshot().unwrap();
+        assert!(write_and_prune_snapshot(&snapshots_dir, 1000, &snap));
+        assert!(write_and_prune_snapshot(&snapshots_dir, 2000, &snap));
+        assert!(write_and_prune_snapshot(&snapshots_dir, 3000, &snap));
+
+        let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .collect();
+        assert_eq!(entries.len(), SNAPSHOTS_TO_KEEP);
+        assert!(!snapshots_dir.join("block-00001000").exists());
+        assert!(snapshots_dir.join("block-00002000").exists());
+        assert!(snapshots_dir.join("block-00003000").exists());
+    }
+
+    #[test]
+    fn startup_load_rejects_snapshot_ahead_of_resume_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        let snap = store.snapshot().unwrap();
+        glint_analytics::snapshot_io::write_snapshot(&snapshots_dir, 5000, &snap).unwrap();
+
+        let resume_block: u64 = 2000;
+        let loaded_store = match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir)
+        {
+            Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
+                Some(loaded_store)
+            }
+            _ => None,
+        };
+
+        assert!(loaded_store.is_none());
+    }
+
+    #[test]
+    fn startup_load_accepts_snapshot_at_or_below_resume_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        let snap = store.snapshot().unwrap();
+        glint_analytics::snapshot_io::write_snapshot(&snapshots_dir, 2000, &snap).unwrap();
+
+        let resume_block: u64 = 5000;
+        let loaded_store = match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir)
+        {
+            Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
+                Some(loaded_store)
+            }
+            _ => None,
+        };
+
+        assert!(loaded_store.is_some());
+        assert_eq!(loaded_store.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn reconnect_reload_rejects_snapshot_ahead_of_resume_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let (mut backend, _rx) = make_memory_backend();
+        if let Backend::Memory { store, .. } = &mut backend {
+            store.insert(sample_row(0x01));
+            store.insert(sample_row(0x02));
+        }
+
+        if let Backend::Memory { store, .. } = &backend {
+            let snap = store.snapshot().unwrap();
+            glint_analytics::snapshot_io::write_snapshot(&snapshots_dir, 8000, &snap).unwrap();
+        }
+
+        // resume_block < snap_block — snapshot should be rejected
+        let resume_block: u64 = 3000;
+        let snapshot_interval: u64 = 1000;
+
+        if let Backend::Memory {
+            store, snapshot_tx, ..
+        } = &mut backend
+        {
+            if snapshot_interval > 0 {
+                match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
+                    Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
+                        **store = loaded_store;
+                    }
+                    _ => store.clear(),
+                }
+            } else {
+                store.clear();
+            }
+            store.set_current_block(resume_block);
+            let _ = snapshot_tx.send(Arc::new(store.snapshot().unwrap()));
+        }
+
+        if let Backend::Memory { store, .. } = &backend {
+            assert_eq!(store.len(), 0);
+            assert_eq!(store.current_block(), resume_block);
+        }
+    }
+
+    #[test]
+    fn reconnect_reload_accepts_valid_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut orig_store = EntityStore::new();
+        orig_store.insert(sample_row(0x01));
+        orig_store.insert(sample_row(0x02));
+        let snap = orig_store.snapshot().unwrap();
+        glint_analytics::snapshot_io::write_snapshot(&snapshots_dir, 2000, &snap).unwrap();
+
+        let (mut backend, _rx) = make_memory_backend();
+
+        // resume_block > snap_block — snapshot should be accepted
+        let resume_block: u64 = 5000;
+        let snapshot_interval: u64 = 1000;
+
+        if let Backend::Memory {
+            store, snapshot_tx, ..
+        } = &mut backend
+        {
+            if snapshot_interval > 0 {
+                match glint_analytics::snapshot_io::load_latest_snapshot(&snapshots_dir) {
+                    Ok(Some((snap_block, loaded_store))) if snap_block <= resume_block => {
+                        **store = loaded_store;
+                    }
+                    _ => store.clear(),
+                }
+            } else {
+                store.clear();
+            }
+            store.set_current_block(resume_block);
+            let _ = snapshot_tx.send(Arc::new(store.snapshot().unwrap()));
+        }
+
+        if let Backend::Memory { store, .. } = &backend {
+            assert_eq!(store.len(), 2);
+            assert_eq!(store.current_block(), resume_block);
+            assert!(store.get(&B256::repeat_byte(0x01)).is_some());
+            assert!(store.get(&B256::repeat_byte(0x02)).is_some());
+        }
+    }
+
+    #[test]
+    fn shutdown_skips_snapshot_when_block_matches_last_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        store.set_current_block(5000);
+
+        let snap = store.snapshot().unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 5000, &snap);
+        let last_snapshot_block: u64 = 5000;
+
+        let count_before = std::fs::read_dir(&snapshots_dir).unwrap().count();
+
+        let current_block = store.current_block();
+        if current_block > 0 && current_block != last_snapshot_block {
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
+        }
+
+        let count_after = std::fs::read_dir(&snapshots_dir).unwrap().count();
+        assert_eq!(count_before, count_after);
+    }
+
+    #[test]
+    fn shutdown_writes_snapshot_when_block_advanced() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshots_dir = dir.path().join("snapshots");
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        store.set_current_block(5000);
+
+        let snap = store.snapshot().unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 4000, &snap);
+        let last_snapshot_block: u64 = 4000;
+
+        let current_block = store.current_block();
+        if current_block > 0 && current_block != last_snapshot_block {
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap);
+        }
+
+        assert!(snapshots_dir.join("block-00004000").exists());
+        assert!(snapshots_dir.join("block-00005000").exists());
     }
 }
