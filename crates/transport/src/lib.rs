@@ -19,7 +19,7 @@ use std::pin::Pin;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 
-pub use types::HandshakeInfo;
+pub use types::{HandshakeInfo, ProbeSnapshot, ProbeState};
 
 #[async_trait]
 pub trait ExExTransportServer: Send + Sync + 'static {

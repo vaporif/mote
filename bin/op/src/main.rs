@@ -101,6 +101,7 @@ fn main() {
                     })
                     .install_exex_if(enable_exex, "glint", move |ctx| async move {
                         let cancel = tokio_util::sync::CancellationToken::new();
+                        let probe_state = glint_transport::ProbeState::default();
                         let transport: Box<dyn glint_transport::ExExTransportServer> =
                             if let Some(port) = exex_grpc_port {
                                 let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -111,10 +112,11 @@ fn main() {
                             } else {
                                 Box::new(glint_transport::ipc::IpcServer::new(
                                     socket_path,
+                                    probe_state.clone(),
                                     cancel.clone(),
                                 )?)
                             };
-                        let exex = glint_exex::install(transport, cancel);
+                        let exex = glint_exex::install(transport, probe_state, cancel);
                         Ok(exex(ctx))
                     })
                     .launch_with_debug_capabilities()

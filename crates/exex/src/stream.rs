@@ -343,8 +343,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock_path = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let ipc_server =
-            glint_transport::ipc::IpcServer::new(sock_path.clone(), cancel.clone()).unwrap();
+        let ipc_server = glint_transport::ipc::IpcServer::new(
+            sock_path.clone(),
+            glint_transport::ProbeState::default(),
+            cancel.clone(),
+        )
+        .unwrap();
 
         let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(1);
         let snapshot_fulfiller = tokio::spawn(async move {
@@ -427,8 +431,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock_path = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let ipc_server =
-            glint_transport::ipc::IpcServer::new(sock_path.clone(), cancel.clone()).unwrap();
+        let ipc_server = glint_transport::ipc::IpcServer::new(
+            sock_path.clone(),
+            glint_transport::ProbeState::default(),
+            cancel.clone(),
+        )
+        .unwrap();
 
         let (batch_tx, mut batch_rx) = mpsc::channel(16);
         let (delivered_tx, mut delivered_rx) = watch::channel(None);

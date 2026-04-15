@@ -26,6 +26,7 @@ const SNAPSHOT_CHANNEL_SIZE: usize = 1;
 
 pub fn install<Node>(
     transport: Box<dyn glint_transport::ExExTransportServer>,
+    probe_state: glint_transport::ProbeState,
     cancel: CancellationToken,
 ) -> impl FnOnce(
     reth_exex::ExExContext<Node>,
@@ -33,12 +34,13 @@ pub fn install<Node>(
 where
     Node: reth_node_api::FullNodeComponents,
 {
-    move |ctx| Box::pin(glint_exex(ctx, transport, cancel))
+    move |ctx| Box::pin(glint_exex(ctx, transport, probe_state, cancel))
 }
 
 async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     mut ctx: reth_exex::ExExContext<Node>,
     transport: Box<dyn glint_transport::ExExTransportServer>,
+    probe_state: glint_transport::ProbeState,
     cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
     info!(
@@ -48,9 +50,9 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
 
     // TODO: checkpoint persistence — right now we replay from genesis on every
     // restart. Persist the ring buffer and max_reported height to disk.
-    let mut ring_buffer = RingBuffer::new();
+    let mut ring_buffer = RingBuffer::with_probe_state(&probe_state);
     let rb_stats = ring_buffer.stats();
-    let consumer_connected = Arc::new(AtomicBool::new(false));
+    let consumer_connected = probe_state.consumer_connected;
 
     let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(SNAPSHOT_CHANNEL_SIZE);
 

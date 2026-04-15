@@ -2,8 +2,8 @@ use alloy_eips::BlockNumHash;
 use arrow::record_batch::RecordBatch;
 use glint_primitives::exex_types::BatchOp;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const DEFAULT_MEMORY_CAP: u64 = 256 * 1024 * 1024; // 256 MB
 const PER_ENTRY_OVERHEAD: u64 = 256;
@@ -32,6 +32,15 @@ impl RingBufferStats {
             oldest: Arc::new(AtomicU64::new(0)),
         }
     }
+
+    pub fn from_probe_state(state: &glint_transport::ProbeState) -> Self {
+        Self {
+            entries: Arc::clone(&state.ring_buffer_entries),
+            memory: Arc::clone(&state.ring_buffer_memory_bytes),
+            tip: Arc::clone(&state.tip_block),
+            oldest: Arc::clone(&state.oldest_block),
+        }
+    }
 }
 
 pub struct RingBuffer {
@@ -51,6 +60,16 @@ impl RingBuffer {
     #[must_use]
     pub fn new() -> Self {
         Self::with_memory_cap(DEFAULT_MEMORY_CAP)
+    }
+
+    #[must_use]
+    pub fn with_probe_state(probe_state: &glint_transport::ProbeState) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            memory_usage: 0,
+            memory_cap: DEFAULT_MEMORY_CAP,
+            stats: RingBufferStats::from_probe_state(probe_state),
+        }
     }
 
     #[must_use]

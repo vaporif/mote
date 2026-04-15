@@ -26,7 +26,6 @@ tracing = { workspace = true }
 glint-primitives = { workspace = true, features = ["arrow"] }
 borsh = { workspace = true }
 
-# gRPC (optional)
 tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }

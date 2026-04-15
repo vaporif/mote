@@ -77,20 +77,30 @@ impl TestHarness {
         let (snapshot_tx, snapshot_rx) = mpsc::channel::<SnapshotRequest>(1);
         let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
         let consumer_connected = Arc::new(AtomicBool::new(false));
+        let probe_state = glint_transport::ProbeState {
+            consumer_connected: Arc::clone(&consumer_connected),
+            tip_block: Arc::new(AtomicU64::new(100)),
+            oldest_block: Arc::new(AtomicU64::new(1)),
+            ring_buffer_entries: Arc::new(AtomicU64::new(42)),
+            ring_buffer_memory_bytes: Arc::new(AtomicU64::new(8192)),
+        };
         let rb_stats = RingBufferStats {
-            entries: Arc::new(AtomicU64::new(42)),
-            memory: Arc::new(AtomicU64::new(8192)),
-            tip: Arc::new(AtomicU64::new(100)),
-            oldest: Arc::new(AtomicU64::new(1)),
+            entries: Arc::clone(&probe_state.ring_buffer_entries),
+            memory: Arc::clone(&probe_state.ring_buffer_memory_bytes),
+            tip: Arc::clone(&probe_state.tip_block),
+            oldest: Arc::clone(&probe_state.oldest_block),
         };
         let cancellation_token = CancellationToken::new();
 
         let task_connected = Arc::clone(&consumer_connected);
         let task_cancel = cancellation_token.clone();
 
-        let ipc_server =
-            glint_transport::ipc::IpcServer::new(socket_path.clone(), task_cancel.clone())
-                .expect("failed to bind IPC socket");
+        let ipc_server = glint_transport::ipc::IpcServer::new(
+            socket_path.clone(),
+            probe_state,
+            task_cancel.clone(),
+        )
+        .expect("failed to bind IPC socket");
 
         tokio::spawn(async move {
             let _ = writer_task(
@@ -190,17 +200,44 @@ async fn full_subscribe_and_replay() {
     assert!(!is_watermark(&batches[2]));
 }
 
-/// IPC probe doesn't have ring buffer stats — those live in the writer task,
-/// not the transport layer. Returns zeros.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn probe_returns_status() {
     let harness = TestHarness::spawn();
 
     let client = glint_transport::ipc::IpcClient::new(harness.socket_path.clone());
     let info = client.probe().await.unwrap();
-    assert_eq!(info.tip_block, 0);
-    assert_eq!(info.oldest_block, 0);
+    assert_eq!(info.tip_block, 100);
+    assert_eq!(info.oldest_block, 1);
     assert!(!harness.consumer_connected.load(Ordering::Acquire));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_message_returns_error_byte() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let harness = TestHarness::spawn();
+
+    let mut client = UnixStream::connect(&harness.socket_path).await.unwrap();
+
+    let mut buf = Vec::with_capacity(9);
+    buf.push(0xFE);
+    buf.extend_from_slice(&0u64.to_le_bytes());
+    client.write_all(&buf).await.unwrap();
+
+    let mut response = [0u8; 1];
+    timeout(Duration::from_secs(5), client.read_exact(&mut response))
+        .await
+        .expect("timed out")
+        .unwrap();
+    assert_eq!(response[0], 0xFF);
+
+    let mut trailing = [0u8; 1];
+    let n = timeout(Duration::from_secs(2), client.read(&mut trailing))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 0, "connection not closed after error");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

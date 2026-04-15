@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::{ExExConnection, ExExTransportClient, ExExTransportServer, HandshakeInfo};
+use crate::{ExExConnection, ExExTransportClient, ExExTransportServer, HandshakeInfo, ProbeState};
 
 const SUBSCRIBE_MSG_SIZE: usize = 9; // 1 byte type + 8 bytes resume_block
 const MAX_CLIENT_MSG_LEN: usize = 64;
@@ -24,18 +24,27 @@ const WRITER_CHANNEL_SIZE: usize = 16;
 
 pub struct IpcServer {
     listener: UnixListener,
+    probe_state: ProbeState,
     cancel: CancellationToken,
 }
 
 impl IpcServer {
     #[allow(clippy::needless_pass_by_value)] // owned path is idiomatic for bind
-    pub fn new(socket_path: PathBuf, cancel: CancellationToken) -> eyre::Result<Self> {
+    pub fn new(
+        socket_path: PathBuf,
+        probe_state: ProbeState,
+        cancel: CancellationToken,
+    ) -> eyre::Result<Self> {
         if socket_path.exists() {
             std::fs::remove_file(&socket_path)?;
         }
         let listener = UnixListener::bind(&socket_path)?;
         debug!(?socket_path, "IPC server bound");
-        Ok(Self { listener, cancel })
+        Ok(Self {
+            listener,
+            probe_state,
+            cancel,
+        })
     }
 }
 
@@ -54,7 +63,7 @@ impl ExExTransportServer for IpcServer {
                 }
             };
 
-            match try_classify_connection(stream).await {
+            match try_classify_connection(stream, &self.probe_state).await {
                 Ok(Classified::Subscribe(conn)) => return Ok(Box::new(conn)),
                 Ok(Classified::Handled) => {}
 
@@ -71,7 +80,10 @@ enum Classified {
     Handled,
 }
 
-async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classified> {
+async fn try_classify_connection(
+    mut stream: UnixStream,
+    probe_state: &ProbeState,
+) -> eyre::Result<Classified> {
     let mut buf = vec![0u8; MAX_CLIENT_MSG_LEN];
     let n = stream.read(&mut buf).await?;
     ensure!(n > 0, "client disconnected before sending a message");
@@ -79,15 +91,7 @@ async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classif
 
     match buf[0] {
         0x00 => {
-            // Respond with zeroed probe data — the transport doesn't own
-            // ring-buffer state, but we need a valid reply to not hang the client.
-            let resp = MinimalProbeResponse {
-                consumer_connected: false,
-                tip_block: 0,
-                oldest_block: 0,
-                ring_buffer_entries: 0,
-                ring_buffer_memory_bytes: 0,
-            };
+            let resp = probe_state.snapshot();
             let bytes = borsh::to_vec(&resp)?;
             stream.write_all(&bytes).await?;
             stream.shutdown().await?;
@@ -114,15 +118,6 @@ async fn try_classify_connection(mut stream: UnixStream) -> eyre::Result<Classif
             Ok(Classified::Handled)
         }
     }
-}
-
-#[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
-struct MinimalProbeResponse {
-    consumer_connected: bool,
-    tip_block: u64,
-    oldest_block: u64,
-    ring_buffer_entries: u64,
-    ring_buffer_memory_bytes: u64,
 }
 
 pub struct IpcConnection {
@@ -222,7 +217,7 @@ impl ExExTransportClient for IpcClient {
         ensure!(n >= 17, "probe response too short ({n} bytes)");
         buf.truncate(n);
 
-        let resp: MinimalProbeResponse = borsh::from_slice(&buf)?;
+        let resp: crate::ProbeSnapshot = borsh::from_slice(&buf)?;
         Ok(HandshakeInfo {
             oldest_block: resp.oldest_block,
             tip_block: resp.tip_block,
@@ -301,7 +296,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let server = IpcServer::new(sock.clone(), cancel.clone()).unwrap();
+        let server = IpcServer::new(sock.clone(), ProbeState::default(), cancel.clone()).unwrap();
 
         let server_handle = tokio::spawn(async move {
             let mut conn = server.accept().await.unwrap();
@@ -335,7 +330,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let server = IpcServer::new(sock.clone(), cancel.clone()).unwrap();
+        let server = IpcServer::new(sock.clone(), ProbeState::default(), cancel.clone()).unwrap();
 
         let schema = test_schema();
         let batch = RecordBatch::new_empty(schema);
@@ -370,7 +365,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let server = IpcServer::new(sock, cancel.clone()).unwrap();
+        let server = IpcServer::new(sock, ProbeState::default(), cancel.clone()).unwrap();
 
         cancel.cancel();
         let result = server.accept().await;
@@ -382,7 +377,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("test.sock");
         let cancel = CancellationToken::new();
-        let server = IpcServer::new(sock.clone(), cancel.clone()).unwrap();
+        let server = IpcServer::new(sock.clone(), ProbeState::default(), cancel.clone()).unwrap();
 
         // accept() handles probes inline, so we send a probe then a subscribe to unblock it.
         let server_handle = tokio::spawn(async move {
