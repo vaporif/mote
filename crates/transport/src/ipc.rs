@@ -314,7 +314,6 @@ mod tests {
             resume
         });
 
-        // client side
         let mut stream = UnixStream::connect(&sock).await.unwrap();
         let mut msg = [0u8; SUBSCRIBE_MSG_SIZE];
         msg[0] = 0x01;
