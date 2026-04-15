@@ -31,7 +31,11 @@
       fenixPkgs,
       craneLib,
     }: let
-      src = craneLib.cleanCargoSource ./.;
+      src = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          (builtins.match ".*\\.proto$" path != null) || (craneLib.filterCargoSources path type);
+      };
 
       commonArgs =
         {
