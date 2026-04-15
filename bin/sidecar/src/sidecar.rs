@@ -252,9 +252,11 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                     &write_conn,
                     &ready_tx,
                     resume_block,
-                    &snapshots_dir,
-                    snapshot_interval,
-                    &mut last_snapshot_block,
+                    &mut SnapshotState {
+                        dir: &snapshots_dir,
+                        interval: snapshot_interval,
+                        last_block: &mut last_snapshot_block,
+                    },
                 ).await
             } => {
                 match result {
@@ -374,7 +376,6 @@ fn process_batch(
 
 const SNAPSHOTS_TO_KEEP: usize = 2;
 
-/// Write a snapshot to disk and prune old ones. Returns `true` on success.
 fn write_and_prune_snapshot(
     snapshots_dir: &Path,
     block: u64,
@@ -392,16 +393,19 @@ fn write_and_prune_snapshot(
     true
 }
 
-#[allow(clippy::too_many_arguments)]
+struct SnapshotState<'a> {
+    dir: &'a Path,
+    interval: u64,
+    last_block: &'a mut u64,
+}
+
 async fn run_connection(
     client: Box<dyn glint_transport::ExExTransportClient>,
     backend: &mut Backend,
     sqlite_conn: &Arc<Mutex<Connection>>,
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
-    snapshots_dir: &Path,
-    snapshot_interval: u64,
-    last_snapshot_block: &mut u64,
+    snapshots: &mut SnapshotState<'_>,
 ) -> eyre::Result<ConnectionOutcome> {
     let (handshake, mut batch_stream) = client.subscribe(resume_block).await?;
     info!(
@@ -444,11 +448,11 @@ async fn run_connection(
                 let snap = Arc::new(store.snapshot()?);
                 let _ = snapshot_tx.send(Arc::clone(&snap));
 
-                if snapshot_interval > 0
-                    && last_block.saturating_sub(*last_snapshot_block) >= snapshot_interval
-                    && write_and_prune_snapshot(snapshots_dir, last_block, &snap)
+                if snapshots.interval > 0
+                    && last_block.saturating_sub(*snapshots.last_block) >= snapshots.interval
+                    && write_and_prune_snapshot(snapshots.dir, last_block, &snap)
                 {
-                    *last_snapshot_block = last_block;
+                    *snapshots.last_block = last_block;
                 }
             }
         }
