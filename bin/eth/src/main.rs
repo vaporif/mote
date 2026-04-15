@@ -37,6 +37,7 @@ fn main() {
 
             let enable_exex = !ext.disable_exex();
             let socket_path = ext.exex_socket_path.clone();
+            let exex_grpc_port = ext.exex_grpc_port;
             let checkpoint_path = ext.checkpoint_path.clone();
 
             let shutdown_index: Arc<Mutex<Option<Arc<Mutex<ExpirationIndex>>>>> =
@@ -84,13 +85,24 @@ fn main() {
                     Ok(())
                 })
                 .install_exex_if(enable_exex, "glint", move |ctx| {
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    let ipc_server = glint_transport::ipc::IpcServer::new(socket_path, cancel)
-                        .expect("failed to bind IPC socket");
-                    let transports: Vec<Box<dyn glint_transport::ExExTransportServer>> =
-                        vec![Box::new(ipc_server)];
-                    let exex = glint_exex::install(transports);
-                    async move { Ok(exex(ctx)) }
+                    async move {
+                        let cancel = tokio_util::sync::CancellationToken::new();
+                        let transport: Box<dyn glint_transport::ExExTransportServer> =
+                            if let Some(port) = exex_grpc_port {
+                                let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+                                Box::new(
+                                    glint_transport::grpc::GrpcServer::new(addr, cancel.clone())
+                                        .await?,
+                                )
+                            } else {
+                                Box::new(glint_transport::ipc::IpcServer::new(
+                                    socket_path,
+                                    cancel.clone(),
+                                )?)
+                            };
+                        let exex = glint_exex::install(transport, cancel);
+                        Ok(exex(ctx))
+                    }
                 })
                 .launch_with_debug_capabilities()
                 .await?;

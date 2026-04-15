@@ -3,7 +3,7 @@ package glint.exex.v1;
 
 service ExExStream {
   rpc Probe(ProbeRequest) returns (ProbeResponse);
-  rpc Subscribe(SubscribeRequest) returns (stream BatchMessage);
+  rpc Subscribe(SubscribeRequest) returns (stream StreamMessage);
 }
 
 message ProbeRequest {}
@@ -16,6 +16,9 @@ message SubscribeRequest {
   uint64 resume_block = 1;
 }
 
-message BatchMessage {
-  bytes arrow_ipc = 1;
+message StreamMessage {
+  oneof payload {
+    ProbeResponse handshake = 1;
+    bytes arrow_ipc = 2;
+  }
 }

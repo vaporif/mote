@@ -9,7 +9,7 @@ use futures::Stream;
 use tokio_stream::StreamExt;
 
 use crate::proto::ex_ex_stream_client::ExExStreamClient;
-use crate::proto::{ProbeRequest, SubscribeRequest};
+use crate::proto::{ProbeRequest, SubscribeRequest, stream_message};
 use crate::{ExExTransportClient, HandshakeInfo};
 
 pub struct GrpcClient {
@@ -42,28 +42,39 @@ impl ExExTransportClient for GrpcClient {
         Pin<Box<dyn Stream<Item = eyre::Result<RecordBatch>> + Send>>,
     )> {
         let mut client = ExExStreamClient::connect(self.endpoint.clone()).await?;
-
-        // Subscribe first -- the server blocks the RPC response until handshake
-        // completes, so probe_info is guaranteed to be set by the time this returns.
-        let stream = client
+        let mut stream = client
             .subscribe(SubscribeRequest { resume_block })
             .await?
             .into_inner();
 
-        let probe_resp = client.probe(ProbeRequest {}).await?.into_inner();
-        let info = HandshakeInfo {
-            oldest_block: probe_resp.oldest_block,
-            tip_block: probe_resp.tip_block,
+        // First message must be handshake
+        let first = stream
+            .next()
+            .await
+            .ok_or_else(|| eyre!("stream closed before handshake"))?
+            .map_err(|e| eyre!("gRPC error waiting for handshake: {e}"))?;
+
+        let info = match first.payload {
+            Some(stream_message::Payload::Handshake(h)) => HandshakeInfo {
+                oldest_block: h.oldest_block,
+                tip_block: h.tip_block,
+            },
+            _ => return Err(eyre!("expected handshake as first message")),
         };
 
         let mapped = stream.map(|result| {
             let msg = result.map_err(|e| eyre!("gRPC stream error: {e}"))?;
-            let cursor = Cursor::new(msg.arrow_ipc);
-            let mut reader = StreamReader::try_new(cursor, None)?;
-            reader
-                .next()
-                .ok_or_else(|| eyre!("empty Arrow IPC payload"))?
-                .map_err(Into::into)
+            match msg.payload {
+                Some(stream_message::Payload::ArrowIpc(bytes)) => {
+                    let cursor = Cursor::new(bytes);
+                    let mut reader = StreamReader::try_new(cursor, None)?;
+                    reader
+                        .next()
+                        .ok_or_else(|| eyre!("empty Arrow IPC payload"))?
+                        .map_err(Into::into)
+                }
+                _ => Err(eyre!("unexpected non-batch message in stream")),
+            }
         });
 
         Ok((info, Box::pin(mapped)))

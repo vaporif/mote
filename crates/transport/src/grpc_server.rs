@@ -6,22 +6,21 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use eyre::eyre;
 use glint_primitives::exex_schema::entity_events_schema;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::debug;
 
 use crate::proto::ex_ex_stream_server::{ExExStream, ExExStreamServer};
-use crate::proto::{BatchMessage, ProbeRequest, ProbeResponse, SubscribeRequest};
+use crate::proto::{ProbeRequest, ProbeResponse, StreamMessage, SubscribeRequest, stream_message};
 use crate::{ExExConnection, ExExTransportServer, HandshakeInfo};
 
 const BATCH_CHANNEL_SIZE: usize = 16;
 
 struct IncomingSubscription {
     resume_block: u64,
-    batch_tx: mpsc::Sender<Result<BatchMessage, Status>>,
-    handshake_tx: oneshot::Sender<HandshakeInfo>,
+    batch_tx: mpsc::Sender<Result<StreamMessage, Status>>,
 }
 
 struct ExExStreamService {
@@ -31,7 +30,7 @@ struct ExExStreamService {
 
 #[async_trait]
 impl ExExStream for ExExStreamService {
-    type SubscribeStream = ReceiverStream<Result<BatchMessage, Status>>;
+    type SubscribeStream = ReceiverStream<Result<StreamMessage, Status>>;
 
     async fn probe(
         &self,
@@ -50,23 +49,14 @@ impl ExExStream for ExExStreamService {
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let resume_block = request.into_inner().resume_block;
         let (batch_tx, batch_rx) = mpsc::channel(BATCH_CHANNEL_SIZE);
-        let (handshake_tx, handshake_rx) = oneshot::channel();
 
         self.incoming_tx
             .send(IncomingSubscription {
                 resume_block,
                 batch_tx,
-                handshake_tx,
             })
             .await
             .map_err(|_| Status::unavailable("server shutting down"))?;
-
-        // Wait for the server-side to send handshake info before returning the stream.
-        // This ensures the client gets probe info via a separate Probe call,
-        // and the stream starts flowing only after handshake completes.
-        handshake_rx
-            .await
-            .map_err(|_| Status::internal("handshake dropped"))?;
 
         Ok(Response::new(ReceiverStream::new(batch_rx)))
     }
@@ -135,7 +125,6 @@ impl ExExTransportServer for GrpcServer {
                 Ok(Box::new(GrpcConnection {
                     resume_block: sub.resume_block,
                     batch_tx: Some(sub.batch_tx),
-                    handshake_tx: Some(sub.handshake_tx),
                     probe_info: Arc::clone(&self.probe_info),
                 }))
             }
@@ -145,8 +134,7 @@ impl ExExTransportServer for GrpcServer {
 
 pub struct GrpcConnection {
     resume_block: u64,
-    batch_tx: Option<mpsc::Sender<Result<BatchMessage, Status>>>,
-    handshake_tx: Option<oneshot::Sender<HandshakeInfo>>,
+    batch_tx: Option<mpsc::Sender<Result<StreamMessage, Status>>>,
     probe_info: Arc<tokio::sync::RwLock<HandshakeInfo>>,
 }
 
@@ -164,11 +152,19 @@ impl ExExConnection for GrpcConnection {
         *self.probe_info.write().await = info;
 
         let tx = self
-            .handshake_tx
-            .take()
-            .ok_or_else(|| eyre!("handshake already sent"))?;
-        tx.send(info)
-            .map_err(|_| eyre!("handshake receiver dropped"))?;
+            .batch_tx
+            .as_ref()
+            .ok_or_else(|| eyre!("send_handshake called after finish"))?;
+
+        let msg = StreamMessage {
+            payload: Some(stream_message::Payload::Handshake(ProbeResponse {
+                oldest_block: oldest,
+                tip_block: tip,
+            })),
+        };
+        tx.send(Ok(msg))
+            .await
+            .map_err(|_| eyre!("gRPC batch receiver dropped"))?;
         Ok(())
     }
 
@@ -186,7 +182,10 @@ impl ExExConnection for GrpcConnection {
             writer.finish()?;
         }
 
-        tx.send(Ok(BatchMessage { arrow_ipc: buf }))
+        let msg = StreamMessage {
+            payload: Some(stream_message::Payload::ArrowIpc(buf)),
+        };
+        tx.send(Ok(msg))
             .await
             .map_err(|_| eyre!("gRPC batch receiver dropped"))?;
         Ok(())

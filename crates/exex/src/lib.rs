@@ -25,67 +25,60 @@ const BATCH_CHANNEL_SIZE: usize = 1024;
 const SNAPSHOT_CHANNEL_SIZE: usize = 1;
 
 pub fn install<Node>(
-    transports: Vec<Box<dyn glint_transport::ExExTransportServer>>,
+    transport: Box<dyn glint_transport::ExExTransportServer>,
+    cancel: CancellationToken,
 ) -> impl FnOnce(
     reth_exex::ExExContext<Node>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = eyre::Result<()>> + Send>>
 where
     Node: reth_node_api::FullNodeComponents,
 {
-    move |ctx| Box::pin(glint_exex(ctx, transports))
+    move |ctx| Box::pin(glint_exex(ctx, transport, cancel))
 }
 
 async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     mut ctx: reth_exex::ExExContext<Node>,
-    transports: Vec<Box<dyn glint_transport::ExExTransportServer>>,
+    transport: Box<dyn glint_transport::ExExTransportServer>,
+    cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
     info!(
-        transport_count = transports.len(),
         head = ?ctx.head,
         "glint exex starting"
     );
 
     // TODO: checkpoint persistence — right now we replay from genesis on every
     // restart. Persist the ring buffer and max_reported height to disk.
-    let cancellation_token = CancellationToken::new();
     let mut ring_buffer = RingBuffer::new();
     let rb_stats = ring_buffer.stats();
     let consumer_connected = Arc::new(AtomicBool::new(false));
 
     let (snapshot_tx, mut snapshot_rx) = mpsc::channel::<SnapshotRequest>(SNAPSHOT_CHANNEL_SIZE);
 
-    let mut batch_txs = Vec::new();
-    let mut delivered_rxs = Vec::new();
+    let (batch_tx, batch_rx) =
+        mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(BATCH_CHANNEL_SIZE);
+    let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
 
-    for transport in transports {
-        let (batch_tx, batch_rx) =
-            mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(BATCH_CHANNEL_SIZE);
-        let (delivered_tx, delivered_rx) = watch::channel::<Option<BlockNumHash>>(None);
+    let writer_cancel = cancellation_token.clone();
+    let writer_consumer = Arc::clone(&consumer_connected);
+    let writer_snapshot_tx = snapshot_tx.clone();
+    let writer_rb_stats = rb_stats.clone();
+    tokio::spawn(async move {
+        if let Err(e) = stream::writer_task(
+            transport,
+            writer_snapshot_tx,
+            batch_rx,
+            delivered_tx,
+            writer_consumer,
+            writer_rb_stats,
+            writer_cancel,
+        )
+        .await
+        {
+            error!(?e, "writer task failed");
+        }
+    });
 
-        let writer_cancel = cancellation_token.clone();
-        let writer_consumer = Arc::clone(&consumer_connected);
-        let writer_snapshot_tx = snapshot_tx.clone();
-        let writer_rb_stats = rb_stats.clone();
-        tokio::spawn(async move {
-            if let Err(e) = stream::writer_task(
-                transport,
-                writer_snapshot_tx,
-                batch_rx,
-                delivered_tx,
-                writer_consumer,
-                writer_rb_stats,
-                writer_cancel,
-            )
-            .await
-            {
-                error!(?e, "writer task failed");
-            }
-        });
-
-        batch_txs.push(batch_tx);
-        delivered_rxs.push(delivered_rx);
-    }
-    drop(snapshot_tx); // drop original so channel closes when all writers stop
+    drop(snapshot_tx); // drop original so channel closes when writer stops
 
     let mut replay_in_progress = false;
     let mut pending_replay_done_rx: Option<oneshot::Receiver<()>> = None;
@@ -127,7 +120,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                         process_committed_chain(
                             new,
                             &mut ring_buffer,
-                            &batch_txs,
+                            &batch_tx,
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
@@ -139,7 +132,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                         process_reverted_chain(
                             old,
                             &mut ring_buffer,
-                            &batch_txs,
+                            &batch_tx,
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
@@ -150,7 +143,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                         process_reverted_chain(
                             old,
                             &mut ring_buffer,
-                            &batch_txs,
+                            &batch_tx,
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
@@ -158,7 +151,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                         process_committed_chain(
                             new,
                             &mut ring_buffer,
-                            &batch_txs,
+                            &batch_tx,
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
@@ -170,7 +163,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                 report_finished_height(
                     &ctx,
                     &ring_buffer,
-                    &delivered_rxs,
+                    &delivered_rx,
                     current_tip,
                     &mut max_reported,
                 );
@@ -198,7 +191,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
 fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
     chain: &reth_execution_types::Chain<N>,
     ring_buffer: &mut RingBuffer,
-    batch_txs: &[mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>],
+    batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
@@ -227,7 +220,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
             Ok(batch) => {
                 ring_buffer.push(bnh, BatchOp::Commit, batch.clone());
                 try_send_batch(
-                    batch_txs,
+                    batch_tx,
                     Some(bnh),
                     &batch,
                     consumer_connected,
@@ -246,7 +239,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
 fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     chain: &reth_execution_types::Chain<N>,
     ring_buffer: &mut RingBuffer,
-    batch_txs: &[mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>],
+    batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
@@ -277,7 +270,7 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
             Ok(batch) => {
                 ring_buffer.push(bnh, BatchOp::Revert, batch.clone());
                 try_send_batch(
-                    batch_txs,
+                    batch_tx,
                     None,
                     &batch,
                     consumer_connected,
@@ -333,7 +326,7 @@ where
 }
 
 fn try_send_batch(
-    batch_txs: &[mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>],
+    batch_tx: &mpsc::Sender<(Option<BlockNumHash>, RecordBatch)>,
     bnh: Option<BlockNumHash>,
     batch: &RecordBatch,
     consumer_connected: &Arc<AtomicBool>,
@@ -344,27 +337,25 @@ fn try_send_batch(
         return;
     }
 
-    for tx in batch_txs {
-        match tx.try_send((bnh, batch.clone())) {
-            Ok(()) => {
-                grace.reset();
-            }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if replay_in_progress {
-                    debug!("batch channel full during replay, suppressing disconnect");
-                } else {
-                    debug!("batch channel full, applying backpressure");
-                    grace.record_failure();
-                    if grace.should_disconnect {
-                        warn!("backpressure threshold exceeded, disconnecting consumer");
-                        consumer_connected.store(false, Ordering::Release);
-                    }
+    match batch_tx.try_send((bnh, batch.clone())) {
+        Ok(()) => {
+            grace.reset();
+        }
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            if replay_in_progress {
+                debug!("batch channel full during replay, suppressing disconnect");
+            } else {
+                debug!("batch channel full, applying backpressure");
+                grace.record_failure();
+                if grace.should_disconnect {
+                    warn!("backpressure threshold exceeded, disconnecting consumer");
+                    consumer_connected.store(false, Ordering::Release);
                 }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                debug!("batch channel closed");
-                consumer_connected.store(false, Ordering::Release);
-            }
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            debug!("batch channel closed");
+            consumer_connected.store(false, Ordering::Release);
         }
     }
 }
@@ -372,15 +363,11 @@ fn try_send_batch(
 fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
     ctx: &reth_exex::ExExContext<Node>,
     ring_buffer: &RingBuffer,
-    delivered_rxs: &[watch::Receiver<Option<BlockNumHash>>],
+    delivered_rx: &watch::Receiver<Option<BlockNumHash>>,
     current_tip: BlockNumHash,
     max_reported: &mut BlockNumHash,
 ) {
-    // Use the minimum across all transports (most conservative)
-    let consumer_last_delivered = delivered_rxs
-        .iter()
-        .filter_map(|rx| *rx.borrow())
-        .min_by_key(|bnh| bnh.number);
+    let consumer_last_delivered = *delivered_rx.borrow();
 
     // hold at consumer position so WAL keeps unseen data; fall back to tip
     let computed = consumer_last_delivered.unwrap_or(current_tip);
@@ -414,15 +401,14 @@ mod tests {
     #[test]
     fn backpressure_disconnects_consumer_after_threshold() {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
-        let batch_txs = vec![batch_tx];
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
 
-        let _ = batch_txs[0].try_send((None, dummy_batch()));
+        let _ = batch_tx.try_send((None, dummy_batch()));
 
         for _ in 0..3 {
             try_send_batch(
-                &batch_txs,
+                &batch_tx,
                 None,
                 &dummy_batch(),
                 &consumer_connected,
@@ -444,15 +430,14 @@ mod tests {
     #[test]
     fn backpressure_suppressed_during_replay() {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
-        let batch_txs = vec![batch_tx];
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
 
-        let _ = batch_txs[0].try_send((None, dummy_batch()));
+        let _ = batch_tx.try_send((None, dummy_batch()));
 
         for _ in 0..5 {
             try_send_batch(
-                &batch_txs,
+                &batch_tx,
                 None,
                 &dummy_batch(),
                 &consumer_connected,
@@ -474,14 +459,13 @@ mod tests {
     #[test]
     fn closed_channel_disconnects_consumer() {
         let (batch_tx, batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
-        let batch_txs = vec![batch_tx];
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
 
         drop(batch_rx);
 
         try_send_batch(
-            &batch_txs,
+            &batch_tx,
             None,
             &dummy_batch(),
             &consumer_connected,
@@ -498,12 +482,11 @@ mod tests {
     #[test]
     fn disconnected_consumer_skips_send() {
         let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
-        let batch_txs = vec![batch_tx];
         let consumer_connected = Arc::new(AtomicBool::new(false));
         let mut grace = stream::GraceState::default();
 
         try_send_batch(
-            &batch_txs,
+            &batch_tx,
             None,
             &dummy_batch(),
             &consumer_connected,
@@ -517,7 +500,6 @@ mod tests {
     #[test]
     fn successful_send_resets_grace() {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
-        let batch_txs = vec![batch_tx];
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
 
@@ -525,7 +507,7 @@ mod tests {
         assert!(grace.should_disconnect);
 
         try_send_batch(
-            &batch_txs,
+            &batch_tx,
             None,
             &dummy_batch(),
             &consumer_connected,
