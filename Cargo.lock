@@ -4786,6 +4786,7 @@ dependencies = [
  "eyre",
  "glint-primitives",
  "roaring",
+ "tempfile",
  "tokio",
  "tracing",
 ]
@@ -4988,6 +4989,7 @@ dependencies = [
 name = "glint-sidecar"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "arrow",
  "arrow-flight",
  "axum",
