@@ -9,7 +9,7 @@ use futures::StreamExt;
 use glint_exex::arrow::{EventRow, build_record_batch};
 use glint_exex::metrics::ExExMetrics;
 use glint_exex::ring_buffer::RingBufferStats;
-use glint_exex::stream::{SnapshotRequest, writer_task};
+use glint_exex::stream::{SnapshotRequest, WriterTaskCtx, writer_task};
 use glint_primitives::exex_schema::columns;
 use glint_primitives::exex_types::BatchOp;
 use glint_primitives::parse::EntityEvent;
@@ -103,18 +103,17 @@ impl TestHarness {
         )
         .expect("failed to bind IPC socket");
 
-        let metrics = ExExMetrics::default();
         tokio::spawn(async move {
-            let _ = writer_task(
-                Box::new(ipc_server),
+            let _ = writer_task(WriterTaskCtx {
+                server: Box::new(ipc_server),
                 snapshot_tx,
                 batch_rx,
                 delivered_tx,
-                task_connected,
+                consumer_connected: task_connected,
                 rb_stats,
-                task_cancel,
-                &metrics,
-            )
+                cancellation_token: task_cancel,
+                metrics: ExExMetrics::default(),
+            })
             .await;
         });
 

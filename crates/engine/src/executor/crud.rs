@@ -3,7 +3,7 @@ use glint_primitives::{
     constants::PROCESSOR_ADDRESS,
     entity::{EntityMetadata, derive_entity_key},
     events::{
-        EntityCreated, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdated,
+        EntityCreateLog, EntityDeleted, EntityExtended, EntityPermissionsChanged, EntityUpdateLog,
         LogAnnotations,
     },
     storage::{
@@ -254,18 +254,18 @@ where
                 op_gas = op_gas.gas_add(super::GAS_OPERATOR_WRITE)?;
             }
 
-            acc.logs.push(EntityCreated::new_log(
-                PROCESSOR_ADDRESS,
+            acc.logs.push(EntityCreateLog {
+                address: PROCESSOR_ADDRESS,
                 entity_key,
-                sender,
+                owner: sender,
                 expires_at,
-                create.content_type.clone(),
-                create.payload.clone().into(),
+                content_type: create.content_type.clone(),
+                payload: create.payload.clone().into(),
                 annotations,
-                extend_policy_u8,
-                operator_for_log,
-                op_gas,
-            ));
+                extend_policy: extend_policy_u8,
+                operator: operator_for_log,
+                gas_cost: op_gas,
+            }.build());
 
             acc.gas_used = acc.gas_used.gas_add(op_gas)?;
 
@@ -392,18 +392,19 @@ where
                         .gas_mul(GAS_PER_DATA_BYTE)?,
                 )?;
 
-            acc.logs.push(EntityUpdated::new_log(
-                PROCESSOR_ADDRESS,
-                update.entity_key,
-                sender,
-                (old_meta.expires_at_block, new_expires),
-                update.content_type.clone(),
-                update.payload.clone().into(),
+            acc.logs.push(EntityUpdateLog {
+                address: PROCESSOR_ADDRESS,
+                entity_key: update.entity_key,
+                owner: sender,
+                old_expires_at: old_meta.expires_at_block,
+                new_expires_at: new_expires,
+                content_type: update.content_type.clone(),
+                payload: update.payload.clone().into(),
                 annotations,
-                extend_policy_u8,
-                operator_for_log,
-                op_gas,
-            ));
+                extend_policy: extend_policy_u8,
+                operator: operator_for_log,
+                gas_cost: op_gas,
+            }.build());
 
             acc.gas_used = acc.gas_used.gas_add(op_gas)?;
         }

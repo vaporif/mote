@@ -69,16 +69,16 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     let writer_rb_stats = rb_stats.clone();
     let writer_metrics = metrics.clone();
     tokio::spawn(async move {
-        if let Err(e) = stream::writer_task(
-            transport,
-            writer_snapshot_tx,
+        if let Err(e) = stream::writer_task(stream::WriterTaskCtx {
+            server: transport,
+            snapshot_tx: writer_snapshot_tx,
             batch_rx,
             delivered_tx,
-            writer_consumer,
-            writer_rb_stats,
-            writer_cancel,
-            &writer_metrics,
-        )
+            consumer_connected: writer_consumer,
+            rb_stats: writer_rb_stats,
+            cancellation_token: writer_cancel,
+            metrics: writer_metrics,
+        })
         .await
         {
             error!(?e, "writer task failed");

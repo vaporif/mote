@@ -77,17 +77,28 @@ impl GraceState {
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[allow(clippy::too_many_arguments)] // metrics parameter is a lightweight addition
-pub async fn writer_task(
-    server: Box<dyn glint_transport::ExExTransportServer>,
-    snapshot_tx: mpsc::Sender<SnapshotRequest>,
-    mut batch_rx: mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
-    delivered_tx: watch::Sender<Option<BlockNumHash>>,
-    consumer_connected: Arc<AtomicBool>,
-    rb_stats: RingBufferStats,
-    cancellation_token: CancellationToken,
-    metrics: &crate::metrics::ExExMetrics,
-) -> eyre::Result<()> {
+pub struct WriterTaskCtx {
+    pub server: Box<dyn glint_transport::ExExTransportServer>,
+    pub snapshot_tx: mpsc::Sender<SnapshotRequest>,
+    pub batch_rx: mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
+    pub delivered_tx: watch::Sender<Option<BlockNumHash>>,
+    pub consumer_connected: Arc<AtomicBool>,
+    pub rb_stats: RingBufferStats,
+    pub cancellation_token: CancellationToken,
+    pub metrics: crate::metrics::ExExMetrics,
+}
+
+pub async fn writer_task(ctx: WriterTaskCtx) -> eyre::Result<()> {
+    let WriterTaskCtx {
+        server,
+        snapshot_tx,
+        mut batch_rx,
+        delivered_tx,
+        consumer_connected,
+        rb_stats,
+        cancellation_token,
+        metrics,
+    } = ctx;
     loop {
         let conn = match server.accept().await {
             Ok(conn) => conn,
@@ -112,7 +123,7 @@ pub async fn writer_task(
             &delivered_tx,
             &rb_stats,
             &cancellation_token,
-            metrics,
+            &metrics,
         )
         .await
         {
