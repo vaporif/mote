@@ -1,6 +1,6 @@
 use reth_metrics::{
-    metrics::{Counter, Gauge},
     Metrics,
+    metrics::{Counter, Gauge},
 };
 
 #[derive(Metrics, Clone)]

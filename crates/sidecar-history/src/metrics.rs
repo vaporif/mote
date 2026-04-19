@@ -1,4 +1,4 @@
-use reth_metrics::{metrics::Counter, Metrics};
+use reth_metrics::{Metrics, metrics::Counter};
 
 #[derive(Metrics, Clone)]
 #[metrics(scope = "glint_sidecar")]
