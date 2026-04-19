@@ -103,6 +103,7 @@ impl TestHarness {
         )
         .expect("failed to bind IPC socket");
 
+        let metrics = ExExMetrics::default();
         tokio::spawn(async move {
             let _ = writer_task(WriterTaskCtx {
                 server: Box::new(ipc_server),
