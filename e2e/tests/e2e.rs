@@ -383,6 +383,40 @@ async fn test_historical_query(#[case] transport: Transport) -> eyre::Result<()>
     Ok(())
 }
 
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
+#[tokio::test]
+#[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
+async fn test_sidecar_metrics_endpoint(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
+
+    let body = reqwest::get(sidecar.metrics_url())
+        .await
+        .expect("metrics endpoint should be reachable")
+        .text()
+        .await
+        .expect("should return text body");
+
+    let expected_prefixes = [
+        "glint_sidecar_queries_total",
+        "glint_sidecar_entities_count",
+        "glint_sidecar_snapshot_block",
+    ];
+
+    for prefix in &expected_prefixes {
+        assert!(
+            body.lines()
+                .any(|line| line.starts_with(prefix)
+                    || line.starts_with(&format!("# HELP {prefix}"))),
+            "expected metric {prefix} not found in /metrics output:\n{body}"
+        );
+    }
+
+    Ok(())
+}
+
 async fn wait_for_sidecar_ready(sidecar: &SidecarHandle) -> eyre::Result<()> {
     let ready_url = format!("{}/ready", sidecar.health_url());
     let client = reqwest::Client::new();

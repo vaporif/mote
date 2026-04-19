@@ -159,6 +159,12 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
     schema::set_last_processed_block(&tx, max_block)?;
 
     tx.commit().wrap_err("committing SQLite transaction")?;
+
+    let metrics = crate::metrics::HistoricalMetrics::default();
+    metrics
+        .events_stored_total
+        .increment(batch.num_rows() as u64);
+
     Ok(())
 }
 

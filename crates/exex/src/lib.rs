@@ -1,4 +1,5 @@
 pub mod arrow;
+pub mod metrics;
 pub mod ring_buffer;
 pub mod stream;
 
@@ -43,6 +44,8 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     probe_state: glint_transport::ProbeState,
     cancellation_token: CancellationToken,
 ) -> eyre::Result<()> {
+    let metrics = metrics::ExExMetrics::default();
+
     info!(
         head = ?ctx.head,
         "glint exex starting"
@@ -64,6 +67,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
     let writer_consumer = Arc::clone(&consumer_connected);
     let writer_snapshot_tx = snapshot_tx.clone();
     let writer_rb_stats = rb_stats.clone();
+    let writer_metrics = metrics.clone();
     tokio::spawn(async move {
         if let Err(e) = stream::writer_task(
             transport,
@@ -73,6 +77,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
             writer_consumer,
             writer_rb_stats,
             writer_cancel,
+            &writer_metrics,
         )
         .await
         {
@@ -126,6 +131,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
+                            &metrics,
                         );
                         new.tip().num_hash()
                     }
@@ -138,6 +144,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
+                            &metrics,
                         );
                         tip
                     }
@@ -149,6 +156,7 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
+                            &metrics,
                         );
                         process_committed_chain(
                             new,
@@ -157,10 +165,13 @@ async fn glint_exex<Node: reth_node_api::FullNodeComponents>(
                             &consumer_connected,
                             &mut grace,
                             replay_in_progress,
+                            &metrics,
                         );
                         new.tip().num_hash()
                     }
                 };
+
+                update_ring_buffer_gauges(&metrics, &rb_stats);
 
                 report_finished_height(
                     &ctx,
@@ -197,6 +208,7 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
+    metrics: &metrics::ExExMetrics,
 ) {
     let tip_block = chain.tip().header().number();
 
@@ -228,10 +240,10 @@ fn process_committed_chain<N: reth_primitives_traits::NodePrimitives>(
                     consumer_connected,
                     grace,
                     replay_in_progress,
+                    metrics,
                 );
             }
             Err(e) => {
-                // TODO: metrics
                 error!(block_number, ?e, "failed to build commit record batch");
             }
         }
@@ -245,6 +257,7 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
+    metrics: &metrics::ExExMetrics,
 ) {
     let tip_block = chain.tip().header().number();
 
@@ -278,10 +291,10 @@ fn process_reverted_chain<N: reth_primitives_traits::NodePrimitives>(
                     consumer_connected,
                     grace,
                     replay_in_progress,
+                    metrics,
                 );
             }
             Err(e) => {
-                // TODO: metrics
                 error!(block_number, ?e, "failed to build revert record batch");
             }
         }
@@ -334,6 +347,7 @@ fn try_send_batch(
     consumer_connected: &Arc<AtomicBool>,
     grace: &mut stream::GraceState,
     replay_in_progress: bool,
+    metrics: &metrics::ExExMetrics,
 ) {
     if !consumer_connected.load(Ordering::Acquire) {
         return;
@@ -341,18 +355,19 @@ fn try_send_batch(
 
     match batch_tx.try_send((bnh, batch.clone())) {
         Ok(()) => {
-            // TODO: metrics
+            metrics.batches_sent_total.increment(1);
             grace.reset();
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
-            // TODO: metrics
             if replay_in_progress {
                 debug!("batch channel full during replay, suppressing disconnect");
             } else {
                 debug!("batch channel full, applying backpressure");
+                metrics.batches_dropped_total.increment(1);
                 grace.record_failure();
                 if grace.should_disconnect {
-                    // TODO: metrics
+                    metrics.consumer_disconnects_total.increment(1);
+                    metrics.consumer_connected.set(0.0);
                     warn!("backpressure threshold exceeded, disconnecting consumer");
                     consumer_connected.store(false, Ordering::Release);
                 }
@@ -360,6 +375,7 @@ fn try_send_batch(
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             debug!("batch channel closed");
+            metrics.consumer_connected.set(0.0);
             consumer_connected.store(false, Ordering::Release);
         }
     }
@@ -395,6 +411,22 @@ fn report_finished_height<Node: reth_node_api::FullNodeComponents>(
     }
 }
 
+#[allow(clippy::cast_precision_loss)] // gauge values are approximate; f64 precision loss is acceptable
+fn update_ring_buffer_gauges(metrics: &metrics::ExExMetrics, stats: &ring_buffer::RingBufferStats) {
+    metrics
+        .ring_buffer_entries
+        .set(stats.entries.load(Ordering::Relaxed) as f64);
+    metrics
+        .ring_buffer_memory_bytes
+        .set(stats.memory.load(Ordering::Relaxed) as f64);
+    metrics
+        .ring_buffer_tip_block
+        .set(stats.tip.load(Ordering::Relaxed) as f64);
+    metrics
+        .ring_buffer_oldest_block
+        .set(stats.oldest.load(Ordering::Relaxed) as f64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +440,7 @@ mod tests {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
 
         let _ = batch_tx.try_send((None, dummy_batch()));
 
@@ -419,6 +452,7 @@ mod tests {
                 &consumer_connected,
                 &mut grace,
                 false,
+                &metrics,
             );
         }
 
@@ -437,6 +471,7 @@ mod tests {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
 
         let _ = batch_tx.try_send((None, dummy_batch()));
 
@@ -448,6 +483,7 @@ mod tests {
                 &consumer_connected,
                 &mut grace,
                 true, // replay_in_progress
+                &metrics,
             );
         }
 
@@ -466,6 +502,7 @@ mod tests {
         let (batch_tx, batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
 
         drop(batch_rx);
 
@@ -476,6 +513,7 @@ mod tests {
             &consumer_connected,
             &mut grace,
             false,
+            &metrics,
         );
 
         assert!(
@@ -489,6 +527,7 @@ mod tests {
         let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
         let consumer_connected = Arc::new(AtomicBool::new(false));
         let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
 
         try_send_batch(
             &batch_tx,
@@ -497,6 +536,7 @@ mod tests {
             &consumer_connected,
             &mut grace,
             false,
+            &metrics,
         );
 
         assert!(batch_rx.try_recv().is_err());
@@ -507,6 +547,7 @@ mod tests {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(4);
         let consumer_connected = Arc::new(AtomicBool::new(true));
         let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
 
         grace.force_disconnect();
         assert!(grace.should_disconnect);
@@ -518,6 +559,7 @@ mod tests {
             &consumer_connected,
             &mut grace,
             false,
+            &metrics,
         );
 
         assert!(!grace.should_disconnect);

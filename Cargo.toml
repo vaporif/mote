@@ -76,6 +76,9 @@ reth-provider = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-trie = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3" }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 
 # op-reth crates from the optimism monorepo (pinned to reth v1.11.3)
 reth-optimism-node = { git = "https://github.com/ethereum-optimism/optimism", rev = "9705faa886127f60e2b1a9b1bcdfcb57ceef2ab8" }

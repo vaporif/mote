@@ -109,6 +109,30 @@ where
         self.process_extends(&mut acc, &decoded.tx.extends, current_block, sender)?;
         self.process_change_owners(&mut acc, &decoded.tx.change_owners, sender)?;
 
+        self.metrics
+            .entities_created_total
+            .increment(decoded.tx.creates.len() as u64);
+        self.metrics
+            .entities_updated_total
+            .increment(decoded.tx.updates.len() as u64);
+        self.metrics
+            .entities_deleted_total
+            .increment(decoded.tx.deletes.len() as u64);
+        self.metrics
+            .entities_extended_total
+            .increment(decoded.tx.extends.len() as u64);
+        self.metrics
+            .owner_changes_total
+            .increment(decoded.tx.change_owners.len() as u64);
+
+        let ops_count = decoded.tx.creates.len()
+            + decoded.tx.updates.len()
+            + decoded.tx.deletes.len()
+            + decoded.tx.extends.len()
+            + decoded.tx.change_owners.len();
+        #[allow(clippy::cast_precision_loss)] // ops_count per tx is always small
+        self.metrics.ops_per_tx.record(ops_count as f64);
+
         debug!(
             state_changes = acc.state_changes.len(),
             exp_changes = acc.exp_changes.len(),

@@ -9,7 +9,10 @@ use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
 use revm::{Inspector, context::result::ResultAndState, database::State};
 use std::marker::PhantomData;
 
-use super::{GlintBlockExecutor, GlintBlockExecutorFactory, GlintResultBuilder, GlintTransaction};
+use super::{
+    EngineMetrics, GlintBlockExecutor, GlintBlockExecutorFactory, GlintResultBuilder,
+    GlintTransaction,
+};
 
 pub struct OpGlintResultBuilder<H, T>(PhantomData<(H, T)>);
 
@@ -82,6 +85,7 @@ where
             config: self.config.clone(),
             pending_logs: Vec::new(),
             pending_state: revm::state::EvmState::default(),
+            metrics: EngineMetrics::default(),
             _marker: PhantomData,
         }
     }
