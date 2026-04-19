@@ -349,12 +349,10 @@ where
 
             if is_owner {
                 match update.operator {
-                    Some(None) => {
-                        if old_meta.has_operator {
-                            let op_slot = entity_operator_key(&update.entity_key);
-                            acc.state_changes.insert(op_slot, U256::ZERO);
-                            acc.slot_counter_delta -= 1;
-                        }
+                    Some(None) if old_meta.has_operator => {
+                        let op_slot = entity_operator_key(&update.entity_key);
+                        acc.state_changes.insert(op_slot, U256::ZERO);
+                        acc.slot_counter_delta -= 1;
                     }
                     Some(Some(addr)) => {
                         let op_slot = entity_operator_key(&update.entity_key);
@@ -366,7 +364,7 @@ where
                             acc.slot_counter_delta += 1;
                         }
                     }
-                    None => {}
+                    Some(None) | None => {}
                 }
             }
 
@@ -584,12 +582,10 @@ where
                 .insert(meta_slot, U256::from_be_bytes(new_meta.encode()));
 
             match co.operator {
-                Some(None) => {
-                    if old_meta.has_operator {
-                        let op_slot = entity_operator_key(&co.entity_key);
-                        acc.state_changes.insert(op_slot, U256::ZERO);
-                        acc.slot_counter_delta -= 1;
-                    }
+                Some(None) if old_meta.has_operator => {
+                    let op_slot = entity_operator_key(&co.entity_key);
+                    acc.state_changes.insert(op_slot, U256::ZERO);
+                    acc.slot_counter_delta -= 1;
                 }
                 Some(Some(addr)) => {
                     let op_slot = entity_operator_key(&co.entity_key);
@@ -600,7 +596,7 @@ where
                         acc.slot_counter_delta += 1;
                     }
                 }
-                None => {}
+                Some(None) | None => {}
             }
 
             let operator_for_log = match co.operator {
