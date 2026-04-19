@@ -25,7 +25,7 @@ pub struct SidecarMetrics {
     pub snapshot_block: Gauge,
     /// Full replays triggered by `NeedsReplay`
     pub full_replays_total: Counter,
-    /// SQLite database file size in bytes
+    /// `SQLite` database file size in bytes
     pub db_size_bytes: Gauge,
 }
 
