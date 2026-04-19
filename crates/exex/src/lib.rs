@@ -615,6 +615,192 @@ mod tests {
         }
     }
 
+    fn make_chain_with_glint_log(
+        block_number: u64,
+    ) -> reth_execution_types::Chain<reth_ethereum_primitives::EthPrimitives> {
+        use alloy_consensus::{Block, BlockBody, Signed, TxLegacy};
+        use alloy_primitives::Address;
+        use glint_primitives::constants::PROCESSOR_ADDRESS;
+        use glint_primitives::events::EntityDeleted;
+        use reth_ethereum_primitives::EthPrimitives;
+
+        let entity_key = alloy_primitives::B256::repeat_byte(0x42);
+        let owner = Address::repeat_byte(0x01);
+        let sender = Address::repeat_byte(0x02);
+        let gas_cost = 100;
+
+        let log = EntityDeleted::new_log(PROCESSOR_ADDRESS, entity_key, owner, sender, gas_cost);
+
+        let tx_hash = alloy_primitives::B256::repeat_byte(0xAA);
+        let legacy_tx = TxLegacy::default();
+        let sig = alloy_primitives::Signature::test_signature();
+        let signed_tx = Signed::new_unchecked(legacy_tx, sig, tx_hash);
+        let tx =
+            <EthPrimitives as reth_primitives_traits::NodePrimitives>::SignedTx::Legacy(signed_tx);
+
+        let header = alloy_consensus::Header {
+            number: block_number,
+            ..Default::default()
+        };
+        let body = BlockBody {
+            transactions: vec![tx],
+            ..Default::default()
+        };
+        let block = Block { header, body };
+
+        let block_hash = alloy_primitives::B256::repeat_byte(block_number as u8);
+        let recovered =
+            reth_primitives_traits::RecoveredBlock::new(block, vec![sender], block_hash);
+
+        let receipt = reth_ethereum_primitives::Receipt {
+            tx_type: alloy_consensus::TxType::Legacy,
+            success: true,
+            cumulative_gas_used: 21000,
+            logs: vec![log],
+        };
+
+        let execution_outcome = reth_execution_types::ExecutionOutcome {
+            bundle: Default::default(),
+            receipts: vec![vec![receipt]],
+            first_block: block_number,
+            requests: vec![Default::default()],
+        };
+
+        reth_execution_types::Chain::new(vec![recovered], execution_outcome, Default::default())
+    }
+
+    #[test]
+    fn process_committed_chain_sends_batch_and_records_metrics() {
+        let chain = make_chain_with_glint_log(42);
+        let mut ring_buffer = RingBuffer::default();
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(16);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
+
+        process_committed_chain(
+            &chain,
+            &mut ring_buffer,
+            &batch_tx,
+            &consumer_connected,
+            &mut grace,
+            false,
+            &metrics,
+        );
+
+        let (bnh, _batch) = batch_rx.try_recv().expect("should have sent a batch");
+        assert_eq!(bnh.unwrap().number, 42);
+    }
+
+    #[test]
+    fn process_reverted_chain_sends_batch() {
+        let chain = make_chain_with_glint_log(99);
+        let mut ring_buffer = RingBuffer::default();
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(16);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
+
+        process_reverted_chain(
+            &chain,
+            &mut ring_buffer,
+            &batch_tx,
+            &consumer_connected,
+            &mut grace,
+            false,
+            &metrics,
+        );
+
+        // Revert batches use bnh=None
+        let (bnh, _batch) = batch_rx
+            .try_recv()
+            .expect("should have sent a revert batch");
+        assert!(bnh.is_none());
+    }
+
+    #[test]
+    fn process_committed_chain_skips_block_with_no_glint_events() {
+        use alloy_consensus::{Block, BlockBody, Signed, TxLegacy};
+        use alloy_primitives::Address;
+
+        // Block with a non-glint log (wrong address)
+        let non_glint_log = alloy_primitives::Log {
+            address: Address::repeat_byte(0xff),
+            data: alloy_primitives::LogData::new_unchecked(
+                vec![alloy_primitives::B256::ZERO],
+                Default::default(),
+            ),
+        };
+
+        let tx_hash = alloy_primitives::B256::repeat_byte(0xBB);
+        let signed_tx = Signed::new_unchecked(
+            TxLegacy::default(),
+            alloy_primitives::Signature::test_signature(),
+            tx_hash,
+        );
+        let tx = <reth_ethereum_primitives::EthPrimitives as reth_primitives_traits::NodePrimitives>::SignedTx::Legacy(signed_tx);
+
+        let header = alloy_consensus::Header {
+            number: 10,
+            ..Default::default()
+        };
+        let block = Block {
+            header,
+            body: BlockBody {
+                transactions: vec![tx],
+                ..Default::default()
+            },
+        };
+        let sender = Address::repeat_byte(0x02);
+        let recovered = reth_primitives_traits::RecoveredBlock::new(
+            block,
+            vec![sender],
+            alloy_primitives::B256::repeat_byte(0x0A),
+        );
+
+        let receipt = reth_ethereum_primitives::Receipt {
+            tx_type: alloy_consensus::TxType::Legacy,
+            success: true,
+            cumulative_gas_used: 21000,
+            logs: vec![non_glint_log],
+        };
+
+        let execution_outcome = reth_execution_types::ExecutionOutcome {
+            bundle: Default::default(),
+            receipts: vec![vec![receipt]],
+            first_block: 10,
+            requests: vec![Default::default()],
+        };
+
+        let chain: reth_execution_types::Chain<reth_ethereum_primitives::EthPrimitives> =
+            reth_execution_types::Chain::new(
+                vec![recovered],
+                execution_outcome,
+                Default::default(),
+            );
+
+        let mut ring_buffer = RingBuffer::default();
+        let (batch_tx, mut batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(16);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
+
+        process_committed_chain(
+            &chain,
+            &mut ring_buffer,
+            &batch_tx,
+            &consumer_connected,
+            &mut grace,
+            false,
+            &metrics,
+        );
+
+        assert!(
+            batch_rx.try_recv().is_err(),
+            "no batch should be sent for non-glint logs"
+        );
+    }
+
     #[test]
     fn non_glint_logs_are_ignored() {
         use alloy_primitives::{Address, B256, Log, LogData};

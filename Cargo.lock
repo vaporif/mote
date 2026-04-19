@@ -4861,6 +4861,7 @@ dependencies = [
  "glint-primitives",
  "glint-transport",
  "metrics",
+ "reth-ethereum-primitives",
  "reth-execution-types",
  "reth-exex",
  "reth-exex-types",

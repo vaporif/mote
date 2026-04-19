@@ -39,8 +39,11 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 arrow = { workspace = true, features = ["prettyprint"] }
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+alloy-consensus.workspace = true
 glint-primitives.workspace = true
 glint-transport.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-execution-types.workspace = true
 borsh.workspace = true
 futures.workspace = true
 tempfile.workspace = true
