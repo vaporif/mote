@@ -436,6 +436,48 @@ mod tests {
     }
 
     #[test]
+    fn update_ring_buffer_gauges_sets_all_fields() {
+        let metrics = crate::metrics::ExExMetrics::default();
+        let stats = ring_buffer::RingBufferStats {
+            entries: Arc::new(42.into()),
+            memory: Arc::new(1024.into()),
+            tip: Arc::new(100.into()),
+            oldest: Arc::new(10.into()),
+        };
+
+        update_ring_buffer_gauges(&metrics, &stats);
+    }
+
+    #[test]
+    fn single_backpressure_does_not_disconnect() {
+        let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
+        let consumer_connected = Arc::new(AtomicBool::new(true));
+        let mut grace = stream::GraceState::default();
+        let metrics = crate::metrics::ExExMetrics::default();
+
+        let _ = batch_tx.try_send((None, dummy_batch()));
+
+        try_send_batch(
+            &batch_tx,
+            None,
+            &dummy_batch(),
+            &consumer_connected,
+            &mut grace,
+            false,
+            &metrics,
+        );
+
+        assert!(
+            !grace.should_disconnect,
+            "single backpressure must not trigger disconnect"
+        );
+        assert!(
+            consumer_connected.load(Ordering::Acquire),
+            "consumer should still be connected after one drop"
+        );
+    }
+
+    #[test]
     fn backpressure_disconnects_consumer_after_threshold() {
         let (batch_tx, _batch_rx) = mpsc::channel::<(Option<BlockNumHash>, RecordBatch)>(1);
         let consumer_connected = Arc::new(AtomicBool::new(true));
@@ -591,5 +633,26 @@ mod tests {
         let tx = MockTx(B256::repeat_byte(0x01));
         let events = collect_events_from_receipts(&[receipt], &[tx]);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn malformed_glint_log_is_skipped() {
+        use alloy_primitives::{B256, Log, LogData};
+        use glint_primitives::constants::PROCESSOR_ADDRESS;
+
+        let bad_log = Log {
+            address: PROCESSOR_ADDRESS,
+            data: LogData::new_unchecked(vec![B256::repeat_byte(0xDE)], Default::default()),
+        };
+
+        let receipt = alloy_consensus::Receipt {
+            status: alloy_consensus::Eip658Value::Eip658(true),
+            cumulative_gas_used: 0,
+            logs: vec![bad_log],
+        };
+
+        let tx = MockTx(B256::repeat_byte(0x01));
+        let events = collect_events_from_receipts(&[receipt], &[tx]);
+        assert!(events.is_empty(), "unparseable glint log should be skipped");
     }
 }
