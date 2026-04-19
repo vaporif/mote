@@ -49,6 +49,10 @@ pub struct RunArgs {
     /// Snapshot interval in blocks (0 = disabled). Default: 1000.
     #[arg(long, default_value_t = 1000)]
     pub snapshot_interval: u64,
+
+    /// Prometheus metrics scrape port. Disabled when omitted.
+    #[arg(long)]
+    pub metrics_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Default, clap::ValueEnum)]

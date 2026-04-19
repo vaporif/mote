@@ -1,6 +1,7 @@
 mod crud;
 pub mod decode;
 mod eth;
+mod metrics;
 #[cfg(feature = "op")]
 mod op;
 
@@ -19,6 +20,7 @@ use glint_primitives::{
     entity::EntityMetadata,
     storage::{entity_content_hash_key, entity_operator_key, entity_storage_key},
 };
+use metrics::EngineMetrics;
 use parking_lot::Mutex;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, Evm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
@@ -206,6 +208,7 @@ pub struct GlintBlockExecutor<InnerExec, RB> {
     config: Arc<GlintChainConfig>,
     pending_logs: Vec<Log>,
     pending_state: revm::state::EvmState,
+    metrics: EngineMetrics,
     _marker: PhantomData<RB>,
 }
 
@@ -307,6 +310,7 @@ where
         insert_sender_account(&mut state, sender, &sender_info, gas_cost);
 
         info!(total_gas, log_count, "glint tx executed successfully");
+        self.metrics.gas_consumed_total.increment(total_gas);
 
         let result = ResultAndState {
             result: ExecutionResult::Success {
@@ -500,6 +504,14 @@ where
             expired_slot_count += crate::slot_counter::slots_for_entity(meta.has_operator);
             expired_entity_count += 1;
         }
+
+        self.metrics
+            .entities_expired_total
+            .increment(expired_entity_count);
+        #[allow(clippy::cast_precision_loss)] // expired count per block is always small
+        self.metrics
+            .expired_entities_per_block
+            .record(expired_entity_count as f64);
 
         if !state_changes.is_empty() {
             update_slot_counter(

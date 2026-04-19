@@ -1,6 +1,7 @@
 mod cli;
 mod flight_sql;
 mod health;
+mod metrics;
 mod rebuild;
 
 mod sidecar;

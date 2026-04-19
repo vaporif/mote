@@ -17,10 +17,10 @@ test:
     cargo nextest run --workspace
 
 coverage:
-    cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+    cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --ignore-filename-regex '(bin/|e2e/)'
 
 coverage-html:
-    cargo llvm-cov nextest --workspace --html
+    cargo llvm-cov nextest --workspace --html --ignore-filename-regex '(bin/|e2e/)'
 
 check-fmt:
     cargo fmt --all -- --check

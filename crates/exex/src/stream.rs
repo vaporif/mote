@@ -77,6 +77,7 @@ impl GraceState {
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[allow(clippy::too_many_arguments)] // metrics parameter is a lightweight addition
 pub async fn writer_task(
     server: Box<dyn glint_transport::ExExTransportServer>,
     snapshot_tx: mpsc::Sender<SnapshotRequest>,
@@ -85,6 +86,7 @@ pub async fn writer_task(
     consumer_connected: Arc<AtomicBool>,
     rb_stats: RingBufferStats,
     cancellation_token: CancellationToken,
+    metrics: &crate::metrics::ExExMetrics,
 ) -> eyre::Result<()> {
     loop {
         let conn = match server.accept().await {
@@ -101,6 +103,7 @@ pub async fn writer_task(
 
         info!("new connection accepted");
         consumer_connected.store(true, Ordering::Release);
+        metrics.consumer_connected.set(1.0);
 
         match handle_transport_connection(
             conn,
@@ -109,6 +112,7 @@ pub async fn writer_task(
             &delivered_tx,
             &rb_stats,
             &cancellation_token,
+            metrics,
         )
         .await
         {
@@ -120,8 +124,8 @@ pub async fn writer_task(
             }
         }
 
+        metrics.consumer_connected.set(0.0);
         consumer_connected.store(false, Ordering::Release);
-        // TODO: metrics
     }
 
     Ok(())
@@ -134,16 +138,17 @@ async fn handle_transport_connection(
     delivered_tx: &watch::Sender<Option<BlockNumHash>>,
     rb_stats: &RingBufferStats,
     cancel: &CancellationToken,
+    metrics: &crate::metrics::ExExMetrics,
 ) -> eyre::Result<()> {
     let resume_block = conn.recv_subscribe().await?;
-    // TODO: metrics
     debug!(resume_block, "subscribe received");
 
     let oldest = rb_stats.oldest.load(Ordering::Relaxed);
     let tip = rb_stats.tip.load(Ordering::Relaxed);
     conn.send_handshake(oldest, tip).await?;
 
-    let replay_tip = replay_via_transport(&mut *conn, resume_block, snapshot_tx, batch_rx).await?;
+    let replay_tip =
+        replay_via_transport(&mut *conn, resume_block, snapshot_tx, batch_rx, metrics).await?;
 
     stream_live_via_transport(&mut *conn, batch_rx, delivered_tx, cancel, replay_tip).await
 }
@@ -190,6 +195,7 @@ async fn replay_via_transport(
     resume_block: u64,
     snapshot_tx: &mpsc::Sender<SnapshotRequest>,
     batch_rx: &mut mpsc::Receiver<(Option<BlockNumHash>, RecordBatch)>,
+    metrics: &crate::metrics::ExExMetrics,
 ) -> eyre::Result<u64> {
     let (reply_tx, reply_rx) = oneshot::channel();
     let (replay_done_tx, replay_done_rx) = oneshot::channel();
@@ -228,17 +234,20 @@ async fn replay_via_transport(
     let last_bnh = snapshot.last().map(|(bnh, _)| *bnh);
     for (_, batch) in &snapshot {
         conn.send_batch(batch).await?;
+        metrics.replay_batches_total.increment(1);
     }
 
     let mut tip = last_bnh.map_or(resume_block, |bnh| bnh.number);
     let watermark = build_watermark_batch(tip)?;
     conn.send_batch(&watermark).await?;
+    metrics.replay_batches_total.increment(1);
 
     // forward non-duplicate buffered batches
     for (maybe_bnh, batch) in buffered {
         let dominated = batch_dedup_key(&batch).is_some_and(|key| snapshot_keys.contains(&key));
         if !dominated {
             conn.send_batch(&batch).await?;
+            metrics.replay_batches_total.increment(1);
             if let Some(bnh) = maybe_bnh {
                 tip = bnh.number;
             }
@@ -376,7 +385,8 @@ mod tests {
         let mut conn = ipc_server.accept().await.unwrap();
         let resume = conn.recv_subscribe().await.unwrap();
         conn.send_handshake(0, 0).await.unwrap();
-        let tip = replay_via_transport(&mut *conn, resume, &snapshot_tx, batch_rx)
+        let metrics = crate::metrics::ExExMetrics::default();
+        let tip = replay_via_transport(&mut *conn, resume, &snapshot_tx, batch_rx, &metrics)
             .await
             .unwrap();
         conn.finish().await.unwrap();

@@ -36,7 +36,10 @@ pub async fn serve_flight_sql(
 ) -> eyre::Result<()> {
     // TODO: add tokio::sync::Semaphore for concurrent query limit
     // TODO: wrap query execution in tokio::time::timeout
-    let service = GlintFlightSqlService { ctx };
+    let service = GlintFlightSqlService {
+        ctx,
+        metrics: crate::metrics::FlightSqlMetrics::default(),
+    };
     let svc = FlightServiceServer::new(service);
     // TODO: configure max gRPC message size via tonic Server::builder()
     let addr = format!("0.0.0.0:{port}").parse()?;
@@ -57,6 +60,7 @@ pub async fn serve_flight_sql(
 #[derive(Clone)]
 struct GlintFlightSqlService {
     ctx: Arc<SessionContext>,
+    metrics: crate::metrics::FlightSqlMetrics,
 }
 
 #[tonic::async_trait]
@@ -119,10 +123,25 @@ impl FlightSqlService for GlintFlightSqlService {
         }
         validate_read_only(&query)?;
 
-        let batches = self
-            .execute_sql(&query)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        self.metrics.queries_total.increment(1);
+        let start = std::time::Instant::now();
+        let batches = match self.execute_sql(&query).await {
+            Ok(b) => b,
+            Err(e) => {
+                self.metrics.query_errors_total.increment(1);
+                return Err(Status::internal(e.to_string()));
+            }
+        };
+
+        self.metrics
+            .query_duration_seconds
+            .record(start.elapsed().as_secs_f64());
+        let rows: usize = batches
+            .iter()
+            .map(arrow::record_batch::RecordBatch::num_rows)
+            .sum();
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics.query_rows_returned.record(rows as f64);
 
         let stream = FlightDataEncoderBuilder::new()
             .build(futures::stream::iter(batches.into_iter().map(Ok)))

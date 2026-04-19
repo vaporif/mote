@@ -11,6 +11,7 @@ pub struct SidecarHandle {
     container_id: String,
     flight_url: String,
     health_url: String,
+    metrics_url: String,
 }
 
 impl SidecarHandle {
@@ -27,11 +28,14 @@ impl SidecarHandle {
             "/data/glint-sidecar.db".to_string(),
             "--genesis".to_string(),
             "/etc/glint/genesis.json".to_string(),
+            "--metrics-port".to_string(),
+            "9090".to_string(),
         ];
 
         let mut image = GenericImage::new("glint-sidecar", &image_tag)
             .with_exposed_port(50051.tcp())
             .with_exposed_port(8080.tcp())
+            .with_exposed_port(9090.tcp())
             .with_env_var("RUST_LOG", "debug");
 
         match transport {
@@ -62,12 +66,15 @@ impl SidecarHandle {
         let health_port = container.get_host_port_ipv4(8080.tcp()).await?;
         let flight_url = format!("http://127.0.0.1:{flight_port}");
         let health_url = format!("http://127.0.0.1:{health_port}");
+        let metrics_port = container.get_host_port_ipv4(9090.tcp()).await?;
+        let metrics_url = format!("http://127.0.0.1:{metrics_port}/metrics");
 
         let handle = Self {
             _container: container,
             container_id,
             flight_url,
             health_url,
+            metrics_url,
         };
 
         handle.wait_healthy().await?;
@@ -80,6 +87,10 @@ impl SidecarHandle {
 
     pub fn health_url(&self) -> &str {
         &self.health_url
+    }
+
+    pub fn metrics_url(&self) -> &str {
+        &self.metrics_url
     }
 
     pub fn logs(&self) -> String {

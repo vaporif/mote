@@ -70,7 +70,14 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
         entities_backend,
         genesis,
         snapshot_interval,
+        metrics_port,
     } = args;
+
+    if let Some(port) = metrics_port {
+        crate::metrics::install_prometheus_exporter(port)?;
+    }
+
+    let sidecar_metrics = crate::metrics::SidecarMetrics::default();
 
     let raw = std::fs::read_to_string(&genesis)
         .map_err(|e| eyre::eyre!("reading genesis at {}: {e}", genesis.display()))?;
@@ -221,7 +228,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                     let current_block = store.current_block();
                     if current_block > 0 && current_block != last_snapshot_block {
                         match store.snapshot().and_then(|snap| {
-                            write_and_prune_snapshot(&snapshots_dir, current_block, &snap)
+                            write_and_prune_snapshot(&snapshots_dir, current_block, &snap, &sidecar_metrics)
                         }) {
                             Ok(()) => {}
                             Err(e) => warn!(?e, "failed to write shutdown snapshot"),
@@ -255,6 +262,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                         interval: snapshot_interval,
                         last_block: &mut last_snapshot_block,
                     },
+                    &sidecar_metrics,
                 ).await
             } => {
                 match result {
@@ -263,6 +271,7 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
                         resume_block = last_block;
                     }
                     Ok(ConnectionOutcome::NeedsReplay) => {
+                        sidecar_metrics.full_replays_total.increment(1);
                         warn!("non-reversible revert, full replay needed");
                         resume_block = 0;
                         last_snapshot_block = 0;
@@ -376,8 +385,15 @@ fn write_and_prune_snapshot(
     snapshots_dir: &Path,
     block: u64,
     snap: &glint_analytics::entity_store::Snapshot,
+    metrics: &crate::metrics::SidecarMetrics,
 ) -> eyre::Result<()> {
+    let start = std::time::Instant::now();
     glint_analytics::snapshot_io::write_snapshot(snapshots_dir, block, snap)?;
+    metrics
+        .snapshot_duration_seconds
+        .record(start.elapsed().as_secs_f64());
+    #[allow(clippy::cast_precision_loss)]
+    metrics.snapshot_block.set(block as f64);
     info!(block, "snapshot written");
     if let Err(e) = glint_analytics::snapshot_io::prune_snapshots(snapshots_dir, SNAPSHOTS_TO_KEEP)
     {
@@ -399,6 +415,7 @@ async fn run_connection(
     ready_tx: &watch::Sender<bool>,
     resume_block: u64,
     snapshots: &mut SnapshotState<'_>,
+    sidecar_metrics: &crate::metrics::SidecarMetrics,
 ) -> eyre::Result<ConnectionOutcome> {
     let (handshake, mut batch_stream) = client.subscribe(resume_block).await?;
     info!(
@@ -444,10 +461,28 @@ async fn run_connection(
                 if snapshots.interval > 0
                     && last_block.saturating_sub(*snapshots.last_block) >= snapshots.interval
                 {
-                    match write_and_prune_snapshot(snapshots.dir, last_block, &snap) {
+                    match write_and_prune_snapshot(
+                        snapshots.dir,
+                        last_block,
+                        &snap,
+                        sidecar_metrics,
+                    ) {
                         Ok(()) => *snapshots.last_block = last_block,
                         Err(e) => warn!(?e, "failed to write snapshot"),
                     }
+                }
+            }
+
+            if last_block.is_multiple_of(100) {
+                let conn = sqlite_conn.lock();
+                if let Ok(size) = conn.query_row(
+                    "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                ) {
+                    use reth_metrics::metrics::gauge;
+                    #[allow(clippy::cast_precision_loss)]
+                    gauge!("glint_sidecar_db_size_bytes").set(size as f64);
                 }
             }
         }
@@ -551,9 +586,10 @@ mod tests {
         store.insert(sample_row(0x01));
 
         let snap = store.snapshot().unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 1000, &snap).unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 2000, &snap).unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 3000, &snap).unwrap();
+        let test_metrics = crate::metrics::SidecarMetrics::default();
+        write_and_prune_snapshot(&snapshots_dir, 1000, &snap, &test_metrics).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 2000, &snap, &test_metrics).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 3000, &snap, &test_metrics).unwrap();
 
         let entries: Vec<_> = std::fs::read_dir(&snapshots_dir)
             .unwrap()
@@ -702,20 +738,21 @@ mod tests {
     fn shutdown_skips_snapshot_when_block_matches_last_written() {
         let dir = tempfile::tempdir().unwrap();
         let snapshots_dir = dir.path().join("snapshots");
+        let test_metrics = crate::metrics::SidecarMetrics::default();
 
         let mut store = EntityStore::new();
         store.insert(sample_row(0x01));
         store.set_current_block(5000);
 
         let snap = store.snapshot().unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 5000, &snap).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 5000, &snap, &test_metrics).unwrap();
         let last_snapshot_block: u64 = 5000;
 
         let count_before = std::fs::read_dir(&snapshots_dir).unwrap().count();
 
         let current_block = store.current_block();
         if current_block > 0 && current_block != last_snapshot_block {
-            write_and_prune_snapshot(&snapshots_dir, current_block, &snap).unwrap();
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap, &test_metrics).unwrap();
         }
 
         let count_after = std::fs::read_dir(&snapshots_dir).unwrap().count();
@@ -726,18 +763,19 @@ mod tests {
     fn shutdown_writes_snapshot_when_block_advanced() {
         let dir = tempfile::tempdir().unwrap();
         let snapshots_dir = dir.path().join("snapshots");
+        let test_metrics = crate::metrics::SidecarMetrics::default();
 
         let mut store = EntityStore::new();
         store.insert(sample_row(0x01));
         store.set_current_block(5000);
 
         let snap = store.snapshot().unwrap();
-        write_and_prune_snapshot(&snapshots_dir, 4000, &snap).unwrap();
+        write_and_prune_snapshot(&snapshots_dir, 4000, &snap, &test_metrics).unwrap();
         let last_snapshot_block: u64 = 4000;
 
         let current_block = store.current_block();
         if current_block > 0 && current_block != last_snapshot_block {
-            write_and_prune_snapshot(&snapshots_dir, current_block, &snap).unwrap();
+            write_and_prune_snapshot(&snapshots_dir, current_block, &snap, &test_metrics).unwrap();
         }
 
         assert!(snapshots_dir.join("block-00004000").exists());

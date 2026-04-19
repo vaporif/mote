@@ -98,6 +98,7 @@ pub struct EntityStore {
     numeric_ann_range: HashMap<String, BTreeMap<u64, RoaringBitmap>>,
     owner_index: HashMap<Address, RoaringBitmap>,
     current_block: u64,
+    metrics: crate::metrics::EntityStoreMetrics,
 }
 
 impl EntityStore {
@@ -125,6 +126,8 @@ impl EntityStore {
             self.set_index_bits(slot, &row);
             self.entities.insert(key, row);
         }
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics.entities_count.set(self.entities.len() as f64);
     }
 
     pub fn remove(&mut self, key: &B256) -> Option<EntityRow> {
@@ -138,6 +141,8 @@ impl EntityStore {
             self.slots.release(slot);
         }
 
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics.entities_count.set(self.entities.len() as f64);
         Some(row)
     }
 
@@ -188,6 +193,7 @@ impl EntityStore {
         self.numeric_ann_range.clear();
         self.owner_index.clear();
         self.current_block = 0;
+        self.metrics.entities_count.set(0.0);
     }
 
     fn set_index_bits(&mut self, slot: u32, row: &EntityRow) {

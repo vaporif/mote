@@ -14,6 +14,8 @@ categories.workspace = true
 glint-primitives = { workspace = true, features = ["arrow"] }
 rusqlite.workspace = true
 eyre.workspace = true
+metrics.workspace = true
+reth-metrics.workspace = true
 tracing.workspace = true
 arrow.workspace = true
 async-trait.workspace = true

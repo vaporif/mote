@@ -7,6 +7,7 @@ use arrow::array::UInt8Array;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use glint_exex::arrow::{EventRow, build_record_batch};
+use glint_exex::metrics::ExExMetrics;
 use glint_exex::ring_buffer::RingBufferStats;
 use glint_exex::stream::{SnapshotRequest, writer_task};
 use glint_primitives::exex_schema::columns;
@@ -102,6 +103,7 @@ impl TestHarness {
         )
         .expect("failed to bind IPC socket");
 
+        let metrics = ExExMetrics::default();
         tokio::spawn(async move {
             let _ = writer_task(
                 Box::new(ipc_server),
@@ -111,6 +113,7 @@ impl TestHarness {
                 task_connected,
                 rb_stats,
                 task_cancel,
+                &metrics,
             )
             .await;
         });

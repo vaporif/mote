@@ -22,6 +22,8 @@ datafusion.workspace = true
 tracing.workspace = true
 eyre.workspace = true
 bytes.workspace = true
+metrics.workspace = true
+reth-metrics.workspace = true
 roaring.workspace = true
 
 [dev-dependencies]
