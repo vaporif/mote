@@ -653,6 +653,6 @@ mod tests {
 
         let tx = MockTx(B256::repeat_byte(0x01));
         let events = collect_events_from_receipts(&[receipt], &[tx]);
-        assert!(events.is_empty(), "unparseable glint log should be skipped");
+        assert!(events.is_empty(), "unparsable glint log should be skipped");
     }
 }
