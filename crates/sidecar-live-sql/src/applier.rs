@@ -10,7 +10,7 @@ use arrow::array::{
 use arrow::record_batch::RecordBatch;
 use eyre::WrapErr;
 use glint_primitives::columns;
-use glint_primitives::exex_types::{BatchOp, EntityEventType};
+use glint_primitives::exex_types::{BatchOp, EntityEventType, WATERMARK_OP};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use tracing::warn;
@@ -33,7 +33,7 @@ pub fn apply_batch(
 
     let op_col = col_u8(batch, columns::OP)?;
     let op_val = op_col.value(0);
-    if op_val == 0xFF {
+    if op_val == WATERMARK_OP {
         return Ok(ApplyResult::Watermark);
     }
 

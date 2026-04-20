@@ -57,7 +57,9 @@ fn is_watermark(batch: &RecordBatch) -> bool {
     batch
         .column_by_name(columns::OP)
         .and_then(|c| c.as_any().downcast_ref::<UInt8Array>())
-        .is_some_and(|col| !col.is_empty() && col.value(0) == 0xFF)
+        .is_some_and(|col| {
+            !col.is_empty() && col.value(0) == glint_primitives::exex_types::WATERMARK_OP
+        })
 }
 
 struct TestHarness {

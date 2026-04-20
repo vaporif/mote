@@ -1,6 +1,8 @@
 use alloy_primitives::B256;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
+/// How many drained blocks we keep around so reorgs can undo expirations.
+/// A reorg deeper than this loses drain history — fine for OP Stack L3.
 pub(crate) const DRAIN_HISTORY_CAPACITY: usize = 256;
 
 #[derive(Debug)]

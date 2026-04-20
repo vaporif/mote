@@ -548,7 +548,7 @@ mod tests {
         let key = batch_dedup_key(&batch).unwrap();
         assert_eq!(key.block_number, 0);
         assert_eq!(key.block_hash, [0u8; 32]);
-        assert_eq!(key.op, 0xFF);
+        assert_eq!(key.op, glint_primitives::exex_types::WATERMARK_OP);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+/// Marks a watermark batch — never collides with real `BatchOp` discriminants.
+pub const WATERMARK_OP: u8 = 0xFF;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BatchOp {
