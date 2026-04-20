@@ -321,6 +321,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn numeric_gteq_filter() {
+        let ctx = make_numeric_ctx();
+        let df = ctx
+            .sql("SELECT * FROM entity_numeric_annotations WHERE ann_key = 'price' AND ann_value >= 500")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        let total: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "price >= 500 should match 2 entities");
+    }
+
+    #[tokio::test]
+    async fn numeric_lt_filter() {
+        let ctx = make_numeric_ctx();
+        let df = ctx
+            .sql("SELECT * FROM entity_numeric_annotations WHERE ann_key = 'price' AND ann_value < 1000")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        let total: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "price < 1000 should match 2 entities");
+    }
+
+    #[tokio::test]
     async fn no_pushdown_filter_returns_full_batch() {
         let ctx = make_ctx();
         let df = ctx

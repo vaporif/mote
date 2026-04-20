@@ -100,11 +100,6 @@ impl TableProvider for EntitiesTable {
         };
 
         let mem = MemTable::try_new(Arc::clone(&self.schema), vec![vec![batch]])?;
-        let remaining: Vec<Expr> = filters
-            .iter()
-            .filter(|f| super::filter_pushdown::extract_owner_eq(f).is_none())
-            .cloned()
-            .collect();
-        mem.scan(state, projection, &remaining, limit).await
+        mem.scan(state, projection, &[], limit).await
     }
 }

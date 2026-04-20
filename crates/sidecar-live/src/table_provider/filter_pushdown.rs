@@ -80,18 +80,23 @@ pub fn extract_numeric_ann_pred(filters: &[&Expr]) -> Option<(String, NumericOp,
                 && let Expr::Literal(ScalarValue::Utf8(Some(s)), _) = right.as_ref()
             {
                 key = Some(s.clone());
-            } else if col.name == glint_primitives::exex_schema::ann_columns::ANN_VALUE
-                && let Expr::Literal(ScalarValue::UInt64(Some(v)), _) = right.as_ref()
-            {
-                let numeric_op = match op {
-                    Operator::Eq => NumericOp::Eq,
-                    Operator::Gt => NumericOp::Gt,
-                    Operator::GtEq => NumericOp::GtEq,
-                    Operator::Lt => NumericOp::Lt,
-                    Operator::LtEq => NumericOp::LtEq,
-                    _ => return None,
+            } else if col.name == glint_primitives::exex_schema::ann_columns::ANN_VALUE {
+                let v = match right.as_ref() {
+                    Expr::Literal(ScalarValue::UInt64(Some(v)), _) => Some(*v),
+                    Expr::Literal(ScalarValue::Int64(Some(v)), _) => u64::try_from(*v).ok(),
+                    _ => None,
                 };
-                pred = Some((numeric_op, *v));
+                if let Some(v) = v {
+                    let numeric_op = match op {
+                        Operator::Eq => NumericOp::Eq,
+                        Operator::Gt => NumericOp::Gt,
+                        Operator::GtEq => NumericOp::GtEq,
+                        Operator::Lt => NumericOp::Lt,
+                        Operator::LtEq => NumericOp::LtEq,
+                        _ => continue,
+                    };
+                    pred = Some((numeric_op, v));
+                }
             }
         }
     }
@@ -132,6 +137,7 @@ pub fn filter_annotation_batch_by_bitmap(
     let matching_keys: HashSet<&[u8]> = row_indices
         .values()
         .iter()
+        .filter(|&&idx| (idx as usize) < entities_ek.len())
         .map(|&idx| entities_ek.value(idx as usize))
         .collect();
 
