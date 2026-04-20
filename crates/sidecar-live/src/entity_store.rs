@@ -50,14 +50,13 @@ impl SlotAllocator {
     }
 }
 
-// TODO: re-enable when bitmap pushdown is added to table_provider
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct IndexSnapshot {
     pub(crate) string_ann_index: HashMap<(String, String), RoaringBitmap>,
     pub(crate) numeric_ann_index: HashMap<(String, u64), RoaringBitmap>,
     pub(crate) numeric_ann_range: HashMap<String, BTreeMap<u64, RoaringBitmap>>,
     pub(crate) owner_index: HashMap<Address, RoaringBitmap>,
+    #[allow(dead_code)]
     pub(crate) all_live_slots: RoaringBitmap,
     pub(crate) slot_to_row: HashMap<u32, usize>,
 }
@@ -67,8 +66,6 @@ pub struct Snapshot {
     pub(crate) entities: Arc<RecordBatch>,
     pub(crate) string_annotations: Arc<RecordBatch>,
     pub(crate) numeric_annotations: Arc<RecordBatch>,
-    // TODO: re-enable when bitmap pushdown is added to table_provider
-    #[allow(dead_code)]
     pub(crate) indexes: Arc<IndexSnapshot>,
 }
 
