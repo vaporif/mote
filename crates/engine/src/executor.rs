@@ -1009,7 +1009,9 @@ mod tests {
         sender: Address,
         nonce: u64,
         tx_hash: B256,
-    ) -> alloy_consensus::transaction::Recovered<alloy_consensus::EthereumTxEnvelope<alloy_consensus::TxEip4844>> {
+    ) -> alloy_consensus::transaction::Recovered<
+        alloy_consensus::EthereumTxEnvelope<alloy_consensus::TxEip4844>,
+    > {
         use alloy_consensus::{
             EthereumTxEnvelope, EthereumTypedTransaction, TxEip1559, transaction::Recovered,
         };
@@ -1089,11 +1091,9 @@ mod tests {
         let recovered_create = build_recovered_tx(&create_tx, sender, 0, create_hash);
         executor.execute_transaction(&recovered_create).unwrap();
 
-        let entity_key =
-            glint_primitives::entity::derive_entity_key(&create_hash, b"hello", 0);
+        let entity_key = glint_primitives::entity::derive_entity_key(&create_hash, b"hello", 0);
 
-        let update =
-            Update::new(entity_key, "text/html", b"updated", 200).operator(None);
+        let update = Update::new(entity_key, "text/html", b"updated", 200).operator(None);
         let update_tx = GlintTx::new().update(update);
         let update_hash = B256::repeat_byte(0xBB);
         let recovered_update = build_recovered_tx(&update_tx, sender, 1, update_hash);
@@ -1178,8 +1178,7 @@ mod tests {
         let recovered_create = build_recovered_tx(&create_tx, sender, 0, create_hash);
         executor.execute_transaction(&recovered_create).unwrap();
 
-        let entity_key =
-            glint_primitives::entity::derive_entity_key(&create_hash, b"data", 0);
+        let entity_key = glint_primitives::entity::derive_entity_key(&create_hash, b"data", 0);
 
         let change = ChangeOwner::new(entity_key).operator(None);
         let change_tx = GlintTx::new().change_owner(change);
