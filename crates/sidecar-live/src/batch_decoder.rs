@@ -5,7 +5,7 @@ use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 use eyre::WrapErr;
 use glint_primitives::exex_schema::columns as col_names;
-use glint_primitives::exex_types::{BatchOp, EntityEventType};
+use glint_primitives::exex_types::{BatchOp, EntityEventType, WATERMARK_OP};
 use tracing::warn;
 
 use crate::entity_store::{EntityRow, EntityStore};
@@ -30,7 +30,7 @@ pub fn apply_batch(store: &mut EntityStore, batch: &RecordBatch) -> eyre::Result
 
     // batches are homogeneous by op
     let op_val = op_col.value(0);
-    if op_val == 0xFF {
+    if op_val == WATERMARK_OP {
         return Ok(ApplyResult::Watermark);
     }
 

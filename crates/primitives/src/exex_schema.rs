@@ -263,4 +263,15 @@ mod tests {
         assert!(schema.field_with_name("ann_key").is_ok());
         assert!(schema.field_with_name("ann_value").is_ok());
     }
+
+    #[test]
+    fn historical_columns_exist_in_full_schema() {
+        let full = build_schema();
+        for name in HISTORICAL_COLUMNS {
+            assert!(
+                full.field_with_name(name).is_ok(),
+                "HISTORICAL_COLUMNS entry {name:?} missing from full schema"
+            );
+        }
+    }
 }

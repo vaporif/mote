@@ -5,6 +5,7 @@ use arrow::array::{
     UInt32Builder, UInt64Builder,
 };
 use arrow::record_batch::RecordBatch;
+use eyre::WrapErr as _;
 
 use alloy_primitives::B256;
 use glint_primitives::exex_schema::{entity_events_schema, map_field_names};
@@ -74,7 +75,7 @@ impl BatchBuilders {
         }
     }
 
-    fn finish(mut self) -> RecordBatch {
+    fn finish(mut self) -> eyre::Result<RecordBatch> {
         let columns: Vec<ArrayRef> = vec![
             Arc::new(self.block_number.finish()),
             Arc::new(self.block_hash.finish()),
@@ -96,7 +97,8 @@ impl BatchBuilders {
             Arc::new(self.tip_block.finish()),
             Arc::new(self.op.finish()),
         ];
-        RecordBatch::try_new(entity_events_schema(), columns).expect("columns must match SCHEMA")
+        RecordBatch::try_new(entity_events_schema(), columns)
+            .wrap_err("arrow columns do not match entity_events schema")
     }
 }
 
@@ -245,7 +247,7 @@ pub fn build_record_batch(
         }
     }
 
-    Ok(b.finish())
+    b.finish()
 }
 
 pub fn build_watermark_batch(tip_block: u64) -> eyre::Result<RecordBatch> {
@@ -269,9 +271,9 @@ pub fn build_watermark_batch(tip_block: u64) -> eyre::Result<RecordBatch> {
     b.operator.append_null();
     b.gas_cost.append_null();
     b.tip_block.append_value(tip_block);
-    b.op.append_value(0xFF);
+    b.op.append_value(glint_primitives::exex_types::WATERMARK_OP);
 
-    Ok(b.finish())
+    b.finish()
 }
 
 fn append_null_fields(b: &mut BatchBuilders) -> arrow::error::Result<()> {
@@ -529,6 +531,6 @@ mod tests {
             .as_any()
             .downcast_ref::<arrow::array::UInt8Array>()
             .unwrap();
-        assert_eq!(op_col.value(0), 0xFF);
+        assert_eq!(op_col.value(0), glint_primitives::exex_types::WATERMARK_OP);
     }
 }

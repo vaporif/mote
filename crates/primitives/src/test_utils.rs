@@ -351,7 +351,7 @@ pub fn build_batch(events: &[EventBuilder]) -> RecordBatch {
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-/// Watermark batch (`op = 0xFF`).
+/// Watermark batch (`op = WATERMARK_OP`).
 pub fn build_watermark_batch() -> RecordBatch {
     let schema = entity_events_schema();
 
@@ -401,7 +401,7 @@ pub fn build_watermark_batch() -> RecordBatch {
     operator_b.append_null();
     gas_cost_b.append_null();
     tip_block_b.append_value(0);
-    op_b.append_value(0xFF);
+    op_b.append_value(crate::exex_types::WATERMARK_OP);
 
     let columns: Vec<ArrayRef> = vec![
         Arc::new(block_number_b.finish()),
