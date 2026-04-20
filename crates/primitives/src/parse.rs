@@ -205,8 +205,8 @@ mod tests {
 
     use crate::constants::PROCESSOR_ADDRESS;
     use crate::events::{
-        EntityCreated, EntityDeleted, EntityExpired, EntityExtended, EntityPermissionsChanged,
-        EntityUpdated, LogAnnotations,
+        EntityCreateLog, EntityDeleted, EntityExpired, EntityExtended, EntityPermissionsChanged,
+        EntityUpdateLog, LogAnnotations,
     };
 
     fn empty_annotations() -> LogAnnotations {
@@ -219,23 +219,24 @@ mod tests {
     }
 
     fn make_created_log() -> alloy_primitives::Log {
-        EntityCreated::new_log(
-            PROCESSOR_ADDRESS,
-            B256::repeat_byte(0x01),
-            Address::repeat_byte(0x02),
-            100,
-            "text/plain".into(),
-            Bytes::from_static(b"hello"),
-            LogAnnotations {
+        EntityCreateLog {
+            address: PROCESSOR_ADDRESS,
+            entity_key: B256::repeat_byte(0x01),
+            owner: Address::repeat_byte(0x02),
+            expires_at: 100,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            annotations: LogAnnotations {
                 string_keys: vec!["k1".into()],
                 string_values: vec!["v1".into()],
                 numeric_keys: vec!["n1".into()],
                 numeric_values: vec![42],
             },
-            0,
-            Address::ZERO,
-            50_000,
-        )
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 50_000,
+        }
+        .build()
     }
 
     #[test]
@@ -267,23 +268,25 @@ mod tests {
 
     #[test]
     fn updated_preserves_both_expiry_values() {
-        let log = EntityUpdated::new_log(
-            PROCESSOR_ADDRESS,
-            B256::repeat_byte(0x01),
-            Address::repeat_byte(0x02),
-            (50, 100),
-            "application/json".into(),
-            Bytes::from_static(b"updated"),
-            LogAnnotations {
+        let log = EntityUpdateLog {
+            address: PROCESSOR_ADDRESS,
+            entity_key: B256::repeat_byte(0x01),
+            owner: Address::repeat_byte(0x02),
+            old_expires_at: 50,
+            new_expires_at: 100,
+            content_type: "application/json".into(),
+            payload: Bytes::from_static(b"updated"),
+            annotations: LogAnnotations {
                 string_keys: vec!["k1".into()],
                 string_values: vec!["v1".into()],
                 numeric_keys: vec![],
                 numeric_values: vec![],
             },
-            1,
-            Address::repeat_byte(0x42),
-            40_000,
-        );
+            extend_policy: 1,
+            operator: Address::repeat_byte(0x42),
+            gas_cost: 40_000,
+        }
+        .build();
         let EntityEvent::Updated {
             old_expires_at,
             new_expires_at,
@@ -366,18 +369,19 @@ mod tests {
 
     #[test]
     fn wrong_address_skipped() {
-        let log = EntityCreated::new_log(
-            Address::repeat_byte(0xFF),
-            B256::repeat_byte(0x01),
-            Address::repeat_byte(0x02),
-            100,
-            "text/plain".into(),
-            Bytes::from_static(b"hello"),
-            empty_annotations(),
-            0,
-            Address::ZERO,
-            50_000,
-        );
+        let log = EntityCreateLog {
+            address: Address::repeat_byte(0xFF),
+            entity_key: B256::repeat_byte(0x01),
+            owner: Address::repeat_byte(0x02),
+            expires_at: 100,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            annotations: empty_annotations(),
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 50_000,
+        }
+        .build();
         assert!(parse_log(&log).unwrap().is_none());
     }
 
@@ -390,23 +394,24 @@ mod tests {
 
     #[test]
     fn annotation_key_value_mismatch() {
-        let log = EntityCreated::new_log(
-            PROCESSOR_ADDRESS,
-            B256::repeat_byte(0x01),
-            Address::repeat_byte(0x02),
-            100,
-            "text/plain".into(),
-            Bytes::from_static(b"hello"),
-            LogAnnotations {
+        let log = EntityCreateLog {
+            address: PROCESSOR_ADDRESS,
+            entity_key: B256::repeat_byte(0x01),
+            owner: Address::repeat_byte(0x02),
+            expires_at: 100,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            annotations: LogAnnotations {
                 string_keys: vec!["k1".into(), "k2".into()],
                 string_values: vec!["v1".into()], // mismatch
                 numeric_keys: vec![],
                 numeric_values: vec![],
             },
-            0,
-            Address::ZERO,
-            50_000,
-        );
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 50_000,
+        }
+        .build();
         assert!(parse_log(&log).is_err());
     }
 

@@ -70,72 +70,75 @@ sol! {
     );
 }
 
-impl EntityCreated {
-    #[allow(clippy::too_many_arguments)] // event fields must match the Solidity signature
-    pub fn new_log(
-        address: Address,
-        entity_key: B256,
-        owner: Address,
-        expires_at: u64,
-        content_type: String,
-        payload: Bytes,
-        annotations: LogAnnotations,
-        extend_policy: u8,
-        operator: Address,
-        gas_cost: u64,
-    ) -> Log {
-        let event = Self {
-            entity_key,
-            owner,
-            expires_at,
-            content_type,
-            payload,
-            string_annotation_keys: annotations.string_keys,
-            string_annotation_values: annotations.string_values,
-            numeric_annotation_keys: annotations.numeric_keys,
-            numeric_annotation_values: annotations.numeric_values,
-            extend_policy,
-            operator,
-            gas_cost,
+pub struct EntityCreateLog {
+    pub address: Address,
+    pub entity_key: B256,
+    pub owner: Address,
+    pub expires_at: u64,
+    pub content_type: String,
+    pub payload: Bytes,
+    pub annotations: LogAnnotations,
+    pub extend_policy: u8,
+    pub operator: Address,
+    pub gas_cost: u64,
+}
+
+impl EntityCreateLog {
+    pub fn build(self) -> Log {
+        let event = EntityCreated {
+            entity_key: self.entity_key,
+            owner: self.owner,
+            expires_at: self.expires_at,
+            content_type: self.content_type,
+            payload: self.payload,
+            string_annotation_keys: self.annotations.string_keys,
+            string_annotation_values: self.annotations.string_values,
+            numeric_annotation_keys: self.annotations.numeric_keys,
+            numeric_annotation_values: self.annotations.numeric_values,
+            extend_policy: self.extend_policy,
+            operator: self.operator,
+            gas_cost: self.gas_cost,
         };
         Log {
-            address,
+            address: self.address,
             data: event.encode_log_data(),
         }
     }
 }
 
-impl EntityUpdated {
-    #[allow(clippy::too_many_arguments)] // event fields must match the Solidity signature
-    pub fn new_log(
-        address: Address,
-        entity_key: B256,
-        owner: Address,
-        expires_at: (u64, u64),
-        content_type: String,
-        payload: Bytes,
-        annotations: LogAnnotations,
-        extend_policy: u8,
-        operator: Address,
-        gas_cost: u64,
-    ) -> Log {
-        let event = Self {
-            entity_key,
-            owner,
-            old_expires_at: expires_at.0,
-            new_expires_at: expires_at.1,
-            content_type,
-            payload,
-            string_annotation_keys: annotations.string_keys,
-            string_annotation_values: annotations.string_values,
-            numeric_annotation_keys: annotations.numeric_keys,
-            numeric_annotation_values: annotations.numeric_values,
-            extend_policy,
-            operator,
-            gas_cost,
+pub struct EntityUpdateLog {
+    pub address: Address,
+    pub entity_key: B256,
+    pub owner: Address,
+    pub old_expires_at: u64,
+    pub new_expires_at: u64,
+    pub content_type: String,
+    pub payload: Bytes,
+    pub annotations: LogAnnotations,
+    pub extend_policy: u8,
+    pub operator: Address,
+    pub gas_cost: u64,
+}
+
+impl EntityUpdateLog {
+    pub fn build(self) -> Log {
+        let event = EntityUpdated {
+            entity_key: self.entity_key,
+            owner: self.owner,
+            old_expires_at: self.old_expires_at,
+            new_expires_at: self.new_expires_at,
+            content_type: self.content_type,
+            payload: self.payload,
+            string_annotation_keys: self.annotations.string_keys,
+            string_annotation_values: self.annotations.string_values,
+            numeric_annotation_keys: self.annotations.numeric_keys,
+            numeric_annotation_values: self.annotations.numeric_values,
+            extend_policy: self.extend_policy,
+            operator: self.operator,
+            gas_cost: self.gas_cost,
         };
         Log {
-            address,
+            address: self.address,
             data: event.encode_log_data(),
         }
     }
@@ -228,23 +231,24 @@ mod tests {
     fn entity_created_new_log_roundtrips() {
         let entity_key = B256::repeat_byte(0xAB);
         let owner = Address::repeat_byte(0x01);
-        let log = EntityCreated::new_log(
-            Address::repeat_byte(0xFF),
+        let log = EntityCreateLog {
+            address: Address::repeat_byte(0xFF),
             entity_key,
             owner,
-            42,
-            "text/plain".into(),
-            Bytes::from_static(b"hello"),
-            LogAnnotations {
+            expires_at: 42,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            annotations: LogAnnotations {
                 string_keys: vec!["k1".into()],
                 string_values: vec!["v1".into()],
                 numeric_keys: vec!["n1".into()],
                 numeric_values: vec![100],
             },
-            0,
-            Address::ZERO,
-            50_000,
-        );
+            extend_policy: 0,
+            operator: Address::ZERO,
+            gas_cost: 50_000,
+        }
+        .build();
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         assert_eq!(log.data.topics().len(), 3);
 
@@ -261,23 +265,24 @@ mod tests {
         let entity_key = B256::repeat_byte(0xAB);
         let owner = Address::repeat_byte(0x01);
         let operator = Address::repeat_byte(0x42);
-        let log = EntityCreated::new_log(
-            Address::repeat_byte(0xFF),
+        let log = EntityCreateLog {
+            address: Address::repeat_byte(0xFF),
             entity_key,
             owner,
-            42,
-            "text/plain".into(),
-            Bytes::from_static(b"hello"),
-            LogAnnotations {
+            expires_at: 42,
+            content_type: "text/plain".into(),
+            payload: Bytes::from_static(b"hello"),
+            annotations: LogAnnotations {
                 string_keys: vec![],
                 string_values: vec![],
                 numeric_keys: vec![],
                 numeric_values: vec![],
             },
-            1,
+            extend_policy: 1,
             operator,
-            70_000,
-        );
+            gas_cost: 70_000,
+        }
+        .build();
 
         let decoded = EntityCreated::decode_log_data(&log.data).unwrap();
         assert_eq!(decoded.extend_policy, 1);
@@ -318,23 +323,25 @@ mod tests {
         let entity_key = B256::repeat_byte(0x04);
         let owner = Address::repeat_byte(0x05);
         let operator = Address::repeat_byte(0x06);
-        let log = EntityUpdated::new_log(
-            Address::repeat_byte(0xFF),
+        let log = EntityUpdateLog {
+            address: Address::repeat_byte(0xFF),
             entity_key,
             owner,
-            (10, 20),
-            "application/json".into(),
-            Bytes::from_static(b"updated"),
-            LogAnnotations {
+            old_expires_at: 10,
+            new_expires_at: 20,
+            content_type: "application/json".into(),
+            payload: Bytes::from_static(b"updated"),
+            annotations: LogAnnotations {
                 string_keys: vec!["k1".into()],
                 string_values: vec!["v1".into()],
                 numeric_keys: vec!["n1".into()],
                 numeric_values: vec![200],
             },
-            1,
+            extend_policy: 1,
             operator,
-            40_000,
-        );
+            gas_cost: 40_000,
+        }
+        .build();
         assert_eq!(log.address, Address::repeat_byte(0xFF));
         assert_eq!(log.data.topics().len(), 3);
 
