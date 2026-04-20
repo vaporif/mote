@@ -1004,6 +1004,214 @@ mod tests {
         );
     }
 
+    fn build_recovered_tx(
+        glint_tx: &glint_primitives::transaction::GlintTransaction,
+        sender: Address,
+        nonce: u64,
+        tx_hash: B256,
+    ) -> alloy_consensus::transaction::Recovered<alloy_consensus::EthereumTxEnvelope<alloy_consensus::TxEip4844>> {
+        use alloy_consensus::{
+            EthereumTxEnvelope, EthereumTypedTransaction, TxEip1559, transaction::Recovered,
+        };
+
+        let mut calldata = Vec::new();
+        alloy_rlp::Encodable::encode(glint_tx, &mut calldata);
+
+        let inner = TxEip1559 {
+            chain_id: 1,
+            nonce,
+            gas_limit: 10_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: alloy_primitives::TxKind::Call(PROCESSOR_ADDRESS),
+            input: calldata.into(),
+            ..Default::default()
+        };
+        let typed = EthereumTypedTransaction::Eip1559(inner);
+        let sig = alloy_primitives::Signature::new(U256::ZERO, U256::ZERO, false);
+        let signed = EthereumTxEnvelope::new_unchecked(typed, sig, tx_hash);
+        Recovered::new_unchecked(signed, sender)
+    }
+
+    #[test]
+    fn glint_update_tx_produces_updated_event_and_removes_operator() {
+        use glint_primitives::transaction::{Create, GlintTransaction as GlintTx, Update};
+
+        let config = test_evm_config(ExpirationIndex::new());
+        let sender = Address::repeat_byte(0x11);
+        let initial_balance = U256::from(10u64).pow(U256::from(18));
+
+        let mut db = CacheDB::new(revm::database::EmptyDB::default());
+        db.cache
+            .accounts
+            .entry(sender)
+            .or_insert_with(|| revm::database::DbAccount {
+                info: AccountInfo {
+                    nonce: 0,
+                    balance: initial_balance,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let base_fee = 1_000_000_000u64;
+        let mut state = State::builder()
+            .with_database(db)
+            .with_bundle_update()
+            .build();
+
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            basefee: base_fee,
+            ..revm::context::BlockEnv::default()
+        };
+        let env = EvmEnv {
+            block_env,
+            cfg_env: revm::context::CfgEnv::default(),
+        };
+        let evm = EthEvmBuilder::new(&mut state, env).build();
+        let ctx = EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: alloy_primitives::Bytes::new(),
+            tx_count_hint: None,
+        };
+
+        let mut executor = config.create_executor(evm, ctx);
+        executor.apply_pre_execution_changes().unwrap();
+
+        let operator = Address::repeat_byte(0x42);
+        let create = Create::new("text/plain", b"hello", 500).operator(operator);
+        let create_tx = GlintTx::new().create(create);
+        let create_hash = B256::repeat_byte(0xAA);
+        let recovered_create = build_recovered_tx(&create_tx, sender, 0, create_hash);
+        executor.execute_transaction(&recovered_create).unwrap();
+
+        let entity_key =
+            glint_primitives::entity::derive_entity_key(&create_hash, b"hello", 0);
+
+        let update =
+            Update::new(entity_key, "text/html", b"updated", 200).operator(None);
+        let update_tx = GlintTx::new().update(update);
+        let update_hash = B256::repeat_byte(0xBB);
+        let recovered_update = build_recovered_tx(&update_tx, sender, 1, update_hash);
+        executor.execute_transaction(&recovered_update).unwrap();
+
+        let (_evm, result) = executor.finish().unwrap();
+
+        assert!(
+            result.receipts.len() >= 2,
+            "expected at least 2 receipts (create + update), got {}",
+            result.receipts.len()
+        );
+        let update_receipt = &result.receipts[1];
+        assert!(
+            update_receipt.status(),
+            "update transaction receipt must be successful"
+        );
+        let update_logs = update_receipt.logs();
+        assert!(
+            !update_logs.is_empty(),
+            "update receipt must contain event logs"
+        );
+    }
+
+    #[test]
+    fn glint_change_owner_removes_operator() {
+        use glint_primitives::transaction::{
+            ChangeOwner, Create, ExtendPolicy, GlintTransaction as GlintTx,
+        };
+        use revm::Database as _;
+
+        let config = test_evm_config(ExpirationIndex::new());
+        let sender = Address::repeat_byte(0x11);
+        let initial_balance = U256::from(10u64).pow(U256::from(18));
+
+        let mut db = CacheDB::new(revm::database::EmptyDB::default());
+        db.cache
+            .accounts
+            .entry(sender)
+            .or_insert_with(|| revm::database::DbAccount {
+                info: AccountInfo {
+                    nonce: 0,
+                    balance: initial_balance,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let base_fee = 1_000_000_000u64;
+        let mut state = State::builder()
+            .with_database(db)
+            .with_bundle_update()
+            .build();
+
+        let block_env = revm::context::BlockEnv {
+            number: U256::from(TEST_BLOCK),
+            basefee: base_fee,
+            ..revm::context::BlockEnv::default()
+        };
+        let env = EvmEnv {
+            block_env,
+            cfg_env: revm::context::CfgEnv::default(),
+        };
+        let evm = EthEvmBuilder::new(&mut state, env).build();
+        let ctx = EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: None,
+            ommers: &[],
+            withdrawals: None,
+            extra_data: alloy_primitives::Bytes::new(),
+            tx_count_hint: None,
+        };
+
+        let mut executor = config.create_executor(evm, ctx);
+        executor.apply_pre_execution_changes().unwrap();
+
+        let operator = Address::repeat_byte(0x42);
+        let mut create = Create::new("text/plain", b"data", 500).operator(operator);
+        create.extend_policy = ExtendPolicy::AnyoneCanExtend;
+        let create_tx = GlintTx::new().create(create);
+        let create_hash = B256::repeat_byte(0xCC);
+        let recovered_create = build_recovered_tx(&create_tx, sender, 0, create_hash);
+        executor.execute_transaction(&recovered_create).unwrap();
+
+        let entity_key =
+            glint_primitives::entity::derive_entity_key(&create_hash, b"data", 0);
+
+        let change = ChangeOwner::new(entity_key).operator(None);
+        let change_tx = GlintTx::new().change_owner(change);
+        let change_hash = B256::repeat_byte(0xDD);
+        let recovered_change = build_recovered_tx(&change_tx, sender, 1, change_hash);
+        executor.execute_transaction(&recovered_change).unwrap();
+
+        let (evm, result) = executor.finish().unwrap();
+
+        assert!(
+            result.receipts.len() >= 2,
+            "expected at least 2 receipts, got {}",
+            result.receipts.len()
+        );
+        let change_receipt = &result.receipts[1];
+        assert!(
+            change_receipt.status(),
+            "change_owner receipt must be successful"
+        );
+
+        let op_slot = entity_operator_key(&entity_key);
+        let db = evm.into_db();
+        let value = db
+            .storage(PROCESSOR_ADDRESS, U256::from_be_bytes(op_slot.0))
+            .expect("storage read should succeed");
+        assert_eq!(
+            value,
+            U256::ZERO,
+            "operator slot should be zeroed after removal"
+        );
+    }
+
     #[cfg(feature = "op")]
     #[test]
     fn op_glint_evm_config_constructs() {
