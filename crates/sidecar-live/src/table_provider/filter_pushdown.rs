@@ -11,7 +11,7 @@ use roaring::RoaringBitmap;
 
 use crate::entity_store::IndexSnapshot;
 
-/// Extract `owner = <20-byte literal>` from a filter expression.
+/// Matches `owner = <20-byte literal>`.
 pub fn extract_owner_eq(expr: &Expr) -> Option<Address> {
     if let Expr::BinaryExpr(BinaryExpr {
         left,
@@ -32,8 +32,7 @@ pub fn extract_owner_eq(expr: &Expr) -> Option<Address> {
     }
 }
 
-/// Scan a slice of filter expressions for `ann_key = <literal>` and `ann_value = <literal>`.
-/// Returns `Some((key, value))` only when both are present.
+/// Matches paired `ann_key = <literal>` and `ann_value = <literal>` filters.
 pub fn extract_string_ann_eq(filters: &[&Expr]) -> Option<(String, String)> {
     let mut key: Option<String> = None;
     let mut value: Option<String> = None;
@@ -67,8 +66,7 @@ pub enum NumericOp {
     LtEq,
 }
 
-/// Scan filters for `ann_key = <literal>` and `ann_value {=,>,>=,<,<=} <u64 literal>`.
-/// Returns `Some((key, op, value))` when both are present.
+/// Matches paired `ann_key = <literal>` and `ann_value {=,>,>=,<,<=} <u64>` filters.
 pub fn extract_numeric_ann_pred(filters: &[&Expr]) -> Option<(String, NumericOp, u64)> {
     let mut key: Option<String> = None;
     let mut pred: Option<(NumericOp, u64)> = None;
@@ -101,7 +99,7 @@ pub fn extract_numeric_ann_pred(filters: &[&Expr]) -> Option<(String, NumericOp,
     key.zip(pred).map(|(k, (op, v))| (k, op, v))
 }
 
-/// Map bitmap slots to sorted row indices in the entities `RecordBatch`.
+/// Resolves bitmap slots to sorted row indices via `slot_to_row`.
 #[allow(clippy::cast_possible_truncation)]
 pub fn bitmap_to_row_indices(bitmap: &RoaringBitmap, indexes: &IndexSnapshot) -> UInt32Array {
     let mut indices: Vec<u32> = bitmap
@@ -112,7 +110,7 @@ pub fn bitmap_to_row_indices(bitmap: &RoaringBitmap, indexes: &IndexSnapshot) ->
     UInt32Array::from(indices)
 }
 
-/// Filter an annotation batch to only include rows whose `entity_key` appears in the bitmap.
+/// Keeps only annotation rows whose `entity_key` matches a bitmap slot.
 pub fn filter_annotation_batch_by_bitmap(
     entities_batch: &arrow::record_batch::RecordBatch,
     annotation_batch: &arrow::record_batch::RecordBatch,
@@ -129,7 +127,7 @@ pub fn filter_annotation_batch_by_bitmap(
         .column(ek_col_idx)
         .as_any()
         .downcast_ref::<FixedSizeBinaryArray>()
-        .expect("entity_key column is FixedSizeBinary(32)");
+        .expect("entity_key must be FixedSizeBinary(32)");
 
     let matching_keys: HashSet<&[u8]> = row_indices
         .values()
@@ -145,7 +143,7 @@ pub fn filter_annotation_batch_by_bitmap(
         .column(ann_ek_col_idx)
         .as_any()
         .downcast_ref::<FixedSizeBinaryArray>()
-        .expect("annotation entity_key column is FixedSizeBinary(32)");
+        .expect("annotation entity_key must be FixedSizeBinary(32)");
 
     let mask: BooleanArray = (0..annotation_batch.num_rows())
         .map(|i| Some(matching_keys.contains(ann_ek.value(i))))
@@ -155,7 +153,7 @@ pub fn filter_annotation_batch_by_bitmap(
         .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))
 }
 
-/// Returns true if the expression references `ann_key` or `ann_value` columns.
+/// True if the expression references `ann_key` or `ann_value`.
 pub fn is_ann_column(expr: &Expr) -> bool {
     match expr {
         Expr::BinaryExpr(binary) => is_ann_column(&binary.left) || is_ann_column(&binary.right),
