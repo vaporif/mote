@@ -444,12 +444,8 @@ async fn test_entities_history_scd2(#[case] transport: Transport) -> eyre::Resul
     let entity_key = result1.created_entity_keys[0];
 
     // Update the entity with new payload
-    let tx = GlintTransaction::new().update(Update::new(
-        entity_key,
-        "text/plain",
-        b"version-two",
-        200,
-    ));
+    let tx =
+        GlintTransaction::new().update(Update::new(entity_key, "text/plain", b"version-two", 200));
     let result2 = client.send(&tx).await?;
     assert!(result2.receipt.status());
     let block2 = result2.block_number().expect("should have block number");
