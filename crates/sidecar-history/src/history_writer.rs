@@ -1,5 +1,21 @@
 use eyre::WrapErr;
+use glint_primitives::exex_types::EntityEventType;
 use rusqlite::{OptionalExtension, Transaction};
+
+pub struct EntityEvent<'a> {
+    pub event_type: EntityEventType,
+    pub block_number: i64,
+    pub entity_key: &'a [u8],
+    pub owner: Option<&'a [u8]>,
+    pub expires_at_block: Option<i64>,
+    pub content_type: Option<&'a str>,
+    pub payload: Option<&'a [u8]>,
+    pub tx_hash: &'a [u8],
+    pub extend_policy: Option<i64>,
+    pub operator: Option<&'a [u8]>,
+    pub string_annotations: &'a [(String, String)],
+    pub numeric_annotations: &'a [(String, i64)],
+}
 
 struct PreviousRow {
     owner: Vec<u8>,
@@ -149,97 +165,88 @@ fn read_numeric_annotations(
         .wrap_err("reading history numeric annotations")
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn write_history(
-    tx: &Transaction<'_>,
-    event_type: u8,
-    block_number: i64,
-    entity_key: &[u8],
-    owner: Option<&[u8]>,
-    expires_at_block: Option<i64>,
-    content_type: Option<&str>,
-    payload: Option<&[u8]>,
-    tx_hash: &[u8],
-    extend_policy: Option<i64>,
-    operator: Option<&[u8]>,
-    string_annotations: &[(String, String)],
-    numeric_annotations: &[(String, i64)],
-) -> eyre::Result<()> {
-    match event_type {
-        // Created
-        0 => {
-            let Some(owner) = owner else { return Ok(()) };
-            let Some(expires) = expires_at_block else {
+pub fn write_history(tx: &Transaction<'_>, event: &EntityEvent<'_>) -> eyre::Result<()> {
+    match event.event_type {
+        EntityEventType::Created => {
+            let Some(owner) = event.owner else {
                 return Ok(());
             };
-            let Some(ct) = content_type else {
+            let Some(expires) = event.expires_at_block else {
                 return Ok(());
             };
-            let Some(pl) = payload else { return Ok(()) };
-            let ep = extend_policy.unwrap_or(0);
+            let Some(ct) = event.content_type else {
+                return Ok(());
+            };
+            let Some(pl) = event.payload else {
+                return Ok(());
+            };
+            let ep = event.extend_policy.unwrap_or(0);
 
             insert_open_row(
                 tx,
-                entity_key,
-                block_number,
+                event.entity_key,
+                event.block_number,
                 owner,
                 expires,
                 ct,
                 pl,
-                block_number,
-                tx_hash,
+                event.block_number,
+                event.tx_hash,
                 ep,
-                operator,
-                string_annotations,
-                numeric_annotations,
+                event.operator,
+                event.string_annotations,
+                event.numeric_annotations,
             )?;
         }
-        // Updated
-        1 => {
-            let prev = close_current_row(tx, entity_key, block_number)?;
+        EntityEventType::Updated => {
+            let prev = close_current_row(tx, event.entity_key, event.block_number)?;
 
-            let Some(owner) = owner else { return Ok(()) };
-            let Some(expires) = expires_at_block else {
+            let Some(owner) = event.owner else {
                 return Ok(());
             };
-            let Some(ct) = content_type else {
+            let Some(expires) = event.expires_at_block else {
                 return Ok(());
             };
-            let Some(pl) = payload else { return Ok(()) };
-            let ep = extend_policy.unwrap_or(0);
+            let Some(ct) = event.content_type else {
+                return Ok(());
+            };
+            let Some(pl) = event.payload else {
+                return Ok(());
+            };
+            let ep = event.extend_policy.unwrap_or(0);
 
-            let created_at = prev.as_ref().map_or(block_number, |p| p.created_at_block);
+            let created_at = prev
+                .as_ref()
+                .map_or(event.block_number, |p| p.created_at_block);
 
             insert_open_row(
                 tx,
-                entity_key,
-                block_number,
+                event.entity_key,
+                event.block_number,
                 owner,
                 expires,
                 ct,
                 pl,
                 created_at,
-                tx_hash,
+                event.tx_hash,
                 ep,
-                operator,
-                string_annotations,
-                numeric_annotations,
+                event.operator,
+                event.string_annotations,
+                event.numeric_annotations,
             )?;
         }
-        // Deleted | Expired
-        2 | 3 => {
-            close_current_row(tx, entity_key, block_number)?;
+        EntityEventType::Deleted | EntityEventType::Expired => {
+            close_current_row(tx, event.entity_key, event.block_number)?;
         }
-        // Extended
-        4 => {
-            let prev = close_current_row(tx, entity_key, block_number)?;
+        EntityEventType::Extended => {
+            let prev = close_current_row(tx, event.entity_key, event.block_number)?;
             let Some(prev) = prev else { return Ok(()) };
-            let new_expires = expires_at_block.unwrap_or(prev.expires_at_block);
+            let new_expires = event.expires_at_block.unwrap_or(prev.expires_at_block);
 
             insert_open_row(
                 tx,
-                entity_key,
-                block_number,
+                event.entity_key,
+                event.block_number,
                 &prev.owner,
                 new_expires,
                 &prev.content_type,
@@ -252,19 +259,18 @@ pub fn write_history(
                 &prev.numeric_annotations,
             )?;
         }
-        // PermissionsChanged
-        5 => {
-            let prev = close_current_row(tx, entity_key, block_number)?;
+        EntityEventType::PermissionsChanged => {
+            let prev = close_current_row(tx, event.entity_key, event.block_number)?;
             let Some(prev) = prev else { return Ok(()) };
 
-            let new_owner = owner.unwrap_or(&prev.owner);
-            let new_ep = extend_policy.unwrap_or(prev.extend_policy);
-            let new_operator = operator.or(prev.operator.as_deref());
+            let new_owner = event.owner.unwrap_or(&prev.owner);
+            let new_ep = event.extend_policy.unwrap_or(prev.extend_policy);
+            let new_operator = event.operator.or(prev.operator.as_deref());
 
             insert_open_row(
                 tx,
-                entity_key,
-                block_number,
+                event.entity_key,
+                event.block_number,
                 new_owner,
                 prev.expires_at_block,
                 &prev.content_type,
@@ -277,7 +283,6 @@ pub fn write_history(
                 &prev.numeric_annotations,
             )?;
         }
-        _ => {}
     }
 
     Ok(())

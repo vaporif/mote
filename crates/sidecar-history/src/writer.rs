@@ -9,6 +9,8 @@ use eyre::WrapErr;
 use glint_primitives::exex_schema::columns;
 use rusqlite::Connection;
 
+use glint_primitives::exex_types::EntityEventType;
+
 use crate::{history_writer, schema};
 
 pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> {
@@ -180,21 +182,25 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                     .collect::<eyre::Result<Vec<_>>>()?
             };
 
-            let event_type_u8 = u8::try_from(event_type)?;
+            let Ok(event_type) = EntityEventType::try_from(u8::try_from(event_type)?) else {
+                continue;
+            };
             history_writer::write_history(
                 &tx,
-                event_type_u8,
-                block_number_i64,
-                entity_key,
-                owner,
-                expires_at,
-                content_type,
-                payload,
-                tx_hash,
-                extend_policy,
-                operator,
-                &hist_str_anns,
-                &hist_num_anns,
+                &history_writer::EntityEvent {
+                    event_type,
+                    block_number: block_number_i64,
+                    entity_key,
+                    owner,
+                    expires_at_block: expires_at,
+                    content_type,
+                    payload,
+                    tx_hash,
+                    extend_policy,
+                    operator,
+                    string_annotations: &hist_str_anns,
+                    numeric_annotations: &hist_num_anns,
+                },
             )?;
         }
     }
