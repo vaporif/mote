@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, BinaryArray, FixedSizeBinaryArray, StringArray, UInt64Array, UInt8Array},
+    array::{Array, BinaryArray, FixedSizeBinaryArray, StringArray, UInt8Array, UInt64Array},
     ipc::{reader::FileReader, writer::FileWriter},
     record_batch::RecordBatch,
 };
@@ -205,7 +205,7 @@ fn col<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
 }
 
 fn load_snapshot_from_dir(dir: &Path) -> Result<EntityStore> {
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
 
     verify_manifest(dir)?;
 
@@ -305,7 +305,7 @@ pub fn prune_snapshots(snapshots_dir: &Path, keep: usize) -> Result<()> {
 mod tests {
     use std::path::Path;
 
-    use alloy_primitives::{Address, Bytes, B256};
+    use alloy_primitives::{Address, B256, Bytes};
 
     use super::*;
     use crate::entity_store::EntityRow;
