@@ -9,7 +9,7 @@ use eyre::WrapErr;
 use glint_primitives::exex_schema::columns;
 use rusqlite::Connection;
 
-use crate::schema;
+use crate::{history_writer, schema};
 
 pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> {
     if batch.num_rows() == 0 {
@@ -149,6 +149,54 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                     ])?;
                 }
             }
+
+            // Collect annotations for history writer
+            let hist_str_anns: Vec<(String, String)> = if str_ann_col.is_null(i) {
+                Vec::new()
+            } else {
+                let offsets = str_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = str_ann_col.keys().as_string::<i32>();
+                let values = str_ann_col.values().as_string::<i32>();
+                (start..end)
+                    .map(|j| (keys.value(j).to_owned(), values.value(j).to_owned()))
+                    .collect()
+            };
+
+            let hist_num_anns: Vec<(String, i64)> = if num_ann_col.is_null(i) {
+                Vec::new()
+            } else {
+                let offsets = num_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = num_ann_col.keys().as_string::<i32>();
+                let values = num_ann_col
+                    .values()
+                    .as_primitive::<arrow::datatypes::UInt64Type>();
+                (start..end)
+                    .map(|j| -> eyre::Result<_> {
+                        Ok((keys.value(j).to_owned(), i64::try_from(values.value(j))?))
+                    })
+                    .collect::<eyre::Result<Vec<_>>>()?
+            };
+
+            let event_type_u8 = u8::try_from(event_type)?;
+            history_writer::write_history(
+                &tx,
+                event_type_u8,
+                block_number_i64,
+                entity_key,
+                owner,
+                expires_at,
+                content_type,
+                payload,
+                tx_hash,
+                extend_policy,
+                operator,
+                &hist_str_anns,
+                &hist_num_anns,
+            )?;
         }
     }
 

@@ -2,9 +2,12 @@ use datafusion::prelude::Expr;
 
 pub mod annotation_extractors;
 pub mod block_range_filter;
+pub mod entities_history;
 pub mod event_numeric_annotations;
 pub mod event_string_annotations;
 pub mod historical_events;
+pub mod history_numeric_annotations;
+pub mod history_string_annotations;
 
 use glint_primitives::exex_schema::columns;
 

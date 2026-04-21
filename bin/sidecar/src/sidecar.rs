@@ -12,9 +12,12 @@ use glint_analytics::{
 };
 use glint_historical::{
     provider::{
+        entities_history::EntitiesHistoryProvider,
         event_numeric_annotations::EventNumericAnnotationsProvider,
         event_string_annotations::EventStringAnnotationsProvider,
         historical_events::HistoricalEventsProvider,
+        history_numeric_annotations::HistoryNumericAnnotationsProvider,
+        history_string_annotations::HistoryStringAnnotationsProvider,
     },
     schema, writer,
 };
@@ -134,6 +137,22 @@ pub async fn run(args: crate::cli::RunArgs) -> eyre::Result<()> {
     ctx.register_table(
         "event_numeric_annotations",
         Arc::new(EventNumericAnnotationsProvider::new(Arc::clone(&read_conn))),
+    )?;
+    ctx.register_table(
+        "entities_history",
+        Arc::new(EntitiesHistoryProvider::new(Arc::clone(&read_conn))),
+    )?;
+    ctx.register_table(
+        "history_string_annotations",
+        Arc::new(HistoryStringAnnotationsProvider::new(Arc::clone(
+            &read_conn,
+        ))),
+    )?;
+    ctx.register_table(
+        "history_numeric_annotations",
+        Arc::new(HistoryNumericAnnotationsProvider::new(Arc::clone(
+            &read_conn,
+        ))),
     )?;
 
     let mut backend = match entities_backend {

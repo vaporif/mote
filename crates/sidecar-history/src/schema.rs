@@ -2,7 +2,7 @@ use eyre::WrapErr;
 use rusqlite::{Connection, OptionalExtension};
 
 // TODO: support migrations instead of drop-and-recreate on schema version bump
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 pub fn configure_pragmas(conn: &Connection) -> eyre::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -69,6 +69,40 @@ pub fn create_tables(conn: &Connection) -> eyre::Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS entities_history (
+            entity_key        BLOB NOT NULL,
+            valid_from_block  INTEGER NOT NULL,
+            valid_to_block    INTEGER,
+            owner             BLOB NOT NULL,
+            expires_at_block  INTEGER NOT NULL,
+            content_type      TEXT NOT NULL,
+            payload           BLOB NOT NULL,
+            created_at_block  INTEGER NOT NULL,
+            tx_hash           BLOB NOT NULL,
+            extend_policy     INTEGER NOT NULL,
+            operator          BLOB,
+            PRIMARY KEY (entity_key, valid_from_block)
+        ) STRICT;
+
+        CREATE INDEX IF NOT EXISTS idx_eh_valid_range ON entities_history(entity_key, valid_to_block);
+        CREATE INDEX IF NOT EXISTS idx_eh_owner ON entities_history(owner);
+
+        CREATE TABLE IF NOT EXISTS history_string_annotations (
+            entity_key       BLOB NOT NULL,
+            valid_from_block INTEGER NOT NULL,
+            ann_key          TEXT NOT NULL,
+            ann_value        TEXT NOT NULL,
+            PRIMARY KEY (entity_key, valid_from_block, ann_key)
+        ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS history_numeric_annotations (
+            entity_key       BLOB NOT NULL,
+            valid_from_block INTEGER NOT NULL,
+            ann_key          TEXT NOT NULL,
+            ann_value        INTEGER NOT NULL,
+            PRIMARY KEY (entity_key, valid_from_block, ann_key)
+        ) STRICT;
         ",
     )
     .wrap_err("creating SQLite tables")?;
@@ -130,10 +164,34 @@ pub fn drop_and_recreate(conn: &Connection) -> eyre::Result<()> {
         DROP TABLE IF EXISTS event_numeric_annotations;
         DROP TABLE IF EXISTS entities_latest;
         DROP TABLE IF EXISTS entity_events;
+        DROP TABLE IF EXISTS history_string_annotations;
+        DROP TABLE IF EXISTS history_numeric_annotations;
+        DROP TABLE IF EXISTS entities_history;
         DROP TABLE IF EXISTS sidecar_meta;
         ",
     )?;
     create_tables(conn)
+}
+
+pub fn delete_history_from_block(conn: &Connection, block: u64) -> eyre::Result<()> {
+    let block = i64::try_from(block)?;
+    conn.execute(
+        "DELETE FROM history_string_annotations WHERE valid_from_block >= ?1",
+        [block],
+    )?;
+    conn.execute(
+        "DELETE FROM history_numeric_annotations WHERE valid_from_block >= ?1",
+        [block],
+    )?;
+    conn.execute(
+        "UPDATE entities_history SET valid_to_block = NULL WHERE valid_to_block >= ?1",
+        [block],
+    )?;
+    conn.execute(
+        "DELETE FROM entities_history WHERE valid_from_block >= ?1",
+        [block],
+    )?;
+    Ok(())
 }
 
 pub fn delete_events_from_block(conn: &Connection, block_number: u64) -> eyre::Result<usize> {
@@ -150,6 +208,7 @@ pub fn delete_events_from_block(conn: &Connection, block_number: u64) -> eyre::R
         "DELETE FROM entity_events WHERE block_number >= ?1",
         [block],
     )?;
+    delete_history_from_block(conn, block_number)?;
     Ok(count)
 }
 
