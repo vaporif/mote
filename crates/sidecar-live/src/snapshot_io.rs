@@ -10,8 +10,75 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use eyre::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::entity_store::{EntityRow, EntityStore, Snapshot};
+
+const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_FILE: &str = "manifest.json";
+
+const ARROW_FILES: [&str; 3] = [
+    "entities.arrow",
+    "string_annotations.arrow",
+    "numeric_annotations.arrow",
+];
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Manifest {
+    version: u32,
+    block_number: u64,
+    entity_count: usize,
+    files: HashMap<String, String>,
+}
+
+fn blake3_hex(path: &Path) -> Result<String> {
+    let data = std::fs::read(path)?;
+    Ok(blake3::hash(&data).to_hex().to_string())
+}
+
+fn write_manifest(dir: &Path, block: u64, entity_count: usize) -> Result<()> {
+    let mut files = HashMap::new();
+    for name in &ARROW_FILES {
+        files.insert((*name).to_owned(), blake3_hex(&dir.join(name))?);
+    }
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        block_number: block,
+        entity_count,
+        files,
+    };
+    let json = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(dir.join(MANIFEST_FILE), json)?;
+    Ok(())
+}
+
+fn verify_manifest(dir: &Path) -> Result<Manifest> {
+    let manifest_path = dir.join(MANIFEST_FILE);
+    let data = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| eyre::eyre!("missing manifest: {e}"))?;
+    let manifest: Manifest =
+        serde_json::from_str(&data).map_err(|e| eyre::eyre!("invalid manifest: {e}"))?;
+
+    eyre::ensure!(
+        manifest.version == MANIFEST_VERSION,
+        "unsupported manifest version {} (expected {MANIFEST_VERSION})",
+        manifest.version,
+    );
+
+    for name in &ARROW_FILES {
+        let expected = manifest
+            .files
+            .get(*name)
+            .ok_or_else(|| eyre::eyre!("manifest missing entry for {name}"))?;
+        let actual = blake3_hex(&dir.join(name))?;
+        eyre::ensure!(
+            *expected == actual,
+            "checksum mismatch for {name}: expected {expected}, got {actual}",
+        );
+    }
+
+    Ok(manifest)
+}
 
 fn snapshot_dir_name(block: u64) -> String {
     format!("block-{block:08}")
@@ -72,6 +139,8 @@ pub fn write_snapshot(snapshots_dir: &Path, block: u64, snapshot: &Snapshot) -> 
         &tmp_dir.join("numeric_annotations.arrow"),
         &snapshot.numeric_annotations,
     )?;
+
+    write_manifest(&tmp_dir, block, snapshot.entities.num_rows())?;
 
     std::fs::rename(&tmp_dir, &final_dir)?;
 
@@ -137,6 +206,8 @@ fn col<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
 
 fn load_snapshot_from_dir(dir: &Path) -> Result<EntityStore> {
     use alloy_primitives::{Address, B256, Bytes};
+
+    verify_manifest(dir)?;
 
     let entities_batch = read_ipc_file(&dir.join("entities.arrow"))?;
     let str_ann_batch = read_ipc_file(&dir.join("string_annotations.arrow"))?;
@@ -345,5 +416,40 @@ mod tests {
         let (block, loaded) = load_latest_snapshot(dir.path()).unwrap().unwrap();
         assert_eq!(block, 100);
         assert_eq!(loaded.len(), 0);
+    }
+
+    #[test]
+    fn corrupted_arrow_file_is_detected_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        let snap = store.snapshot().unwrap();
+
+        write_snapshot(dir.path(), 1000, &snap).unwrap();
+
+        let entities_path = dir.path().join("block-00001000/entities.arrow");
+        std::fs::write(&entities_path, b"corrupted data").unwrap();
+
+        let result = load_latest_snapshot(dir.path()).unwrap();
+        assert!(result.is_none());
+        assert!(!dir.path().join("block-00001000").exists());
+    }
+
+    #[test]
+    fn missing_manifest_is_treated_as_corrupted() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut store = EntityStore::new();
+        store.insert(sample_row(0x01));
+        let snap = store.snapshot().unwrap();
+
+        write_snapshot(dir.path(), 1000, &snap).unwrap();
+
+        std::fs::remove_file(dir.path().join("block-00001000/manifest.json")).unwrap();
+
+        let result = load_latest_snapshot(dir.path()).unwrap();
+        assert!(result.is_none());
+        assert!(!dir.path().join("block-00001000").exists());
     }
 }
