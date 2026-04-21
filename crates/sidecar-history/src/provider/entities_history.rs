@@ -47,8 +47,6 @@ impl EntitiesHistoryProvider {
     }
 }
 
-/// Extract a range from filters targeting `valid_from_block` using the same
-/// approach as `extract_block_range` but keyed to a different column name.
 pub fn extract_valid_from_range(filters: &[Expr]) -> Option<(u64, u64)> {
     use datafusion::logical_expr::{BinaryExpr, Operator};
 
