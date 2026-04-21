@@ -142,7 +142,6 @@ fn apply_bound(
     }
 }
 
-/// Extract `valid_from_block` bounds, error if missing.
 pub fn require_valid_from_range(filters: &[Expr]) -> datafusion::error::Result<(u64, u64)> {
     let range = extract_valid_from_range(filters).ok_or_else(|| {
         datafusion::error::DataFusionError::Plan(
