@@ -317,7 +317,6 @@ fn query_entities_history(
             _ => operator.append_null(),
         }
 
-        // Virtual block_number column populated from valid_from_block
         block_number.append_value(vf);
     }
 

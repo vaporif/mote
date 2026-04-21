@@ -1,7 +1,7 @@
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
-        UInt32Array, UInt64Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt32Array,
+        UInt64Array, UInt8Array,
     },
     record_batch::RecordBatch,
 };
@@ -150,7 +150,6 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 }
             }
 
-            // Collect annotations for history writer
             let hist_str_anns: Vec<(String, String)> = if str_ann_col.is_null(i) {
                 Vec::new()
             } else {
@@ -305,7 +304,7 @@ mod tests {
     use crate::schema;
 
     use glint_primitives::exex_schema::entity_events_schema;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

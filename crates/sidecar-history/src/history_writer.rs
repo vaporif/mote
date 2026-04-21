@@ -1,7 +1,6 @@
 use eyre::WrapErr;
 use rusqlite::{OptionalExtension, Transaction};
 
-/// Data carried forward from the previous open history row when closing it.
 struct PreviousRow {
     owner: Vec<u8>,
     expires_at_block: i64,
@@ -15,9 +14,6 @@ struct PreviousRow {
     numeric_annotations: Vec<(String, i64)>,
 }
 
-/// Close the currently-open history row for `entity_key` (the one with `valid_to_block IS NULL`),
-/// setting its `valid_to_block` to `block`. Returns the row's data so callers can carry fields
-/// forward into a new version.
 fn close_current_row(
     tx: &Transaction<'_>,
     entity_key: &[u8],
@@ -58,7 +54,6 @@ fn close_current_row(
     prev.string_annotations = read_string_annotations(tx, entity_key, valid_from)?;
     prev.numeric_annotations = read_numeric_annotations(tx, entity_key, valid_from)?;
 
-    // Close the row
     tx.execute(
         "UPDATE entities_history SET valid_to_block = ?1
          WHERE entity_key = ?2 AND valid_to_block IS NULL",
@@ -154,7 +149,6 @@ fn read_numeric_annotations(
         .wrap_err("reading history numeric annotations")
 }
 
-/// Write SCD2 history for a single entity event. Called inside the already-open writer transaction.
 #[allow(clippy::too_many_arguments)]
 pub fn write_history(
     tx: &Transaction<'_>,
@@ -214,7 +208,6 @@ pub fn write_history(
             let Some(pl) = payload else { return Ok(()) };
             let ep = extend_policy.unwrap_or(0);
 
-            // Use created_at_block from the previous row if it exists
             let created_at = prev.as_ref().map_or(block_number, |p| p.created_at_block);
 
             insert_open_row(
@@ -284,7 +277,6 @@ pub fn write_history(
                 &prev.numeric_annotations,
             )?;
         }
-        // Unknown event types: skip
         _ => {}
     }
 
