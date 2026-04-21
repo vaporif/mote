@@ -25,6 +25,9 @@ bytes.workspace = true
 metrics.workspace = true
 reth-metrics.workspace = true
 roaring.workspace = true
+blake3.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
