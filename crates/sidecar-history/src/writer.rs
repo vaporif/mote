@@ -1,7 +1,7 @@
 use arrow::{
     array::{
-        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt8Array,
-        UInt32Array, UInt64Array,
+        Array, AsArray, BinaryArray, FixedSizeBinaryArray, MapArray, StringArray, UInt32Array,
+        UInt64Array, UInt8Array,
     },
     record_batch::RecordBatch,
 };
@@ -182,7 +182,12 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                     .collect::<eyre::Result<Vec<_>>>()?
             };
 
-            let Ok(event_type) = EntityEventType::try_from(u8::try_from(event_type)?) else {
+            let event_type_u8 = u8::try_from(event_type)?;
+            let Ok(event_type) = EntityEventType::try_from(event_type_u8) else {
+                tracing::warn!(
+                    event_type = event_type_u8,
+                    "skipping unknown event type for history"
+                );
                 continue;
             };
             history_writer::write_history(
@@ -310,7 +315,7 @@ mod tests {
     use crate::schema;
 
     use glint_primitives::exex_schema::entity_events_schema;
-    use glint_primitives::test_utils::{EventBuilder, build_batch};
+    use glint_primitives::test_utils::{build_batch, EventBuilder};
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
