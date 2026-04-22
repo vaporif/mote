@@ -7,6 +7,7 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained — transitive dep from reth" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained — transitive dep from reth" },
     { id = "RUSTSEC-2026-0074", reason = "libcrux-sha3 SHAKE API bug — transitive dep from reth, not used directly" },
+    { id = "RUSTSEC-2026-0105", reason = "core2 unmaintained — transitive dep from reth via multihash/libp2p" },
 ]
 
 [licenses]
