@@ -123,7 +123,6 @@ fn build_schema() -> Schema {
     ])
 }
 
-/// Schema for `entities_latest` `DataFusion` table (no annotation columns).
 #[must_use]
 pub fn entities_latest_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -139,7 +138,6 @@ pub fn entities_latest_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_string_annotations` table.
 #[must_use]
 pub fn string_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -149,7 +147,6 @@ pub fn string_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_numeric_annotations` table.
 #[must_use]
 pub fn numeric_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -159,7 +156,6 @@ pub fn numeric_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_events` `DataFusion` table (no annotation columns).
 #[must_use]
 pub fn entity_events_output_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -177,7 +173,6 @@ pub fn entity_events_output_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `event_string_annotations` table.
 #[must_use]
 pub fn event_string_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -189,7 +184,6 @@ pub fn event_string_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `event_numeric_annotations` table.
 #[must_use]
 pub fn event_numeric_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -201,7 +195,6 @@ pub fn event_numeric_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entities_history` `DataFusion` table.
 #[must_use]
 pub fn entities_history_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -221,7 +214,6 @@ pub fn entities_history_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `history_string_annotations` `DataFusion` table.
 #[must_use]
 pub fn history_string_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -232,7 +224,6 @@ pub fn history_string_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `history_numeric_annotations` `DataFusion` table.
 #[must_use]
 pub fn history_numeric_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
