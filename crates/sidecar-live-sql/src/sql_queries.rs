@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder, UInt64Builder,
+    BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt64Builder, UInt8Builder,
 };
 use eyre::WrapErr;
 use glint_primitives::exex_schema::{
     entities_latest_schema, numeric_annotations_schema, string_annotations_schema,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use tracing::info;
 
 const SCHEMA_VERSION: &str = "2";
@@ -280,8 +280,7 @@ impl<'a> LiveDb<'a> {
         current_block: u64,
         owner_filter: Option<&[u8]>,
     ) -> eyre::Result<RecordBatch> {
-        let current_block_i64 =
-            i64::try_from(current_block).map_err(|e| eyre::eyre!("block number overflow: {e}"))?;
+        let current_block_i64 = i64::try_from(current_block).wrap_err("block number overflow")?;
 
         let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match owner_filter {
             Some(owner) => (
