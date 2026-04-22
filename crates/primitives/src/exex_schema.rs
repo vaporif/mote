@@ -123,7 +123,6 @@ fn build_schema() -> Schema {
     ])
 }
 
-/// Schema for `entities_latest` `DataFusion` table (no annotation columns).
 #[must_use]
 pub fn entities_latest_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -139,7 +138,6 @@ pub fn entities_latest_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_string_annotations` table.
 #[must_use]
 pub fn string_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -149,7 +147,6 @@ pub fn string_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_numeric_annotations` table.
 #[must_use]
 pub fn numeric_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -159,7 +156,6 @@ pub fn numeric_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `entity_events` `DataFusion` table (no annotation columns).
 #[must_use]
 pub fn entity_events_output_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -177,7 +173,6 @@ pub fn entity_events_output_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `event_string_annotations` table.
 #[must_use]
 pub fn event_string_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -189,13 +184,51 @@ pub fn event_string_annotations_schema() -> SchemaRef {
     ]))
 }
 
-/// Schema for `event_numeric_annotations` table.
 #[must_use]
 pub fn event_numeric_annotations_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
         Field::new(columns::BLOCK_NUMBER, DataType::UInt64, false),
         Field::new(columns::LOG_INDEX, DataType::UInt32, false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::UInt64, false),
+    ]))
+}
+
+#[must_use]
+pub fn entities_history_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new("valid_from_block", DataType::UInt64, false),
+        Field::new("valid_to_block", DataType::UInt64, true),
+        Field::new(columns::OWNER, DataType::FixedSizeBinary(20), false),
+        Field::new(columns::EXPIRES_AT_BLOCK, DataType::UInt64, false),
+        Field::new(columns::CONTENT_TYPE, DataType::Utf8, false),
+        Field::new(columns::PAYLOAD, DataType::Binary, false),
+        Field::new("created_at_block", DataType::UInt64, false),
+        Field::new(columns::TX_HASH, DataType::FixedSizeBinary(32), false),
+        Field::new(columns::EXTEND_POLICY, DataType::UInt8, false),
+        Field::new(columns::OPERATOR, DataType::FixedSizeBinary(20), true),
+        // Virtual column for SCD2 point-in-time filtering
+        Field::new(columns::BLOCK_NUMBER, DataType::UInt64, true),
+    ]))
+}
+
+#[must_use]
+pub fn history_string_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new("valid_from_block", DataType::UInt64, false),
+        Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
+        Field::new(ann_columns::ANN_VALUE, DataType::Utf8, false),
+    ]))
+}
+
+#[must_use]
+pub fn history_numeric_annotations_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new(columns::ENTITY_KEY, DataType::FixedSizeBinary(32), false),
+        Field::new("valid_from_block", DataType::UInt64, false),
         Field::new(ann_columns::ANN_KEY, DataType::Utf8, false),
         Field::new(ann_columns::ANN_VALUE, DataType::UInt64, false),
     ]))

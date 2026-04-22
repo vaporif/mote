@@ -2,9 +2,12 @@ use datafusion::prelude::Expr;
 
 pub mod annotation_extractors;
 pub mod block_range_filter;
+pub mod entities_history;
 pub mod event_numeric_annotations;
 pub mod event_string_annotations;
 pub mod historical_events;
+pub mod history_numeric_annotations;
+pub mod history_string_annotations;
 
 use glint_primitives::exex_schema::columns;
 
@@ -60,16 +63,23 @@ fn require_block_range(filters: &[Expr]) -> datafusion::error::Result<(u64, u64)
 mod tests {
     use std::sync::Arc;
 
+    use arrow::array::Array;
+
     use super::*;
     use crate::{
         provider::{
+            entities_history::EntitiesHistoryProvider,
             event_numeric_annotations::EventNumericAnnotationsProvider,
             event_string_annotations::EventStringAnnotationsProvider,
             historical_events::HistoricalEventsProvider,
+            history_numeric_annotations::HistoryNumericAnnotationsProvider,
+            history_string_annotations::HistoryStringAnnotationsProvider,
         },
-        schema,
+        schema, writer,
     };
+    use arrow::array::{StringArray, UInt64Array};
     use datafusion::prelude::SessionContext;
+    use glint_primitives::test_utils::{EventBuilder, build_batch};
     use parking_lot::Mutex;
     use rusqlite::Connection;
 
@@ -213,5 +223,119 @@ mod tests {
             .and(col("block_number").lt_eq(lit(100u64)));
         let range = extract_block_range(&[expr]);
         assert_eq!(range, Some((500, 100)));
+    }
+
+    fn register_history_tables(ctx: &SessionContext, conn: Arc<Mutex<Connection>>) {
+        ctx.register_table(
+            "entities_history",
+            Arc::new(EntitiesHistoryProvider::new(Arc::clone(&conn))),
+        )
+        .unwrap();
+        ctx.register_table(
+            "history_string_annotations",
+            Arc::new(HistoryStringAnnotationsProvider::new(Arc::clone(&conn))),
+        )
+        .unwrap();
+        ctx.register_table(
+            "history_numeric_annotations",
+            Arc::new(HistoryNumericAnnotationsProvider::new(conn)),
+        )
+        .unwrap();
+    }
+
+    fn insert_created_event(conn: &Arc<Mutex<Connection>>) {
+        let batch = build_batch(&[EventBuilder::created(10, 0x01)]);
+        let guard = conn.lock();
+        writer::insert_batch(&guard, &batch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn entities_history_query_with_block_number() {
+        let conn = setup();
+        insert_created_event(&conn);
+        let ctx = SessionContext::new();
+        register_history_tables(&ctx, conn);
+        let df = ctx
+            .sql("SELECT entity_key, valid_from_block, valid_to_block FROM entities_history WHERE block_number BETWEEN 0 AND 100")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+
+        let valid_to = results[0].column_by_name("valid_to_block").unwrap();
+        let arr = valid_to.as_any().downcast_ref::<UInt64Array>().unwrap();
+        assert!(arr.is_null(0));
+    }
+
+    #[tokio::test]
+    async fn entities_history_query_with_valid_from() {
+        let conn = setup();
+        insert_created_event(&conn);
+        let ctx = SessionContext::new();
+        register_history_tables(&ctx, conn);
+        let df = ctx
+            .sql("SELECT entity_key, valid_from_block FROM entities_history WHERE valid_from_block >= 0 AND valid_from_block <= 100")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+    }
+
+    #[tokio::test]
+    async fn history_string_annotations_query() {
+        let conn = setup();
+        insert_created_event(&conn);
+        let ctx = SessionContext::new();
+        register_history_tables(&ctx, conn);
+        let df = ctx
+            .sql("SELECT ann_key, ann_value FROM history_string_annotations WHERE valid_from_block >= 0 AND valid_from_block <= 100")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+
+        let key_col = results[0].column_by_name("ann_key").unwrap();
+        let key_arr = key_col.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(key_arr.value(0), "tag");
+
+        let val_col = results[0].column_by_name("ann_value").unwrap();
+        let val_arr = val_col.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(val_arr.value(0), "test");
+    }
+
+    #[tokio::test]
+    async fn history_numeric_annotations_query() {
+        let conn = setup();
+        insert_created_event(&conn);
+        let ctx = SessionContext::new();
+        register_history_tables(&ctx, conn);
+        let df = ctx
+            .sql("SELECT ann_key, ann_value FROM history_numeric_annotations WHERE valid_from_block >= 0 AND valid_from_block <= 100")
+            .await
+            .unwrap();
+        let results = df.collect().await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 1);
+
+        let key_col = results[0].column_by_name("ann_key").unwrap();
+        let key_arr = key_col.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(key_arr.value(0), "priority");
+
+        let val_col = results[0].column_by_name("ann_value").unwrap();
+        let val_arr = val_col.as_any().downcast_ref::<UInt64Array>().unwrap();
+        assert_eq!(val_arr.value(0), 1);
+    }
+
+    #[tokio::test]
+    async fn entities_history_requires_bounds() {
+        let conn = setup();
+        let ctx = SessionContext::new();
+        register_history_tables(&ctx, conn);
+        let df = ctx.sql("SELECT * FROM entities_history").await.unwrap();
+        let result = df.collect().await;
+        assert!(result.is_err());
     }
 }

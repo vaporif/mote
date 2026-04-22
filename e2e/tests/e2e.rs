@@ -6,7 +6,7 @@ use rstest::rstest;
 use glint_e2e::Transport;
 use glint_e2e::eth_node_handle::EthNodeHandle;
 use glint_e2e::sidecar_handle::SidecarHandle;
-use glint_primitives::transaction::{Create, GlintTransaction};
+use glint_primitives::transaction::{Create, Extend, GlintTransaction, Update};
 use glint_sdk::Glint;
 
 fn col<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
@@ -413,6 +413,109 @@ async fn test_sidecar_metrics_endpoint(#[case] transport: Transport) -> eyre::Re
             "expected metric {prefix} not found in /metrics output:\n{body}"
         );
     }
+
+    Ok(())
+}
+
+#[rstest]
+#[case::ipc(Transport::Ipc)]
+#[case::grpc(Transport::Grpc)]
+#[tokio::test]
+#[ignore = "requires eth-glint + glint-sidecar Docker images; run with `just e2e`"]
+async fn test_entities_history_scd2(#[case] transport: Transport) -> eyre::Result<()> {
+    let node = EthNodeHandle::spawn(transport).await?;
+    let sidecar = SidecarHandle::spawn(&node, transport).await?;
+
+    let client = Glint::builder(node.rpc_url())
+        .wallet(dev_wallet())
+        .flight_url(sidecar.flight_url())
+        .build()
+        .await?;
+
+    // Create an entity
+    let tx = GlintTransaction::new().create(
+        Create::new("text/plain", b"version-one", 200)
+            .string_annotation("app", "history-test")
+            .numeric_annotation("rev", 1),
+    );
+    let result1 = client.send(&tx).await?;
+    assert!(result1.receipt.status());
+    let block1 = result1.block_number().expect("should have block number");
+    let entity_key = result1.created_entity_keys[0];
+
+    // Update the entity with new payload
+    let tx =
+        GlintTransaction::new().update(Update::new(entity_key, "text/plain", b"version-two", 200));
+    let result2 = client.send(&tx).await?;
+    assert!(result2.receipt.status());
+    let block2 = result2.block_number().expect("should have block number");
+
+    // Extend the entity
+    let tx = GlintTransaction::new().extend(Extend::new(entity_key, 500));
+    let result3 = client.send(&tx).await?;
+    assert!(result3.receipt.status());
+    let block3 = result3.block_number().expect("should have block number");
+
+    wait_for_sidecar_ready(&sidecar).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Query entities_history: should have 3 SCD2 rows (create, update closed + opened, extend closed + opened)
+    let ek_hex = format!("{:x}", entity_key);
+    let sql = format!(
+        "SELECT valid_from_block, valid_to_block, payload, expires_at_block \
+         FROM entities_history \
+         WHERE block_number BETWEEN {block1} AND {block3} \
+           AND entity_key = x'{ek_hex}' \
+         ORDER BY valid_from_block"
+    );
+    let batches = client.query(&sql).await?;
+    let total = row_count(&batches);
+    assert!(
+        total >= 3,
+        "expected at least 3 history rows (create + update + extend), got {total}"
+    );
+
+    // Point-in-time: at block1 should see version-one
+    let sql = format!(
+        "SELECT payload FROM entities_history \
+         WHERE block_number = {block1} AND entity_key = x'{ek_hex}'"
+    );
+    let batches = client.query(&sql).await?;
+    assert_eq!(row_count(&batches), 1);
+    let payload_col: &arrow::array::BinaryArray = col(&batches[0], "payload");
+    assert_eq!(payload_col.value(0), b"version-one");
+
+    // Point-in-time: at block2 should see version-two
+    let sql = format!(
+        "SELECT payload FROM entities_history \
+         WHERE block_number = {block2} AND entity_key = x'{ek_hex}'"
+    );
+    let batches = client.query(&sql).await?;
+    assert_eq!(row_count(&batches), 1);
+    let payload_col: &arrow::array::BinaryArray = col(&batches[0], "payload");
+    assert_eq!(payload_col.value(0), b"version-two");
+
+    // Point-in-time: at block3 should still see version-two (extend doesn't change payload)
+    let sql = format!(
+        "SELECT payload FROM entities_history \
+         WHERE block_number = {block3} AND entity_key = x'{ek_hex}'"
+    );
+    let batches = client.query(&sql).await?;
+    assert_eq!(row_count(&batches), 1);
+    let payload_col: &arrow::array::BinaryArray = col(&batches[0], "payload");
+    assert_eq!(payload_col.value(0), b"version-two");
+
+    // History string annotations should be queryable
+    let sql = format!(
+        "SELECT ann_key, ann_value FROM history_string_annotations \
+         WHERE valid_from_block >= {block1} AND valid_from_block <= {block1} \
+           AND entity_key = x'{ek_hex}'"
+    );
+    let batches = client.query(&sql).await?;
+    assert!(
+        row_count(&batches) >= 1,
+        "expected string annotations on the created version"
+    );
 
     Ok(())
 }

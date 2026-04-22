@@ -9,7 +9,9 @@ use eyre::WrapErr;
 use glint_primitives::exex_schema::columns;
 use rusqlite::Connection;
 
-use crate::schema;
+use glint_primitives::exex_types::EntityEventType;
+
+use crate::{history_writer, schema};
 
 pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> {
     if batch.num_rows() == 0 {
@@ -149,6 +151,62 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                     ])?;
                 }
             }
+
+            let hist_str_anns: Vec<(String, String)> = if str_ann_col.is_null(i) {
+                Vec::new()
+            } else {
+                let offsets = str_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = str_ann_col.keys().as_string::<i32>();
+                let values = str_ann_col.values().as_string::<i32>();
+                (start..end)
+                    .map(|j| (keys.value(j).to_owned(), values.value(j).to_owned()))
+                    .collect()
+            };
+
+            let hist_num_anns: Vec<(String, i64)> = if num_ann_col.is_null(i) {
+                Vec::new()
+            } else {
+                let offsets = num_ann_col.value_offsets();
+                let start = usize::try_from(offsets[i])?;
+                let end = usize::try_from(offsets[i + 1])?;
+                let keys = num_ann_col.keys().as_string::<i32>();
+                let values = num_ann_col
+                    .values()
+                    .as_primitive::<arrow::datatypes::UInt64Type>();
+                (start..end)
+                    .map(|j| -> eyre::Result<_> {
+                        Ok((keys.value(j).to_owned(), i64::try_from(values.value(j))?))
+                    })
+                    .collect::<eyre::Result<Vec<_>>>()?
+            };
+
+            let event_type_u8 = u8::try_from(event_type)?;
+            let Ok(event_type) = EntityEventType::try_from(event_type_u8) else {
+                tracing::warn!(
+                    event_type = event_type_u8,
+                    "skipping unknown event type for history"
+                );
+                continue;
+            };
+            history_writer::write_history(
+                &tx,
+                &history_writer::EntityEvent {
+                    event_type,
+                    block_number: block_number_i64,
+                    entity_key,
+                    owner,
+                    expires_at_block: expires_at,
+                    content_type,
+                    payload,
+                    tx_hash,
+                    extend_policy,
+                    operator,
+                    string_annotations: &hist_str_anns,
+                    numeric_annotations: &hist_num_anns,
+                },
+            )?;
         }
     }
 
@@ -337,5 +395,229 @@ mod tests {
             .unwrap();
         assert_eq!(ann_key, "nk");
         assert_eq!(ann_value, 99);
+    }
+
+    #[test]
+    fn history_updated_event_closes_old_row() {
+        let conn = setup_db();
+        // Create at block 10, expires at 110
+        let batch = build_batch(&[EventBuilder::created(10, 0x02)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        // Update at block 20 (old_exp=110, new_exp=220)
+        let batch = build_batch(&[EventBuilder::updated(20, 0x02, 110, 220).with_log_index(1)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let entity_key = alloy_primitives::B256::repeat_byte(0x02);
+
+        // Should have 2 rows in entities_history
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history WHERE entity_key = ?1",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Old row should be closed with valid_to_block = 20
+        let valid_to: i64 = conn
+            .query_row(
+                "SELECT valid_to_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_from_block = 10",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(valid_to, 20);
+
+        // New row should be open (valid_to_block IS NULL)
+        let open_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL AND valid_from_block = 20",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open_count, 1);
+
+        // created_at_block should be preserved from the original creation
+        let created_at: i64 = conn
+            .query_row(
+                "SELECT created_at_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_from_block = 20",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_at, 10);
+    }
+
+    #[test]
+    fn history_deleted_event_closes_row() {
+        let conn = setup_db();
+        let batch = build_batch(&[EventBuilder::created(10, 0x03)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let batch = build_batch(&[EventBuilder::deleted(25, 0x03).with_log_index(1)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let entity_key = alloy_primitives::B256::repeat_byte(0x03);
+
+        // Should have exactly 1 row, and it should be closed
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history WHERE entity_key = ?1",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let valid_to: i64 = conn
+            .query_row(
+                "SELECT valid_to_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_from_block = 10",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(valid_to, 25);
+
+        // No open rows should remain
+        let open: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open, 0);
+    }
+
+    #[test]
+    fn history_extended_event_updates_expires() {
+        let conn = setup_db();
+        // Create at block 10, expires at 110
+        let batch = build_batch(&[EventBuilder::created(10, 0x04)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        // Extend at block 15 (old_exp=110, new_exp=500)
+        let batch = build_batch(&[EventBuilder::extended(15, 0x04, 110, 500).with_log_index(1)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let entity_key = alloy_primitives::B256::repeat_byte(0x04);
+
+        // Should have 2 rows: old closed, new open
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history WHERE entity_key = ?1",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // New open row should have updated expires_at_block
+        let expires: i64 = conn
+            .query_row(
+                "SELECT expires_at_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(expires, 500);
+
+        // created_at_block should be preserved from original creation (block 10)
+        let created_at: i64 = conn
+            .query_row(
+                "SELECT created_at_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_at, 10);
+
+        // Content should be carried over from the original
+        let content_type: String = conn
+            .query_row(
+                "SELECT content_type FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(content_type, "text/plain");
+    }
+
+    #[test]
+    fn history_permissions_changed_event() {
+        use alloy_primitives::Address;
+
+        let conn = setup_db();
+        // Create at block 10
+        let batch = build_batch(&[EventBuilder::created(10, 0x05)]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let new_owner = Address::repeat_byte(0xBB);
+        let new_operator = Address::repeat_byte(0xCC);
+        let batch =
+            build_batch(&[
+                EventBuilder::permissions_changed(30, 0x05, new_owner, 2, new_operator)
+                    .with_log_index(1),
+            ]);
+        insert_batch(&conn, &batch).unwrap();
+
+        let entity_key = alloy_primitives::B256::repeat_byte(0x05);
+
+        // Should have 2 rows
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities_history WHERE entity_key = ?1",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // New open row should have new owner, extend_policy, and operator
+        let (owner, extend_policy, operator): (Vec<u8>, i64, Vec<u8>) = conn
+            .query_row(
+                "SELECT owner, extend_policy, operator FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(owner, new_owner.as_slice());
+        assert_eq!(extend_policy, 2);
+        assert_eq!(operator, new_operator.as_slice());
+
+        // Content should be preserved from the original entity
+        let (content_type, payload): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT content_type, payload FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content_type, "text/plain");
+        assert_eq!(payload, b"hello");
+
+        // created_at_block should be preserved
+        let created_at: i64 = conn
+            .query_row(
+                "SELECT created_at_block FROM entities_history
+                 WHERE entity_key = ?1 AND valid_to_block IS NULL",
+                [entity_key.as_slice()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_at, 10);
     }
 }
