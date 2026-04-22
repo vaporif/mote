@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt64Builder, UInt8Builder,
+    BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder, UInt64Builder,
 };
 use eyre::WrapErr;
 use glint_primitives::exex_schema::{
     entities_latest_schema, numeric_annotations_schema, string_annotations_schema,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use tracing::info;
 
 const SCHEMA_VERSION: &str = "2";

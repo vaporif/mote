@@ -2,15 +2,15 @@ use core::fmt::Write as _;
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt32Builder,
-    UInt64Builder, UInt8Builder,
+    ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder,
+    UInt32Builder, UInt64Builder,
 };
 use arrow::datatypes::SchemaRef;
 use eyre::WrapErr;
 use glint_primitives::exex_types::EntityEventType;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::error::{arrow_err, IntoDataFusionError as _};
+use crate::error::{IntoDataFusionError as _, arrow_err};
 
 const SCHEMA_VERSION: &str = "3";
 
