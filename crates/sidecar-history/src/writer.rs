@@ -11,7 +11,7 @@ use rusqlite::Connection;
 
 use glint_primitives::exex_types::EntityEventType;
 
-use crate::{history_writer, schema};
+use crate::sql_queries::{EntityEvent, EventRow, HistoryDb};
 
 pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> {
     if batch.num_rows() == 0 {
@@ -41,38 +41,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
         .wrap_err("starting SQLite transaction")?;
 
     {
-        let mut stmt = tx.prepare_cached(
-            "INSERT INTO entity_events (
-                block_number, block_hash, tx_index, tx_hash, log_index,
-                event_type, entity_key, owner, expires_at_block, old_expires_at_block,
-                content_type, payload, extend_policy, operator, gas_cost
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-            ON CONFLICT (entity_key, block_number, log_index) DO UPDATE SET
-                block_hash = excluded.block_hash,
-                tx_index = excluded.tx_index,
-                tx_hash = excluded.tx_hash,
-                event_type = excluded.event_type,
-                owner = excluded.owner,
-                expires_at_block = excluded.expires_at_block,
-                old_expires_at_block = excluded.old_expires_at_block,
-                content_type = excluded.content_type,
-                payload = excluded.payload,
-                extend_policy = excluded.extend_policy,
-                operator = excluded.operator,
-                gas_cost = excluded.gas_cost",
-        )?;
-
-        let mut insert_str_ann = tx.prepare_cached(
-            "INSERT INTO event_string_annotations (entity_key, block_number, log_index, ann_key, ann_value)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (entity_key, block_number, log_index, ann_key) DO UPDATE SET ann_value = excluded.ann_value",
-        )?;
-
-        let mut insert_num_ann = tx.prepare_cached(
-            "INSERT INTO event_numeric_annotations (entity_key, block_number, log_index, ann_key, ann_value)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (entity_key, block_number, log_index, ann_key) DO UPDATE SET ann_value = excluded.ann_value",
-        )?;
+        let db = HistoryDb::new(&tx);
 
         for i in 0..batch.num_rows() {
             let block_number = block_number_col.value(i);
@@ -97,8 +66,10 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
             let operator: Option<&[u8]> = nullable_blob(operator_col, i, 20, "operator")?;
             let gas_cost: Option<i64> = nullable_u64_as_i64(gas_cost_col, i)?;
 
-            stmt.execute(rusqlite::params![
-                i64::try_from(block_number)?,
+            let block_number_i64 = i64::try_from(block_number)?;
+
+            db.upsert_event(&EventRow {
+                block_number: block_number_i64,
                 block_hash,
                 tx_index,
                 tx_hash,
@@ -113,9 +84,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 extend_policy,
                 operator,
                 gas_cost,
-            ])?;
-
-            let block_number_i64 = i64::try_from(block_number)?;
+            })?;
 
             if !str_ann_col.is_null(i) {
                 let offsets = str_ann_col.value_offsets();
@@ -124,13 +93,13 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 let keys = str_ann_col.keys().as_string::<i32>();
                 let values = str_ann_col.values().as_string::<i32>();
                 for j in start..end {
-                    insert_str_ann.execute(rusqlite::params![
+                    db.upsert_event_string_annotation(
                         entity_key,
                         block_number_i64,
                         log_index,
                         keys.value(j),
                         values.value(j),
-                    ])?;
+                    )?;
                 }
             }
             if !num_ann_col.is_null(i) {
@@ -142,13 +111,13 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                     .values()
                     .as_primitive::<arrow::datatypes::UInt64Type>();
                 for j in start..end {
-                    insert_num_ann.execute(rusqlite::params![
+                    db.upsert_event_numeric_annotation(
                         entity_key,
                         block_number_i64,
                         log_index,
                         keys.value(j),
                         i64::try_from(values.value(j))?,
-                    ])?;
+                    )?;
                 }
             }
 
@@ -190,23 +159,20 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
                 );
                 continue;
             };
-            history_writer::write_history(
-                &tx,
-                &history_writer::EntityEvent {
-                    event_type,
-                    block_number: block_number_i64,
-                    entity_key,
-                    owner,
-                    expires_at_block: expires_at,
-                    content_type,
-                    payload,
-                    tx_hash,
-                    extend_policy,
-                    operator,
-                    string_annotations: &hist_str_anns,
-                    numeric_annotations: &hist_num_anns,
-                },
-            )?;
+            db.write_history(&EntityEvent {
+                event_type,
+                block_number: block_number_i64,
+                entity_key,
+                owner,
+                expires_at_block: expires_at,
+                content_type,
+                payload,
+                tx_hash,
+                extend_policy,
+                operator,
+                string_annotations: &hist_str_anns,
+                numeric_annotations: &hist_num_anns,
+            })?;
         }
     }
 
@@ -214,7 +180,7 @@ pub fn insert_batch(conn: &Connection, batch: &RecordBatch) -> eyre::Result<()> 
         .map(|i| block_number_col.value(i))
         .max()
         .expect("non-empty batch");
-    schema::set_last_processed_block(&tx, max_block)?;
+    HistoryDb::new(&tx).set_last_processed_block(max_block)?;
 
     tx.commit().wrap_err("committing SQLite transaction")?;
 

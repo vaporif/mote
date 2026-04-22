@@ -1,14 +1,8 @@
-use crate::error::{IntoDataFusionError as _, arrow_err};
+use crate::error::IntoDataFusionError as _;
 use core::fmt;
 use std::{any::Any, sync::Arc};
 
-use arrow::{
-    array::{
-        ArrayRef, BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder,
-        UInt64Builder,
-    },
-    datatypes::SchemaRef,
-};
+use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use datafusion::{
     catalog::{
@@ -23,7 +17,7 @@ use datafusion::{
 use parking_lot::Mutex;
 use rusqlite::Connection;
 
-use crate::provider::block_range_filter::extract_block_range;
+use crate::{provider::block_range_filter::extract_block_range, sql_queries::HistoryDb};
 
 use super::{references_block_number, references_column};
 
@@ -161,11 +155,8 @@ pub fn require_valid_from_range(filters: &[Expr]) -> datafusion::error::Result<(
     Ok(range)
 }
 
-/// SCD2 query bounds derived from filters.
 struct Scd2Bounds {
-    /// The query only returns rows where `valid_from_block <= upper_bound`
     valid_from_upper: u64,
-    /// The query only returns rows where `valid_to_block IS NULL OR valid_to_block > lower_bound`
     valid_to_lower: u64,
 }
 
@@ -240,7 +231,11 @@ impl TableProvider for EntitiesHistoryProvider {
 
         let batch = tokio::task::spawn_blocking(move || {
             let conn = conn.lock();
-            query_entities_history(&conn, &bounds, &schema)
+            HistoryDb::new(&conn).query_entities_history(
+                bounds.valid_from_upper,
+                bounds.valid_to_lower,
+                &schema,
+            )
         })
         .await
         .df_err()??;
@@ -249,90 +244,6 @@ impl TableProvider for EntitiesHistoryProvider {
         let exec = DataSourceExec::new(Arc::new(source));
         Ok(Arc::new(exec) as Arc<dyn ExecutionPlan>)
     }
-}
-
-fn query_entities_history(
-    conn: &Connection,
-    bounds: &Scd2Bounds,
-    schema: &SchemaRef,
-) -> datafusion::error::Result<RecordBatch> {
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT entity_key, valid_from_block, valid_to_block, owner, expires_at_block,
-                    content_type, payload, created_at_block, tx_hash, extend_policy, operator
-             FROM entities_history
-             WHERE valid_from_block <= ?1
-               AND (valid_to_block IS NULL OR valid_to_block > ?2)
-             ORDER BY entity_key, valid_from_block",
-        )
-        .df_err()?;
-
-    let upper_i64 = i64::try_from(bounds.valid_from_upper).df_err()?;
-    let lower_i64 = i64::try_from(bounds.valid_to_lower).df_err()?;
-    let mut rows = stmt.query([upper_i64, lower_i64]).df_err()?;
-
-    let mut entity_key = FixedSizeBinaryBuilder::new(32);
-    let mut valid_from = UInt64Builder::new();
-    let mut valid_to = UInt64Builder::new();
-    let mut owner = FixedSizeBinaryBuilder::new(20);
-    let mut expires_at = UInt64Builder::new();
-    let mut content_type = StringBuilder::new();
-    let mut payload = BinaryBuilder::new();
-    let mut created_at = UInt64Builder::new();
-    let mut tx_hash = FixedSizeBinaryBuilder::new(32);
-    let mut extend_policy = UInt8Builder::new();
-    let mut operator = FixedSizeBinaryBuilder::new(20);
-    let mut block_number = UInt64Builder::new();
-
-    while let Some(row) = rows.next().df_err()? {
-        entity_key
-            .append_value(row.get_ref(0).df_err()?.as_blob().df_err()?)
-            .map_err(arrow_err)?;
-
-        let vf = u64::try_from(row.get::<_, i64>(1).df_err()?).df_err()?;
-        valid_from.append_value(vf);
-
-        match row.get::<_, Option<i64>>(2).df_err()? {
-            Some(v) => valid_to.append_value(u64::try_from(v).df_err()?),
-            None => valid_to.append_null(),
-        }
-
-        owner
-            .append_value(row.get_ref(3).df_err()?.as_blob().df_err()?)
-            .map_err(arrow_err)?;
-        expires_at.append_value(u64::try_from(row.get::<_, i64>(4).df_err()?).df_err()?);
-        content_type.append_value(row.get_ref(5).df_err()?.as_str().df_err()?);
-        payload.append_value(row.get_ref(6).df_err()?.as_blob().df_err()?);
-        created_at.append_value(u64::try_from(row.get::<_, i64>(7).df_err()?).df_err()?);
-        tx_hash
-            .append_value(row.get_ref(8).df_err()?.as_blob().df_err()?)
-            .map_err(arrow_err)?;
-        extend_policy.append_value(u8::try_from(row.get::<_, i64>(9).df_err()?).df_err()?);
-
-        match row.get_ref(10).df_err()?.as_blob_or_null() {
-            Ok(Some(v)) => operator.append_value(v).map_err(arrow_err)?,
-            _ => operator.append_null(),
-        }
-
-        block_number.append_value(vf);
-    }
-
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(entity_key.finish()),
-        Arc::new(valid_from.finish()),
-        Arc::new(valid_to.finish()),
-        Arc::new(owner.finish()),
-        Arc::new(expires_at.finish()),
-        Arc::new(content_type.finish()),
-        Arc::new(payload.finish()),
-        Arc::new(created_at.finish()),
-        Arc::new(tx_hash.finish()),
-        Arc::new(extend_policy.finish()),
-        Arc::new(operator.finish()),
-        Arc::new(block_number.finish()),
-    ];
-
-    RecordBatch::try_new(Arc::clone(schema), columns).map_err(arrow_err)
 }
 
 #[cfg(test)]

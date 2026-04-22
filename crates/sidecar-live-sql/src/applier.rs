@@ -15,6 +15,8 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tracing::warn;
 
+use crate::sql_queries::{EntityRow, LiveDb};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyResult {
     Applied,
@@ -82,51 +84,7 @@ fn apply_commit(
         .wrap_err("starting transaction")?;
 
     {
-        let mut insert_stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO entities_latest (
-                entity_key, owner, expires_at_block, content_type, payload,
-                created_at_block, tx_hash, extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        )?;
-
-        let mut upsert_stmt = tx.prepare_cached(
-            "INSERT INTO entities_latest (
-                entity_key, owner, expires_at_block, content_type, payload,
-                created_at_block, tx_hash, extend_policy, operator
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-            ON CONFLICT(entity_key) DO UPDATE SET
-                owner = excluded.owner,
-                expires_at_block = excluded.expires_at_block,
-                content_type = excluded.content_type,
-                payload = excluded.payload,
-                tx_hash = excluded.tx_hash,
-                extend_policy = excluded.extend_policy,
-                operator = excluded.operator",
-        )?;
-
-        let mut insert_str_ann = tx.prepare_cached(
-            "INSERT OR REPLACE INTO entity_string_annotations (entity_key, ann_key, ann_value) VALUES (?1, ?2, ?3)",
-        )?;
-        let mut insert_num_ann = tx.prepare_cached(
-            "INSERT OR REPLACE INTO entity_numeric_annotations (entity_key, ann_key, ann_value) VALUES (?1, ?2, ?3)",
-        )?;
-        let mut delete_str_ann =
-            tx.prepare_cached("DELETE FROM entity_string_annotations WHERE entity_key = ?1")?;
-        let mut delete_num_ann =
-            tx.prepare_cached("DELETE FROM entity_numeric_annotations WHERE entity_key = ?1")?;
-
-        let mut delete_stmt =
-            tx.prepare_cached("DELETE FROM entities_latest WHERE entity_key = ?1")?;
-
-        let mut extend_stmt = tx.prepare_cached(
-            "UPDATE entities_latest SET expires_at_block = ?1, tx_hash = ?2
-             WHERE entity_key = ?3",
-        )?;
-
-        let mut perms_stmt = tx.prepare_cached(
-            "UPDATE entities_latest SET owner = ?1, extend_policy = ?2, operator = ?3
-             WHERE entity_key = ?4",
-        )?;
+        let db = LiveDb::new(&tx);
 
         for i in 0..nrows {
             let event_type_raw = event_type_col.value(i);
@@ -149,27 +107,25 @@ fn apply_commit(
                     let operator: Option<&[u8]> =
                         (!operator_col.is_null(i)).then(|| operator_col.value(i));
 
-                    let params = rusqlite::params![
+                    let row = EntityRow {
                         entity_key,
                         owner,
-                        expires,
+                        expires_at_block: expires,
                         content_type,
                         payload,
-                        block_number,
+                        created_at_block: block_number,
                         tx_hash,
                         extend_policy,
                         operator,
-                    ];
+                    };
 
                     if event_type == EntityEventType::Created {
-                        insert_stmt.execute(params)?;
+                        db.insert_entity(&row)?;
                     } else {
-                        upsert_stmt.execute(params)?;
+                        db.upsert_entity(&row)?;
                     }
 
-                    // clear old annotations before re-inserting
-                    delete_str_ann.execute([entity_key])?;
-                    delete_num_ann.execute([entity_key])?;
+                    db.delete_annotations(entity_key)?;
 
                     if !str_ann_col.is_null(i) {
                         let offsets = str_ann_col.value_offsets();
@@ -178,11 +134,11 @@ fn apply_commit(
                         let keys = str_ann_col.keys().as_string::<i32>();
                         let values = str_ann_col.values().as_string::<i32>();
                         for j in start..end {
-                            insert_str_ann.execute(rusqlite::params![
+                            db.insert_string_annotation(
                                 entity_key,
                                 keys.value(j),
                                 values.value(j),
-                            ])?;
+                            )?;
                         }
                     }
 
@@ -195,35 +151,29 @@ fn apply_commit(
                             .values()
                             .as_primitive::<arrow::datatypes::UInt64Type>();
                         for j in start..end {
-                            insert_num_ann.execute(rusqlite::params![
+                            db.insert_numeric_annotation(
                                 entity_key,
                                 keys.value(j),
                                 i64::try_from(values.value(j))?,
-                            ])?;
+                            )?;
                         }
                     }
                 }
                 EntityEventType::Deleted | EntityEventType::Expired => {
-                    delete_str_ann.execute([entity_key])?;
-                    delete_num_ann.execute([entity_key])?;
-                    delete_stmt.execute([entity_key])?;
+                    db.delete_annotations(entity_key)?;
+                    db.delete_entity(entity_key)?;
                 }
                 EntityEventType::Extended => {
                     let new_expires = i64::try_from(expires_col.value(i))?;
                     let tx_hash = tx_hash_col.value(i);
-                    extend_stmt.execute(rusqlite::params![new_expires, tx_hash, entity_key])?;
+                    db.update_entity_expiry(entity_key, new_expires, tx_hash)?;
                 }
                 EntityEventType::PermissionsChanged => {
                     let new_owner = owner_col.value(i);
                     let extend_policy = i64::from(extend_policy_col.value(i));
                     let operator: Option<&[u8]> =
                         (!operator_col.is_null(i)).then(|| operator_col.value(i));
-                    perms_stmt.execute(rusqlite::params![
-                        new_owner,
-                        extend_policy,
-                        operator,
-                        entity_key
-                    ])?;
+                    db.update_entity_permissions(entity_key, new_owner, extend_policy, operator)?;
                 }
             }
         }
@@ -249,51 +199,49 @@ fn apply_revert(
         .unchecked_transaction()
         .wrap_err("starting revert transaction")?;
 
-    for i in (0..nrows).rev() {
-        let event_type_raw = event_type_col.value(i);
-        let event_type = EntityEventType::try_from(event_type_raw)
-            .map_err(|v| eyre::eyre!("unknown EntityEventType value: {v}"))?;
+    let needs_replay = {
+        let db = LiveDb::new(&tx);
+        let mut needs_replay = false;
 
-        let entity_key = entity_key_col.value(i);
+        for i in (0..nrows).rev() {
+            let event_type_raw = event_type_col.value(i);
+            let event_type = EntityEventType::try_from(event_type_raw)
+                .map_err(|v| eyre::eyre!("unknown EntityEventType value: {v}"))?;
 
-        match event_type {
-            EntityEventType::Created => {
-                tx.execute(
-                    "DELETE FROM entity_string_annotations WHERE entity_key = ?1",
-                    [entity_key],
-                )?;
-                tx.execute(
-                    "DELETE FROM entity_numeric_annotations WHERE entity_key = ?1",
-                    [entity_key],
-                )?;
-                tx.execute(
-                    "DELETE FROM entities_latest WHERE entity_key = ?1",
-                    [entity_key],
-                )?;
-            }
-            EntityEventType::Extended => {
-                let old_expires = i64::try_from(old_expires_col.value(i))?;
-                tx.execute(
-                    "UPDATE entities_latest SET expires_at_block = ?1 WHERE entity_key = ?2",
-                    rusqlite::params![old_expires, entity_key],
-                )?;
-            }
-            EntityEventType::Updated
-            | EntityEventType::Deleted
-            | EntityEventType::Expired
-            | EntityEventType::PermissionsChanged => {
-                warn!(
-                    event_type = ?event_type,
-                    "revert of event type requires full replay"
-                );
-                tx.commit().wrap_err("committing partial revert")?;
-                return Ok(ApplyResult::NeedsReplay);
+            let entity_key = entity_key_col.value(i);
+
+            match event_type {
+                EntityEventType::Created => {
+                    db.revert_created(entity_key)?;
+                }
+                EntityEventType::Extended => {
+                    let old_expires = i64::try_from(old_expires_col.value(i))?;
+                    db.revert_extended(entity_key, old_expires)?;
+                }
+                EntityEventType::Updated
+                | EntityEventType::Deleted
+                | EntityEventType::Expired
+                | EntityEventType::PermissionsChanged => {
+                    warn!(
+                        event_type = ?event_type,
+                        "revert of event type requires full replay"
+                    );
+                    needs_replay = true;
+                    break;
+                }
             }
         }
-    }
 
-    tx.commit().wrap_err("committing revert transaction")?;
-    Ok(ApplyResult::Applied)
+        needs_replay
+    };
+
+    if needs_replay {
+        tx.commit().wrap_err("committing partial revert")?;
+        Ok(ApplyResult::NeedsReplay)
+    } else {
+        tx.commit().wrap_err("committing revert transaction")?;
+        Ok(ApplyResult::Applied)
+    }
 }
 
 fn batch_block_number(batch: &RecordBatch) -> Option<u64> {
