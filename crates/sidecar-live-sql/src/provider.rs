@@ -3,13 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use arrow::{
-    array::{
-        BinaryBuilder, FixedSizeBinaryBuilder, RecordBatch, StringBuilder, UInt8Builder,
-        UInt64Builder,
-    },
-    datatypes::SchemaRef,
-};
+use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use datafusion::{
     catalog::Session,
@@ -27,6 +21,8 @@ use glint_primitives::{
 };
 use parking_lot::Mutex;
 use rusqlite::Connection;
+
+use crate::sql_queries::{AnnotationFilters, LiveDb};
 
 #[derive(Debug)]
 pub struct SqliteEntitiesProvider {
@@ -85,7 +81,8 @@ impl TableProvider for SqliteEntitiesProvider {
 
         let conn = Arc::clone(&self.read_conn);
         let batch = tokio::task::spawn_blocking(move || {
-            query_entities_latest(&conn, current_block, owner_filter.as_deref())
+            let guard = conn.lock();
+            LiveDb::new(&guard).query_entities_latest(current_block, owner_filter.as_deref())
         })
         .await
         .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
@@ -94,94 +91,6 @@ impl TableProvider for SqliteEntitiesProvider {
         let mem = MemTable::try_new(entities_latest_schema(), vec![vec![batch]])?;
         mem.scan(state, projection, filters, limit).await
     }
-}
-
-#[allow(clippy::significant_drop_tightening, clippy::option_if_let_else)]
-fn query_entities_latest(
-    conn: &Arc<Mutex<Connection>>,
-    current_block: u64,
-    owner_filter: Option<&[u8]>,
-) -> eyre::Result<RecordBatch> {
-    let guard = conn.lock();
-
-    let current_block_i64 =
-        i64::try_from(current_block).map_err(|e| eyre::eyre!("block number overflow: {e}"))?;
-
-    let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match owner_filter {
-        Some(owner) => (
-            "SELECT entity_key, owner, expires_at_block, content_type, payload, \
-                    created_at_block, tx_hash, extend_policy, operator \
-             FROM entities_latest \
-             WHERE expires_at_block > ?1 AND owner = ?2"
-                .to_owned(),
-            vec![Box::new(current_block_i64), Box::new(owner.to_vec())],
-        ),
-        None => (
-            "SELECT entity_key, owner, expires_at_block, content_type, payload, \
-                    created_at_block, tx_hash, extend_policy, operator \
-             FROM entities_latest \
-             WHERE expires_at_block > ?1"
-                .to_owned(),
-            vec![Box::new(current_block_i64)],
-        ),
-    };
-
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(AsRef::as_ref).collect();
-    let mut stmt = guard.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_refs.as_slice())?;
-
-    let mut entity_key_builder = FixedSizeBinaryBuilder::new(32);
-    let mut owner_builder = FixedSizeBinaryBuilder::new(20);
-    let mut expires_builder = UInt64Builder::new();
-    let mut content_type_builder = StringBuilder::new();
-    let mut payload_builder = BinaryBuilder::new();
-    let mut created_at_builder = UInt64Builder::new();
-    let mut tx_hash_builder = FixedSizeBinaryBuilder::new(32);
-    let mut extend_policy_builder = UInt8Builder::new();
-    let mut operator_builder = FixedSizeBinaryBuilder::new(20);
-
-    while let Some(row) = rows.next()? {
-        let entity_key: Vec<u8> = row.get(0)?;
-        let owner: Vec<u8> = row.get(1)?;
-        let expires: i64 = row.get(2)?;
-        let content_type: String = row.get(3)?;
-        let payload: Vec<u8> = row.get(4)?;
-        let created_at: i64 = row.get(5)?;
-        let tx_hash: Vec<u8> = row.get(6)?;
-        let extend_policy: i64 = row.get(7)?;
-        let operator: Option<Vec<u8>> = row.get(8)?;
-
-        entity_key_builder.append_value(&entity_key)?;
-        owner_builder.append_value(&owner)?;
-        expires_builder.append_value(u64::try_from(expires)?);
-        content_type_builder.append_value(&content_type);
-        payload_builder.append_value(&payload);
-        created_at_builder.append_value(u64::try_from(created_at)?);
-        tx_hash_builder.append_value(&tx_hash)?;
-        extend_policy_builder.append_value(u8::try_from(extend_policy)?);
-
-        match operator {
-            Some(op) => operator_builder.append_value(&op)?,
-            None => operator_builder.append_null(),
-        }
-    }
-
-    let batch = RecordBatch::try_new(
-        entities_latest_schema(),
-        vec![
-            Arc::new(entity_key_builder.finish()),
-            Arc::new(owner_builder.finish()),
-            Arc::new(expires_builder.finish()),
-            Arc::new(content_type_builder.finish()),
-            Arc::new(payload_builder.finish()),
-            Arc::new(created_at_builder.finish()),
-            Arc::new(tx_hash_builder.finish()),
-            Arc::new(extend_policy_builder.finish()),
-            Arc::new(operator_builder.finish()),
-        ],
-    )?;
-
-    Ok(batch)
 }
 
 #[derive(Debug)]
@@ -237,71 +146,17 @@ impl TableProvider for SqliteStringAnnotationsProvider {
         let ann_filters = extract_annotation_filters(filters);
         let conn = Arc::clone(&self.read_conn);
 
-        let batch =
-            tokio::task::spawn_blocking(move || query_string_annotations(&conn, &ann_filters))
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
-                .map_err(|e| datafusion::error::DataFusionError::Plan(format!("{e:#}")))?;
+        let batch = tokio::task::spawn_blocking(move || {
+            let guard = conn.lock();
+            LiveDb::new(&guard).query_string_annotations(&ann_filters)
+        })
+        .await
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+        .map_err(|e| datafusion::error::DataFusionError::Plan(format!("{e:#}")))?;
 
         let mem = MemTable::try_new(string_annotations_schema(), vec![vec![batch]])?;
         mem.scan(state, projection, filters, limit).await
     }
-}
-
-#[allow(clippy::significant_drop_tightening)]
-fn query_string_annotations(
-    conn: &Arc<Mutex<Connection>>,
-    ann_filters: &AnnotationFilters,
-) -> eyre::Result<RecordBatch> {
-    let guard = conn.lock();
-
-    let mut sql =
-        String::from("SELECT entity_key, ann_key, ann_value FROM entity_string_annotations");
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut conditions: Vec<String> = Vec::new();
-
-    if let Some(ref key) = ann_filters.key {
-        params.push(Box::new(key.clone()));
-        conditions.push(format!("ann_key = ?{}", params.len()));
-    }
-    if let Some(ref value) = ann_filters.string_value {
-        params.push(Box::new(value.clone()));
-        conditions.push(format!("ann_value = ?{}", params.len()));
-    }
-
-    if !conditions.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
-    }
-
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(AsRef::as_ref).collect();
-    let mut stmt = guard.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_refs.as_slice())?;
-
-    let mut entity_key_builder = FixedSizeBinaryBuilder::new(32);
-    let mut key_builder = StringBuilder::new();
-    let mut value_builder = StringBuilder::new();
-
-    while let Some(row) = rows.next()? {
-        let entity_key: Vec<u8> = row.get(0)?;
-        let ann_key: String = row.get(1)?;
-        let ann_value: String = row.get(2)?;
-
-        entity_key_builder.append_value(&entity_key)?;
-        key_builder.append_value(&ann_key);
-        value_builder.append_value(&ann_value);
-    }
-
-    let batch = RecordBatch::try_new(
-        string_annotations_schema(),
-        vec![
-            Arc::new(entity_key_builder.finish()),
-            Arc::new(key_builder.finish()),
-            Arc::new(value_builder.finish()),
-        ],
-    )?;
-
-    Ok(batch)
 }
 
 #[derive(Debug)]
@@ -357,71 +212,17 @@ impl TableProvider for SqliteNumericAnnotationsProvider {
         let ann_filters = extract_annotation_filters(filters);
         let conn = Arc::clone(&self.read_conn);
 
-        let batch =
-            tokio::task::spawn_blocking(move || query_numeric_annotations(&conn, &ann_filters))
-                .await
-                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
-                .map_err(|e| datafusion::error::DataFusionError::Plan(format!("{e:#}")))?;
+        let batch = tokio::task::spawn_blocking(move || {
+            let guard = conn.lock();
+            LiveDb::new(&guard).query_numeric_annotations(&ann_filters)
+        })
+        .await
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?
+        .map_err(|e| datafusion::error::DataFusionError::Plan(format!("{e:#}")))?;
 
         let mem = MemTable::try_new(numeric_annotations_schema(), vec![vec![batch]])?;
         mem.scan(state, projection, filters, limit).await
     }
-}
-
-#[allow(clippy::significant_drop_tightening)]
-fn query_numeric_annotations(
-    conn: &Arc<Mutex<Connection>>,
-    ann_filters: &AnnotationFilters,
-) -> eyre::Result<RecordBatch> {
-    let guard = conn.lock();
-
-    let mut sql =
-        String::from("SELECT entity_key, ann_key, ann_value FROM entity_numeric_annotations");
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut conditions: Vec<String> = Vec::new();
-
-    if let Some(ref key) = ann_filters.key {
-        params.push(Box::new(key.clone()));
-        conditions.push(format!("ann_key = ?{}", params.len()));
-    }
-    if let Some(ref value) = ann_filters.uint_value {
-        params.push(Box::new(i64::try_from(*value)?));
-        conditions.push(format!("ann_value = ?{}", params.len()));
-    }
-
-    if !conditions.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&conditions.join(" AND "));
-    }
-
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(AsRef::as_ref).collect();
-    let mut stmt = guard.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params_refs.as_slice())?;
-
-    let mut entity_key_builder = FixedSizeBinaryBuilder::new(32);
-    let mut key_builder = StringBuilder::new();
-    let mut value_builder = UInt64Builder::new();
-
-    while let Some(row) = rows.next()? {
-        let entity_key: Vec<u8> = row.get(0)?;
-        let ann_key: String = row.get(1)?;
-        let ann_value: i64 = row.get(2)?;
-
-        entity_key_builder.append_value(&entity_key)?;
-        key_builder.append_value(&ann_key);
-        value_builder.append_value(u64::try_from(ann_value)?);
-    }
-
-    let batch = RecordBatch::try_new(
-        numeric_annotations_schema(),
-        vec![
-            Arc::new(entity_key_builder.finish()),
-            Arc::new(key_builder.finish()),
-            Arc::new(value_builder.finish()),
-        ],
-    )?;
-
-    Ok(batch)
 }
 
 fn references_column(expr: &Expr, col_name: &str) -> bool {
@@ -453,13 +254,6 @@ fn extract_owner_filter(filters: &[Expr]) -> Option<Vec<u8>> {
         }
     }
     None
-}
-
-#[derive(Debug, Default)]
-struct AnnotationFilters {
-    key: Option<String>,
-    string_value: Option<String>,
-    uint_value: Option<u64>,
 }
 
 fn extract_annotation_filters(filters: &[Expr]) -> AnnotationFilters {
