@@ -58,19 +58,46 @@ The node listens on `localhost:8545` (JSON-RPC). The sidecar exposes Flight SQL 
 Any Flight SQL client works. With `arrow-flight` CLI or DBeaver, connect to `localhost:50051`:
 
 ```sql
--- live entities
-SELECT entity_key, content_type, expires_at_block FROM entities;
+-- live entities (current state)
+SELECT entity_key, content_type, expires_at_block FROM entities_latest;
 
--- annotation lookups (bitmap-indexed)
-SELECT * FROM entities WHERE str_ann(string_annotations, 'pair') = 'USDC/WETH';
-SELECT * FROM entities WHERE num_ann(numeric_annotations, 'price') > 1000;
-SELECT * FROM entities WHERE owner = x'aa...' AND num_ann(numeric_annotations, 'price') >= 500;
+-- annotation lookups via JOINs (bitmap-indexed)
+SELECT e.entity_key, e.content_type
+FROM entities_latest e
+JOIN entity_string_annotations sa
+  ON e.entity_key = sa.entity_key
+WHERE sa.ann_key = 'pair' AND sa.ann_value = 'USDC/WETH';
+
+SELECT e.entity_key, na.ann_value AS price
+FROM entities_latest e
+JOIN entity_numeric_annotations na
+  ON e.entity_key = na.entity_key
+WHERE na.ann_key = 'price' AND na.ann_value > 1000;
 
 -- historical events (SQLite-backed, requires block range)
 SELECT * FROM entity_events WHERE block_number BETWEEN 100 AND 200;
+
+-- event annotations
+SELECT e.entity_key, sa.ann_key, sa.ann_value
+FROM entity_events e
+JOIN event_string_annotations sa
+  ON e.entity_key = sa.entity_key AND e.block_number = sa.block_number
+WHERE e.block_number BETWEEN 100 AND 200;
+
+-- entity state history (SCD2 - tracks every version of each entity)
+SELECT entity_key, owner, valid_from_block, valid_to_block
+FROM entities_history
+WHERE block_number BETWEEN 0 AND 500;
+
+-- history annotations
+SELECT h.entity_key, sa.ann_key, sa.ann_value
+FROM entities_history h
+JOIN history_string_annotations sa
+  ON h.entity_key = sa.entity_key AND h.valid_from_block = sa.valid_from_block
+WHERE h.valid_from_block >= 0 AND h.valid_from_block <= 500;
 ```
 
-`str_ann` / `num_ann` are UDFs. Still evaluating whether to replace them with a flatter schema in v2 so clients get plain SQL with no custom functions.
+Annotations live in separate tables, queried with standard SQL JOINs. Bitmap indexes cover all annotation columns.
 
 ### JSON-RPC
 
@@ -131,13 +158,15 @@ I also revisited a few design tradeoffs along the way:
 | On-chain cost | ~96 bytes/entity (3 slots) | 64 bytes/entity (2 slots) | Expiration index moved off-chain into memory. |
 | Content integrity | - | 32-byte content hash | Lets clients verify query results against the trie. |
 | Query engine | SQLite with bitmap indexes, in-process, custom JSON-RPC | DataFusion (columnar, in-memory) with roaring bitmap indexes, separate process, Flight SQL | Process isolation, columnar scans for analytics. See [query engine](#query-engine). |
+| Annotations | Embedded in entity rows, custom UDFs | Separate relational tables, standard SQL JOINs | Cleaner schema, no custom functions, better index selectivity. |
 | Compression | Brotli per-tx | None | OP batcher already compresses the batch. |
 | MAX_BTL | Uncapped | Configurable via genesis, 0 = unlimited | Bounds recovery time and index size when set. |
 | Extend | Permissionless, no cap | Per-entity policy (anyone or owner/operator), capped at MAX_BTL when set | Creator chooses who can extend. |
 | Operator delegation | - | Optional operator per entity | Backend can manage entities without owning them. |
 | ChangeOwner | Supported | Supported | Transfer ownership, change extend policy, set/remove operator in one atomic op. |
+| Historical queries | At-block JSON-RPC | SCD2 entity history + event log over Flight SQL | Full version history with temporal range queries. |
 
-Arkiv also has things Glint doesn't yet - JSON-RPC query endpoints, glob matching on annotations, at-block historical queries. On the roadmap.
+Arkiv also has things Glint doesn't yet - JSON-RPC query endpoints and glob matching on annotations. On the roadmap.
 
 ## Architecture
 
@@ -162,7 +191,7 @@ graph TB
         subgraph exex["glint-exex (ExEx)"]
             notify["ExExNotification<br/>(commit/reorg)"]
             arrow["Entity event logs<br/>→ Arrow RecordBatch"]
-            ring["Ring buffer<br/>(replay on reconnect)"]
+            ring["Ring buffer<br/>(256 MB cap,<br/>replay on reconnect)"]
             notify --> arrow
             arrow --> ring
         end
@@ -172,31 +201,54 @@ graph TB
         crud -->|committed block| notify
     end
 
+    subgraph transport["glint-transport"]
+        ipc["Unix socket (IPC)"]
+        grpc["gRPC (Tonic)"]
+    end
+
     subgraph sidecar["glint-sidecar"]
         direction TB
 
-        subgraph live["Live entities (one of, via --entities-backend)"]
-            mem_store["Memory: in-memory EntityStore<br/>+ roaring bitmap indexes<br/>+ DataFusion"]
-            sql_store["SQLite: entities_latest table<br/>(required when max_btl=0)"]
+        subgraph live["Live entities (--entities-backend)"]
+            mem_store["Memory: in-memory EntityStore<br/>+ roaring bitmap indexes<br/>+ DataFusion<br/>+ periodic Arrow snapshots"]
+            sql_store["SQLite: entities_latest<br/>(required when max_btl=0)"]
         end
 
-        subgraph hist["Historical path (glint-historical)"]
-            sqlite["SQLite<br/>(entity_events)"]
-            hist_prov["Historical TableProvider"]
-            sqlite --> hist_prov
+        subgraph live_tables["Live tables (both backends)"]
+            t_el["entities_latest"]
+            t_esa["entity_string_annotations"]
+            t_ena["entity_numeric_annotations"]
         end
 
-        flight["Flight SQL server<br/>(entities + entity_events)"]
+        subgraph hist["Historical (SQLite)"]
+            subgraph event_tables["Event log"]
+                t_ee["entity_events"]
+                t_eesa["event_string_annotations"]
+                t_eena["event_numeric_annotations"]
+            end
+
+            subgraph history_tables["Entity history (SCD2)"]
+                t_eh["entities_history"]
+                t_hsa["history_string_annotations"]
+                t_hna["history_numeric_annotations"]
+            end
+        end
+
+        flight["Flight SQL server"]
         health["Health endpoint"]
+        prom["Prometheus metrics<br/>(optional --metrics-port)"]
 
-        mem_store --> flight
-        sql_store --> flight
-        hist_prov --> flight
+        mem_store --> live_tables
+        sql_store --> live_tables
+        live_tables --> flight
+        event_tables --> flight
+        history_tables --> flight
     end
 
-    ring -->|Arrow IPC<br/>unix socket / gRPC| mem_store
-    ring -->|Arrow IPC<br/>unix socket / gRPC| sql_store
-    ring -->|Arrow IPC<br/>unix socket / gRPC| sqlite
+    ring --> transport
+    transport -->|Arrow IPC| mem_store
+    transport -->|Arrow IPC| sql_store
+    transport -->|Arrow IPC| hist
 
     subgraph clients["Clients"]
         sdk["glint-sdk (Rust)"]
@@ -214,34 +266,57 @@ graph TB
     style node fill:#f0f4f8,stroke:#4a6785,color:#1a2a3a
     style engine fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
     style exex fill:#dce6f0,stroke:#4a6785,color:#1a2a3a
+    style transport fill:#e1e8f0,stroke:#4a6785,color:#1a2a3a
     style sidecar fill:#e8f5e9,stroke:#2e7d32,color:#1a2a3a
     style live fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
+    style live_tables fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
     style hist fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
+    style event_tables fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
+    style history_tables fill:#c8e6c9,stroke:#2e7d32,color:#1a2a3a
     style clients fill:#fff3e0,stroke:#e65100,color:#1a2a3a
 ```
 
 `glint-engine` is a custom `BlockExecutor` inside reth. Transactions sent to a magic address (`0x...676c696e74`, ASCII "glint") get intercepted as entity operations: create, update, delete, extend, change owner. Everything else goes through normal EVM execution. Each entity costs 64 bytes on-chain: 32 bytes of metadata (owner + expiration + flags) and 32 bytes of content hash. Expired entities get cleaned up before each block's transactions run.
 
-`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer for replay, and pushes them over a unix socket or gRPC. The gRPC transport uses a small custom proto wrapping Arrow IPC bytes rather than Arrow Flight — Flight is built for query-serving, not one-way push streams.
+`glint-exex` watches committed blocks, converts entity event logs into Arrow RecordBatches, holds them in a ring buffer (256 MB cap), and pushes them to the sidecar. The ring buffer gives roughly 34 minutes of headroom at 2s blocks, enough for the sidecar to restart and catch up without missing data.
 
-`glint-sidecar` is the query layer. It runs as a separate process, consumes the ExEx stream, and serves two tables over Flight SQL:
+`glint-transport` moves Arrow IPC bytes from the ExEx to the sidecar. Two options: a Unix domain socket (IPC, default) for co-located deployments, or gRPC via Tonic when the sidecar runs on a different host. The gRPC transport uses a small custom proto rather than Arrow Flight -- Flight is built for query-serving, not one-way push streams.
 
-- **`entities`** - live entity state held in memory by `glint-analytics`. Roaring bitmap indexes on owner, string annotations, and numeric annotations. DataFusion with filter pushdown.
-- **`entity_events`** - historical event log persisted to SQLite by `glint-historical`. Block-range queries.
+`glint-sidecar` is the query layer. It runs as a separate process, consumes the ExEx stream, and serves nine tables over Flight SQL:
+
+| Table | Category | Description |
+|---|---|---|
+| `entities_latest` | Live | Current entities with metadata |
+| `entity_string_annotations` | Live | String annotations for live entities |
+| `entity_numeric_annotations` | Live | Numeric annotations for live entities |
+| `entity_events` | Events (SQLite) | Raw lifecycle events, requires block range |
+| `event_string_annotations` | Events (SQLite) | String annotations per event |
+| `event_numeric_annotations` | Events (SQLite) | Numeric annotations per event |
+| `entities_history` | History / SCD2 (SQLite) | Every version of each entity (`valid_from_block` / `valid_to_block`) |
+| `history_string_annotations` | History / SCD2 (SQLite) | String annotations per history record |
+| `history_numeric_annotations` | History / SCD2 (SQLite) | Numeric annotations per history record |
+
+Live tables come from either the memory or SQLite backend. Event and history tables are always SQLite-backed and require bounded queries (block range or `valid_from` range).
 
 If the sidecar crashes or falls behind, the node keeps producing blocks. On reconnect the ExEx replays from its ring buffer.
 
 `glint-sdk` is a Rust client library for building and sending Glint transactions, querying entities over JSON-RPC, and running Flight SQL queries.
 
+### Observability
+
+The node and sidecar both export Prometheus metrics. The sidecar's scrape endpoint is opt-in (`--metrics-port`).
+
+Engine metrics (`glint_engine_*`) track entity operations, expirations per block, gas consumed, and ops per transaction. Sidecar metrics (`glint_sidecar_*`) cover Flight SQL query count/errors/latency/rows, snapshot timing, full replays triggered, and SQLite database size.
+
 ### Query engine
 
 The sidecar has two backends for live entity queries (`--entities-backend`):
 
-**Memory (default)** - keeps all live entities in RAM with roaring bitmap indexes on owner and annotations. DataFusion does vectorized queries directly on Arrow data - no format conversion from ExEx through to results. Hash indexes on annotation key/value pairs, B-tree for numeric ranges, all backed by roaring bitmaps. Indexed lookups resolve in microseconds; everything else falls through to columnar scan. Works well when entities expire and the live set stays bounded. 100K entities with 10 annotations each and ~500 byte payloads is about 100MB.
+**Memory (default)** - keeps all live entities in RAM with roaring bitmap indexes on owner and annotations. DataFusion does vectorized queries directly on Arrow data, no format conversion from ExEx through to results. Hash indexes on annotation key/value pairs, B-tree for numeric ranges, all backed by roaring bitmaps. Indexed lookups resolve in microseconds; everything else falls through to columnar scan. Works well when entities expire and the live set stays bounded. 100K entities with 10 annotations each and ~500 byte payloads is about 100MB. Periodic Arrow snapshots (configurable via `--snapshot-interval`) with Blake3 integrity verification let the sidecar resume from a checkpoint instead of replaying from scratch.
 
-**SQLite** - persists live entities to disk in an `entities_latest` table. Required when `max_btl=0` since entities never expire and RAM would grow forever. Queries still go through DataFusion via a SQLite-backed `TableProvider` that pushes filters down to SQL.
+**SQLite** - persists live entities to disk in an `entities_latest` table with separate annotation tables. Required when `max_btl=0` since entities never expire and RAM would grow forever. Queries still go through DataFusion via SQLite-backed `TableProvider`s that push filters down to SQL.
 
-Supported indexed operations: equality and inequality on `owner`, `str_ann()`, and `num_ann()`; range queries (`>`, `>=`, `<`, `<=`) on numeric annotations; `IN` lists on all indexed fields; `AND`/`OR` combinations. Unrecognized filters fall through to DataFusion's post-scan filtering.
+Supported indexed operations: equality and inequality on `owner`, string annotation key/value, and numeric annotation key/value; range queries (`>`, `>=`, `<`, `<=`) on numeric annotations; `IN` lists on all indexed fields; `AND`/`OR` combinations. Unrecognized filters fall through to DataFusion's post-scan filtering.
 
 <details>
 <summary>Other query engines considered</summary>
@@ -280,9 +355,9 @@ Everything in-memory rebuilds from the chain. No snapshots, no separate sync mod
 
 On node restart, `glint-engine` scans entity event logs from reth's database to reconstruct the expiration index. When MAX_BTL is set, it only scans that many blocks back - at ~1 week of history (302,400 blocks at 2s) this takes seconds to a few minutes. When `max_btl=0` (unlimited), it scans from genesis.
 
-On sidecar restart, it connects to the ExEx stream (IPC unix socket or gRPC) and rebuilds from empty. The ExEx replays from its ring buffer. With bounded BTL, after MAX_BTL blocks from tip all live entities are reconstructed since anything older is already expired. Historical events are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy, same path.
+On sidecar restart, it connects to the ExEx stream (IPC or gRPC) and rebuilds. If snapshots are enabled, it loads the most recent valid snapshot and replays only from that point forward. Without snapshots, it replays from empty. The ExEx fills in missing blocks from its ring buffer. With bounded BTL, after MAX_BTL blocks from tip all live entities are reconstructed since anything older is already expired. Historical events and entity history (SCD2) are persisted in SQLite and survive restarts. Crash, disconnect, fresh deploy - same path.
 
-If the ExEx's buffer overflows (1024 batches, ~34 min of headroom at 2s blocks), it disconnects the sidecar, which rebuilds from scratch on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
+If the ring buffer overflows (~34 min of headroom at 2s blocks), it disconnects the sidecar, which does a full rebuild on reconnect. If the ExEx itself panics, reth keeps producing blocks and retains notifications until the ExEx catches up.
 
 ## License
 
