@@ -334,3 +334,56 @@ fn query_entities_history(
 
     RecordBatch::try_new(Arc::clone(schema), columns).map_err(arrow_err)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::prelude::*;
+
+    #[test]
+    fn extract_valid_from_range_between() {
+        let filter = col("valid_from_block")
+            .gt_eq(lit(100u64))
+            .and(col("valid_from_block").lt_eq(lit(500u64)));
+        let result = extract_valid_from_range(&[filter]);
+        assert_eq!(result, Some((100, 500)));
+    }
+
+    #[test]
+    fn extract_valid_from_range_equality() {
+        let filter = col("valid_from_block").eq(lit(42u64));
+        let result = extract_valid_from_range(&[filter]);
+        assert_eq!(result, Some((42, 42)));
+    }
+
+    #[test]
+    fn extract_valid_from_range_missing_bound() {
+        let filter = col("valid_from_block").gt_eq(lit(100u64));
+        let result = extract_valid_from_range(&[filter]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn extract_valid_from_range_gt_lt() {
+        let filter = col("valid_from_block")
+            .gt(lit(99u64))
+            .and(col("valid_from_block").lt(lit(501u64)));
+        let result = extract_valid_from_range(&[filter]);
+        assert_eq!(result, Some((100, 500)));
+    }
+
+    #[test]
+    fn require_valid_from_range_errors_on_missing() {
+        let result = require_valid_from_range(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn require_valid_from_range_errors_on_inverted() {
+        let filter = col("valid_from_block")
+            .gt_eq(lit(500u64))
+            .and(col("valid_from_block").lt_eq(lit(100u64)));
+        let result = require_valid_from_range(&[filter]);
+        assert!(result.is_err());
+    }
+}
