@@ -47,17 +47,17 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 alloy-primitives = { version = "1.5", features = ["borsh"] }
 alloy-rlp = { version = "0.3", features = ["derive"] }
 alloy-sol-types = "1.5"
-alloy-consensus = "1.7"
+alloy-consensus = "2.0"
 alloy-eips = "1.7"
-alloy-provider = { version = "=1.7.3", features = ["reqwest"] }
-alloy-network = "=1.7.3"
-alloy-signer-local = "=1.7.3"
-alloy-transport = "=1.7.3"
-alloy-transport-http = { version = "=1.7.3", features = ["reqwest"] }
-alloy-rpc-types-eth = "=1.7.3"
+alloy-provider = { version = "=2.0.1", features = ["reqwest"] }
+alloy-network = "=2.0.1"
+alloy-signer-local = "=2.0.1"
+alloy-transport = "=2.0.1"
+alloy-transport-http = { version = "=2.0.1", features = ["reqwest"] }
+alloy-rpc-types-eth = "=2.0.1"
 
 # version used by reth
-alloy-evm = "0.27"
+alloy-evm = "0.33"
 
 reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.3", features = [
   "node",
